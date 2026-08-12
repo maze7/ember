@@ -1,0 +1,35 @@
+---
+Language: Cpp
+BasedOnStyle: LLVM
+BreakBeforeBraces: Allman
+
+# Indentation
+UseTab: Always
+TabWidth: 4
+IndentWidth: 4
+ContinuationIndentWidth: 4
+IndentPPDirectives: BeforeHash
+NamespaceIndentation: All
+AccessModifierOffset: -4
+IndentCaseLabels: true
+
+# * and & on type side
+PointerAlignment: Left
+ReferenceAlignment: Left
+
+FixNamespaceComments: false
+ColumnLimit: 120
+
+AlignConsecutiveAssignments:
+  Enabled: true
+  AcrossEmptyLines: false
+  AcrossComments: false
+  AlignCompound: true
+  PadOperators: true
+
+# Prevent the formatter from packing arguments into a single line
+BinPackArguments: false
+BinPackParameters: false
+
+# This allows the closing parenthesis to be on its own line (C++11 style)
+AlignAfterOpenBracket: AlwaysBreak
