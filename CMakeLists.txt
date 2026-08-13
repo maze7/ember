@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(Ember VERSION 0.1.0 LANGUAGES CXX)
+project(Ember VERSION 0.1.0 LANGUAGES C CXX)
 
 # Library configuration options
 option(EMBER_ENABLE_PLATFORM "Build platform support" OFF)
@@ -7,6 +7,9 @@ option(EMBER_ENABLE_GRAPHICS "Build graphics support" OFF)
 option(EMBER_ENABLE_ASSETS   "Build asset system" OFF)
 option(EMBER_ENABLE_AUDIO    "Build audio support" OFF)
 option(EMBER_USE_TRACY    	 "Enable Tracy profiling" OFF)
+option(EMBER_USE_RPMALLOC 	 "Rely on rpmalloc as the general heap" ON)
+option(EMBER_USE_SDL 				 "Rely on SDL3 for input, windowing, platform abstraction" ON)
+option(EMBER_USE_VULKAN 		 "Rely on Vulkan for the GPU backend" ON)
 option(EMBER_BUILD_TESTS 		 "Build Ember tests" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -17,18 +20,7 @@ set(EMBER_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 list(APPEND CMAKE_MODULE_PATH "${EMBER_ROOT}/cmake")
 include(EmberModule)
 
-# Enable profiling if requested
-if(EMBER_USE_TRACY)
-	# Tracy's own CMake option must also be enabled.
-	set(TRACY_ENABLE ON)
-	add_subdirectory(third_party/tracy EXCLUDE_FROM_ALL)
-endif()
-
-# FMT is used by core for logging and string formatting.
-if(NOT TARGET fmt::fmt)
-	add_subdirectory(third_party/fmt EXCLUDE_FROM_ALL)
-endif()
-
+add_subdirectory(third_party)
 add_subdirectory(src)
 
 if(EMBER_BUILD_TESTS)
