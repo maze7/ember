@@ -27,13 +27,6 @@ namespace
 	};
 }
 
-TEST(Memory, InitializeIsIdempotent)
-{
-	// main() already initialized; repeated calls are successful no-ops.
-	EXPECT_TRUE(ember::memory::initialize());
-	EXPECT_TRUE(ember::memory::initialize());
-}
-
 TEST(Memory, DefaultPmrResourceIsTheEngineHeap)
 {
 	std::pmr::memory_resource* resource = std::pmr::get_default_resource();
@@ -60,18 +53,18 @@ TEST(Memory, NewObjectConstructsAndDeleteObjectDestroys)
 {
 	auto& engine_heap = ember::memory::heap(MemoryTag::Engine);
 
-	Widget* widget = ember::memory::new_object<Widget>(&engine_heap, 42);
+	Widget* widget = ember::memory::new_object<Widget>(engine_heap, 42);
 	ASSERT_NE(widget, nullptr);
 	EXPECT_EQ(widget->value, 42);
 	EXPECT_EQ(Widget::live, 1);
 
-	ember::memory::delete_object(&engine_heap, widget);
+	ember::memory::delete_object(engine_heap, widget);
 	EXPECT_EQ(Widget::live, 0); // destructor must actually have run
 }
 
 TEST(Memory, DeleteObjectOnNullIsANoOp)
 {
-	ember::memory::delete_object<Widget>(&ember::memory::heap(), nullptr);
+	ember::memory::delete_object<Widget>(ember::memory::heap(), nullptr);
 	EXPECT_EQ(Widget::live, 0);
 }
 
@@ -79,9 +72,9 @@ TEST(Memory, NewObjectHonorsAlignment)
 {
 	auto& engine_heap = ember::memory::heap(MemoryTag::Engine);
 
-	OverAligned* object = ember::memory::new_object<OverAligned>(&engine_heap);
+	OverAligned* object = ember::memory::new_object<OverAligned>(engine_heap);
 	EXPECT_TRUE(ember::is_aligned(object, alignof(OverAligned)));
-	ember::memory::delete_object(&engine_heap, object);
+	ember::memory::delete_object(engine_heap, object);
 }
 
 #if EMBER_MEMORY_TRACKING >= 1

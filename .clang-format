@@ -2,6 +2,7 @@
 Language: Cpp
 BasedOnStyle: LLVM
 BreakBeforeBraces: Allman
+ReflowComments: true
 
 # Indentation
 UseTab: Always

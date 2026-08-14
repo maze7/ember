@@ -13,22 +13,21 @@ namespace
 {
 	constinit ember::ArenaResource s_frame_arena;
 	constinit std::atomic<bool> s_initialized = false;
-}
 
-namespace ember::memory
-{
-	bool initialize(const MemoryConfig& config) noexcept
+	[[nodiscard]] bool initialize(const ember::MemoryConfig& config) noexcept
 	{
-		// The allocator layer is process-wide; repeated init calls reuse the existing stae.
 		bool expected = false;
-		if (!s_initialized.compare_exchange_strong(
-				expected, true, std::memory_order_acq_rel, std::memory_order_acquire))
-			return true;
 
-		initialize_thread(); // rpmalloc process init; registers the main thread's cache.
+		if (!s_initialized.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) [[unlikely]]
+		{
+			EMBER_ASSERT(false && "Only one MemorySystem may exist");
+			return false;
+		}
+
+		ember::memory::initialize_thread();
 
 #if EMBER_MEMORY_TRACKING >= 2
-		if (!memory_tracker::initialize()) [[unlikely]]
+		if (!ember::memory_tracker::initialize()) [[unlikely]]
 		{
 			s_initialized.store(false, std::memory_order_release);
 			return false;
@@ -36,10 +35,10 @@ namespace ember::memory
 #endif // EMBER_MEMORY_TRACKING >= 2
 
 		// install_third_party_hooks();
-		if (!s_frame_arena.init(config.frame_arena_reserve, config.frame_arena_commit, MemoryTag::Engine)) [[unlikely]]
+		if (!s_frame_arena.init(config.frame_arena_reserve, config.frame_arena_commit, ember::MemoryTag::Engine)) [[unlikely]]
 		{
 #if EMBER_MEMORY_TRACKING >= 2
-			memory_tracker::shutdown();
+			ember::memory_tracker::shutdown();
 #endif
 			s_initialized.store(false, std::memory_order_release);
 			return false;
@@ -47,7 +46,7 @@ namespace ember::memory
 
 		// Last, after every fallible step: from here on, resource-less PMR containers
 		// allocate from the engine heap instead of global operator new.
-		std::pmr::set_default_resource(&heap(MemoryTag::Unknown));
+		std::pmr::set_default_resource(&ember::memory::heap(ember::MemoryTag::Unknown));
 		return true;
 	}
 
@@ -58,29 +57,43 @@ namespace ember::memory
 
 		s_frame_arena.shutdown();
 #if EMBER_MEMORY_TRACKING >= 2
-		const u64 leaks = memory_tracker::report_leaks();
+		const ember::u64 leaks = ember::memory_tracker::report_leaks();
 		EMBER_ASSERT(leaks == 0);
-		(void) leaks;
-		memory_tracker::shutdown();
+		(void)leaks;
+		ember::memory_tracker::shutdown();
 #endif
 
 		// The default resource deliberately stays on the engine heap; rpmalloc is never
 		// finalized (static destructors may free after us), so late allocations remain valid.
 	}
-
-	ArenaResource& frame_arena() noexcept { return s_frame_arena; }
 }
 
 namespace ember
 {
+	MemorySystem::MemorySystem(const MemoryConfig& config) noexcept
+		: m_initialized(initialize(config)) {}
+
+	MemorySystem::~MemorySystem() noexcept
+	{
+		if (m_initialized)
+			shutdown();
+	}
+
+	ArenaResource& memory::frame_arena() noexcept
+	{
+		EMBER_ASSERT(s_initialized.load(std::memory_order_acquire));
+
+		return s_frame_arena;
+	}
+
 	void out_of_memory(size_t size, size_t alignment, MemoryTag tag) noexcept
 	{
-		Logger::error(std::source_location::current(),
+		Logger::error(
+			std::source_location::current(),
 			"Out of memory: size={} alignment={} tag={}",
 			size,
 			alignment,
-			static_cast<u16>(tag)
-		);
+			static_cast<u16>(tag));
 
 		EMBER_DEBUG_BREAK();
 		std::abort();

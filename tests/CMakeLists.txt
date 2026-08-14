@@ -1,23 +1,20 @@
 include(GoogleTest)
 
-add_executable(ember_memory_tests
-	main.cpp
-	memory/memory_tests.cpp
-	memory/virtual_memory_tests.cpp
-	memory/pmr/arena_resource_tests.cpp
-	memory/pmr/heap_resource_tests.cpp
-)
+function(ember_add_test_suite target label)
+	add_executable(${target} ${ARGN})
 
-target_link_libraries(ember_memory_tests
-	PRIVATE
-		Ember::Core
-		GTest::gtest
-		ember_build_options # test code compiles under the engine's warning set
-)
+	target_link_libraries(${target}
+		PRIVATE
+			Ember::Core
+			GTest::gtest
+			ember_build_options
+	)
 
-# Registers every TEST() as an individual CTest entry, so ctest can run, filter
-# and parallelize them (ctest -L memory, ctest -j).
-gtest_discover_tests(ember_memory_tests
-	PROPERTIES LABELS "memory"
-	DISCOVERY_TIMEOUT 30
-)
+	gtest_discover_tests(${target}
+		PROPERTIES LABELS "${label}"
+		DISCOVERY_TIMEOUT 30
+	)
+endfunction()
+
+add_subdirectory(containers)
+add_subdirectory(memory)

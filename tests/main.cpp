@@ -1,8 +1,8 @@
 #include <ember/memory/memory.h>
-
 #include <gtest/gtest.h>
-
 #include <cstdio>
+
+using namespace ember;
 
 int main(int argc, char** argv)
 {
@@ -12,16 +12,13 @@ int main(int argc, char** argv)
 	GTEST_FLAG_SET(death_test_style, "threadsafe");
 	::testing::InitGoogleTest(&argc, argv);
 
-	if (!ember::memory::initialize())
+	MemorySystem memory_system;
+
+	if (!memory_system)
 	{
 		std::fprintf(stderr, "memory::initialize() failed\n");
 		return 1;
 	}
 
-	const int result = RUN_ALL_TESTS();
-
-	// Doubles as the suite's leak gate: shutdown() reports live tracked blocks
-	// and asserts the count is zero, so a leaky test fails loudly at exit.
-	ember::memory::shutdown();
-	return result;
-}
+	return RUN_ALL_TESTS();
+} // leak reporting and shutdown happen here
