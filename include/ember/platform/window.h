@@ -1,29 +1,38 @@
 #pragma once
 
-#include <ember/core/common.h>
 #include <ember/core/bitmask.h>
+#include <ember/core/common.h>
+#include <ember/core/handle.h>
 #include <glm/glm.hpp>
 
 namespace ember
 {
+	struct Window;
+	using WindowHandle = Handle<Window>;
+
 	enum class WindowFlags : u16
 	{
 		None			 = 0,
 		Resizable		 = 1 << 0,
 		Fullscreen		 = 1 << 1,
 		Hidden			 = 1 << 3,
-		Borderless		 = 1 << 3,
-		HighPixelDensity = 1 << 4,
+		Borderless		 = 1 << 4,
+		HighPixelDensity = 1 << 5,
 	};
 
 	EMBER_ENUM_BITWISE_OPS(WindowFlags, u16);
 
-	struct WindowDef
+	enum class WindowState : u16
 	{
-		std::string_view title = "Ember";
-		glm::vec2 size{1280, 720};
-		WindowFlags flags = WindowFlags::Resizable;
+		None	   = 0,
+		Visible	   = 1 << 0,
+		Focused	   = 1 << 1,
+		Minimized  = 1 << 2,
+		Fullscreen = 1 << 3,
+		Occluded   = 1 << 4,
 	};
+
+	EMBER_ENUM_BITWISE_OPS(WindowState, u16);
 
 	enum class WindowError : u8
 	{
@@ -39,5 +48,13 @@ namespace ember
 		Normal,
 		Hidden,
 		Relative,
+	};
+
+	struct WindowDef
+	{
+		std::string_view title = "Ember";
+		glm::ivec2 size{1280, 720};
+
+		WindowFlags flags = WindowFlags::Resizable | WindowFlags::HighPixelDensity;
 	};
 }
