@@ -1,0 +1,275 @@
+{
+  "linux-debug": {
+    "build": [
+      {
+        "args": "--verbose gmake",
+        "command": "premake5",
+        "working_dir": ""
+      },
+      {
+        "args": "-j${nproc} -C make/linux",
+        "command": "make",
+        "working_dir": ""
+      }
+    ],
+    "build_types": [],
+    "clean": [
+      {
+        "args": " -C make/linux clean",
+        "command": "make",
+        "working_dir": ""
+      }
+    ],
+    "config": {
+      "clear_sys_env": false,
+      "strip_ansi_codes": false
+    },
+    "os": [
+      "linux"
+    ],
+    "output_parser": {
+      "config": {
+        "preset": "generic",
+        "relative_file_paths": true
+      }
+    },
+    "run": [
+      {
+        "args": "",
+        "command": "${project_root}/bin/efsw-test-debug",
+        "name": "efsw-test-debug",
+        "working_dir": "${project_root}/bin"
+      },
+      {
+        "args": "",
+        "command": "${project_root}/bin/efsw-unit_tests-debug",
+        "name": "efsw-unit_tests-debug",
+        "working_dir": "${project_root}/bin"
+      }
+    ]
+  },
+  "linux-release": {
+    "build": [
+      {
+        "args": "gmake",
+        "command": "premake5",
+        "working_dir": ""
+      },
+      {
+        "args": "-j${nproc} -C make/linux  -e config=release_x86_64",
+        "command": "make",
+        "working_dir": ""
+      }
+    ],
+    "build_types": [],
+    "clean": [
+      {
+        "args": "",
+        "command": "",
+        "working_dir": ""
+      }
+    ],
+    "config": {
+      "clear_sys_env": false,
+      "strip_ansi_codes": false
+    },
+    "os": [
+      "linux"
+    ],
+    "output_parser": {
+      "config": {
+        "preset": "generic",
+        "relative_file_paths": true
+      }
+    }
+  },
+  "linux-relwithdbginfo": {
+    "build": [
+      {
+        "args": "gmake",
+        "command": "premake5",
+        "working_dir": ""
+      },
+      {
+        "args": "-j${nproc} -C make/linux  -e config=relwithdbginfo_x86_64",
+        "command": "make",
+        "working_dir": ""
+      }
+    ],
+    "build_types": [],
+    "clean": [
+      {
+        "args": "",
+        "command": "",
+        "working_dir": ""
+      }
+    ],
+    "config": {
+      "clear_sys_env": false,
+      "strip_ansi_codes": false
+    },
+    "os": [
+      "linux"
+    ],
+    "output_parser": {
+      "config": {
+        "preset": "generic",
+        "relative_file_paths": true
+      }
+    }
+  },
+  "macos-debug": {
+    "build": [
+      {
+        "args": "--verbose gmake2",
+        "command": "premake5",
+        "working_dir": ""
+      },
+      {
+        "args": "-j${nproc} -C make/macosx",
+        "command": "make",
+        "working_dir": ""
+      }
+    ],
+    "build_types": [],
+    "clean": [
+      {
+        "args": "-C make/macosx clean",
+        "command": "make",
+        "working_dir": ""
+      }
+    ],
+    "config": {
+      "clear_sys_env": false,
+      "strip_ansi_codes": false
+    },
+    "os": [
+      "macos"
+    ],
+    "output_parser": {
+      "config": {
+        "preset": "generic",
+        "relative_file_paths": true
+      }
+    },
+    "run": [
+      {
+        "args": "",
+        "command": "${project_root}/bin/efsw-test-debug",
+        "name": "efsw-test",
+        "run_in_terminal": true,
+        "working_dir": "${project_root}/bin"
+      },
+      {
+        "args": "",
+        "command": "${project_root}/bin/efsw-unit_tests-debug",
+        "name": "efsw-unit_tests-debug",
+        "run_in_terminal": true,
+        "working_dir": "${project_root}/bin"
+      }
+    ]
+  },
+  "macos-release": {
+    "build": [
+      {
+        "args": "gmake2",
+        "command": "premake5",
+        "working_dir": ""
+      },
+      {
+        "args": "-j${nproc} -C make/macosx  -e config=release_arm64",
+        "command": "make",
+        "working_dir": ""
+      }
+    ],
+    "build_types": [],
+    "clean": [
+      {
+        "args": "",
+        "command": "",
+        "working_dir": ""
+      }
+    ],
+    "config": {
+      "clear_sys_env": false,
+      "strip_ansi_codes": false
+    },
+    "os": [
+      "macos"
+    ],
+    "output_parser": {
+      "config": {
+        "preset": "generic",
+        "relative_file_paths": true
+      }
+    }
+  },
+  "mingw-debug": {
+    "build": [
+      {
+        "args": "--os=windows --cc=gcc gmake",
+        "command": "premake5",
+        "working_dir": ""
+      },
+      {
+        "args": "-j${nproc} -C make/windows verbose=true",
+        "command": "mingw64-make",
+        "working_dir": ""
+      }
+    ],
+    "build_types": [],
+    "clean": [
+      {
+        "args": "",
+        "command": "",
+        "working_dir": ""
+      }
+    ],
+    "config": {
+      "clear_sys_env": false,
+      "strip_ansi_codes": false
+    },
+    "os": [
+      "linux"
+    ],
+    "output_parser": {
+      "config": {
+        "relative_file_paths": true
+      }
+    }
+  },
+  "mingw-release": {
+    "build": [
+      {
+        "args": "--os=windows gmake2",
+        "command": "premake5",
+        "working_dir": ""
+      },
+      {
+        "args": "-j${nproc} -C make/windows -e config=release_x86_64",
+        "command": "mingw64-make",
+        "working_dir": ""
+      }
+    ],
+    "build_types": [],
+    "clean": [
+      {
+        "args": "",
+        "command": "",
+        "working_dir": ""
+      }
+    ],
+    "config": {
+      "clear_sys_env": false,
+      "strip_ansi_codes": false
+    },
+    "os": [
+      "linux"
+    ],
+    "output_parser": {
+      "config": {
+        "relative_file_paths": true
+      }
+    }
+  }
+}

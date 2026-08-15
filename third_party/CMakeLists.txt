@@ -23,3 +23,16 @@ if(EMBER_BUILD_TESTS)
 	set(INSTALL_GTEST OFF)
 	add_subdirectory(googletest EXCLUDE_FROM_ALL)
 endif()
+
+# tl::expected is used as an alternative to exceptions
+add_library(tl_expected INTERFACE)
+add_library(tl::expected ALIAS tl_expected)
+target_include_directories(tl_expected SYSTEM INTERFACE
+	"$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/expected/include>"
+)
+
+# GLM is used for all lin-alg
+set(GLM_BUILD_LIBRARY OFF CACHE BOOL "Use header-only GLM" FORCE)
+set(GLM_BUILD_TESTS OFF CACHE BOOL "Disable GLM tests" FORCE)
+set(GLM_BUILD_INSTALL OFF CACHE BOOL "Disable GLM installation" FORCE)
+add_subdirectory(glm EXCLUDE_FROM_ALL)

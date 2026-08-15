@@ -1,0 +1,147 @@
+name: build
+
+on: [push, pull_request]
+
+jobs:
+  Linux:
+    name: Linux (inotify)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y wget
+        wget https://github.com/premake/premake-core/releases/download/v5.0.0-beta2/premake-5.0.0-beta2-linux.tar.gz
+        tar xvzf premake-5.0.0-beta2-linux.tar.gz
+    - name: Build
+      run: |
+        ./premake5 --verbose gmake
+        cd make/linux
+        make -e config=release_x86_64
+    - name: Run unit tests
+      run: |
+        ./bin/efsw-unit_tests-release
+  macOS:
+    name: macOS (FSEvents)
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v6
+    - name: Install dependencies
+      run: |
+        brew install premake
+    - name: Build
+      run: |
+        premake5 --verbose gmake
+        make -C make/macosx/ -j$(sysctl -n hw.ncpu) -e config=release_arm64
+    - name: Run unit tests
+      run: |
+        ./bin/efsw-unit_tests-release
+  kqueue:
+    name: macOS (kqueue)
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v6
+    - name: Install dependencies
+      run: |
+        brew install premake
+    - name: Build
+      run: |
+        premake5 --verbose --force-kqueue gmake
+        make -C make/macosx/ -j$(sysctl -n hw.ncpu) -e config=release_arm64
+    - name: Run unit tests
+      run: |
+        ./bin/efsw-unit_tests-release
+  Generic:
+    name: macOS (Generic Watcher)
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v6
+    - name: Install dependencies
+      run: |
+        brew install premake
+    - name: Build
+      run: |
+        premake5 --verbose gmake
+        make -C make/macosx/ -j$(sysctl -n hw.ncpu) -e config=release_arm64
+    - name: Run unit tests
+      run: |
+        ./bin/efsw-unit_tests-release --generic
+  Windows:
+    runs-on: windows-latest
+    steps:
+    - name: Add msbuild to PATH
+      uses: microsoft/setup-msbuild@v3
+    - uses: actions/checkout@v6
+    - name: Install dependencies
+      shell: powershell
+      run: |
+        Invoke-WebRequest -Uri "https://github.com/premake/premake-core/releases/download/v5.0.0-beta2/premake-5.0.0-beta2-windows.zip" -OutFile "premake-5.0.0-beta2-windows.zip"
+        Expand-Archive -DestinationPath . -Path premake-5.0.0-beta2-windows.zip
+    - name: Create project
+      shell: powershell
+      run: |
+        ./premake5.exe --verbose vs2022
+    - name: Build
+      shell: cmd
+      run: |
+        msbuild .\make\windows\efsw.sln -m /p:Platform="x64" /p:Configuration="release"
+    - name: Run unit tests
+      shell: cmd
+      run: |
+        .\bin\efsw-unit_tests-release.exe
+  FreeBSD:
+    name: FreeBSD (kqueue)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with: { fetch-depth: 0, submodules: 'recursive' }
+      - name: Set Environment Variables
+        run: |
+          echo "INSTALL_REF=${{ needs.release.outputs.version }}" >> "$GITHUB_ENV"
+          echo "RARCH=$(uname -m)" >> "$GITHUB_ENV"
+      - uses: vmactions/freebsd-vm@v1
+        env:
+          INSTALL_REF: ${{ needs.release.outputs.version }}
+        with:
+          release: '14.1'
+          envs: 'INSTALL_REF'
+          sync: sshfs
+          usesh: true
+          mem: 8192
+          disable-cache: true
+          prepare: |
+            pkg upgrade -y
+            pkg install -y bash pcre2 git curl premake5 gsed gmake
+          run: |
+            export CC=clang
+            export CXX=clang++
+            git config --global --add safe.directory "$GITHUB_WORKSPACE"
+            premake5 --verbose gmake
+            gmake -C make/bsd/ -j$(nproc) -e config=release_x86_64
+  Haiku:
+    name: Haiku (Generic Watcher)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v6
+        with: { fetch-depth: 0, submodules: 'recursive' }
+      - name: Set Environment Variables
+        run: |
+          echo "INSTALL_REF=${{ needs.release.outputs.version }}" >> "$GITHUB_ENV"
+          echo "RARCH=$(uname -m)" >> "$GITHUB_ENV"
+      - uses: vmactions/haiku-vm@v1
+        env:
+          INSTALL_REF: ${{ needs.release.outputs.version }}
+        with:
+          envs: 'INSTALL_REF'
+          usesh: true
+          mem: 8192
+          disable-cache: true
+          prepare: |
+            pkgman install -y git gcc premake5
+          run: |
+            git config --global --add safe.directory "$GITHUB_WORKSPACE"
+            premake5 --verbose gmake
+            make -C make/haiku/ -j$(nproc) -e config=release_arm64
