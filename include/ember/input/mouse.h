@@ -1,24 +1,28 @@
 #pragma once
 
-#include <cstring>
+#include <bitset>
 #include <ember/core/common.h>
+#include <ember/platform/window.h>
 #include <glm/glm.hpp>
 
 namespace ember
 {
 	enum class MouseButton : i32
 	{
-		None = 0,
-		Left = 1,
-		Middle = 2,
-		Right = 3
+		None,
+		Left,
+		Middle,
+		Right,
+		X1,
+		X2,
+		Count,
 	};
 
 	class Input;
-	class Mouse
+	class Mouse final
 	{
 	public:
-		static constexpr u32 MAX_MOUSE_BUTTONS = 8;
+		static constexpr u16 BUTTON_COUNT = static_cast<u16>(MouseButton::Count);
 
 		/// Mouse position, relative to the window, in Pixel coordinates.
 		[[nodiscard]] glm::vec2 position() const { return m_position; }
@@ -28,6 +32,9 @@ namespace ember
 
 		/// Wheel movement accumulated this frame.
 		[[nodiscard]] glm::vec2 wheel() const { return m_wheel; }
+
+		/// Handle of the currently focused window.
+		[[nodiscard]] WindowHandle window() const noexcept { return m_window; }
 
 		/// Shorthand to see the `position()` x component
 		[[nodiscard]] float x() const { return m_position.x; }
@@ -45,72 +52,111 @@ namespace ember
 		[[nodiscard]] bool released(MouseButton btn) const { return m_released[index(btn)]; }
 
 		/// Returns the timestamp of when the MouseButton was last down
-		[[nodiscard]] u64 timestamp(MouseButton btn) const { return m_timestamps[index(btn)]; }
+		[[nodiscard]] u64 button_timestamp(MouseButton btn) const { return m_timestamps[index(btn)]; }
 
 		/// Returns the timestamp of the last mouse motion
-		[[nodiscard]] u64 timestamp_motion() const { return m_motion_timestamp; }
+		[[nodiscard]] u64 motion_timestamp() const { return m_motion_timestamp; }
+
+		/// Returns the timestamp of the last input
+		[[nodiscard]] u64 input_timestamp() const noexcept { return m_input_timestamp; }
 
 	private:
 		friend class Input;
 
-		static u32 index(MouseButton btn)
+		using ButtonBits = std::bitset<BUTTON_COUNT>;
+
+		[[nodiscard]] static constexpr u32 index(MouseButton btn)
 		{
 			const auto i = static_cast<u32>(btn);
-			EMBER_ASSERT(i < MAX_MOUSE_BUTTONS);
+			EMBER_ASSERT(i < BUTTON_COUNT);
 			return i;
 		}
 
-		void on_button(MouseButton btn, bool down, u64 timestamp)
+		void next_frame(u64 /* timestamp */) noexcept
 		{
-			const u32 i = index(btn);
-
-			if (down)
-			{
-				m_down[i]		= true;
-				m_pressed[i]	= true;
-				m_timestamps[i] = timestamp;
-			}
-			else
-			{
-				m_down[i]	  = false;
-				m_released[i] = true;
-			}
-		}
-
-		void on_move(glm::vec2 pos, glm::vec2 delta, u64 timestamp)
-		{
-			m_position			= pos;
-			m_delta			   += delta;
-			m_motion_timestamp	= timestamp;
-		}
-
-		void on_wheel(glm::vec2 wheel) { m_wheel += wheel; }
-
-		void reset()
-		{
-			memset(m_pressed, 0, sizeof(m_pressed));
-			memset(m_released, 0, sizeof(m_released));
+			m_pressed.reset();
+			m_released.reset();
 			m_delta = {};
 			m_wheel = {};
 		}
 
+		void clear() noexcept
+		{
+			m_down.reset();
+			m_pressed.reset();
+			m_released.reset();
+			m_timestamps.fill(0);
+
+			m_position = {};
+			m_delta = {};
+			m_wheel = {};
+			m_window = {};
+
+			m_motion_timestamp = 0;
+			m_input_timestamp = 0;
+		}
+
+		void on_button(MouseButton btn, bool down, WindowHandle window, u64 timestamp)
+		{
+			u32 i = index(btn);
+			bool was_down = m_down[i];
+
+			if (down == was_down)
+				return;
+
+			if (down)
+				m_pressed[i] = true;
+			else
+				m_released[i] = true;
+
+			m_timestamps[i] = timestamp;
+			m_input_timestamp = timestamp;
+			m_window = window;
+		}
+
+		void on_move(glm::vec2 position, glm::vec2 delta, WindowHandle window, u64 timestamp)
+		{
+			// Do not combine deltas from different window coordinate spaces.
+			if (m_window != window)
+				m_delta = {};
+
+			m_position = position;
+			m_delta += delta;
+			m_window = window;
+			m_motion_timestamp = timestamp;
+			m_input_timestamp = timestamp;
+		}
+
+		void on_wheel(glm::vec2 wheel, WindowHandle window, u64 timestamp) noexcept
+		{
+			m_wheel += wheel;
+			m_window = window;
+			m_input_timestamp = timestamp;
+		}
+
+		void on_focus_lost(WindowHandle window, u64 timestamp) noexcept
+		{
+			if (!m_window.is_null() && m_window != window)
+				return;
+
+			m_released |= m_down;
+			m_down.reset();
+			m_delta = {};
+			m_window = {};
+			m_input_timestamp = timestamp;
+		}
+
 		/// whether a button was pressed this frame
-		bool m_pressed[MAX_MOUSE_BUTTONS] = {false};
+		ButtonBits m_down{};
 
 		/// whether a button was held this frame
-		bool m_down[MAX_MOUSE_BUTTONS] = {false};
+		ButtonBits m_pressed{};
 
 		/// whether a button was released this frame
-		bool m_released[MAX_MOUSE_BUTTONS] = {false};
+		ButtonBits m_released{};
 
 		/// timestamp of when a button was last pressed
-		u64 m_timestamps[MAX_MOUSE_BUTTONS] = {false};
-
-		/// timestamp of when the last mouse motion was
-		u64 m_motion_timestamp = 0;
-
-		/// mouse position (screen coordinates)
-		glm::vec2 m_screen_position = {0, 0};
+		std::array<u64, BUTTON_COUNT> m_timestamps{};
 
 		/// mouse position (window coordinates);
 		glm::vec2 m_position = {0, 0};
@@ -120,5 +166,10 @@ namespace ember
 
 		/// mouse delta value compared to previous position
 		glm::vec2 m_delta = {0, 0};
+
+		WindowHandle m_window{};
+
+		u64 m_motion_timestamp = 0;
+		u64 m_input_timestamp = 0;
 	};
 }
