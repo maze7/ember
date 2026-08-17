@@ -36,3 +36,26 @@ set(GLM_BUILD_LIBRARY OFF CACHE BOOL "Use header-only GLM" FORCE)
 set(GLM_BUILD_TESTS OFF CACHE BOOL "Disable GLM tests" FORCE)
 set(GLM_BUILD_INSTALL OFF CACHE BOOL "Disable GLM installation" FORCE)
 add_subdirectory(glm EXCLUDE_FROM_ALL)
+
+# SDL3 is used for input/windowing on most platforms
+
+# SDL is a private implementation detail of Ember::Platform.
+if(EMBER_ENABLE_PLATFORM)
+	if(NOT EMBER_USE_SDL)
+		message(FATAL_ERROR
+			"EMBER_ENABLE_PLATFORM currently requires EMBER_USE_SDL")
+	endif()
+
+	set(SDL_SHARED OFF CACHE BOOL "Disable shared SDL" FORCE)
+	set(SDL_STATIC ON CACHE BOOL "Build static SDL" FORCE)
+
+	set(SDL_VIDEO ON CACHE BOOL "Required by Ember::Platform" FORCE)
+	set(SDL_JOYSTICK ON CACHE BOOL "Required by Ember::Platform" FORCE)
+
+	set(SDL_TEST_LIBRARY OFF CACHE BOOL "Disable SDL test library" FORCE)
+	set(SDL_TESTS OFF CACHE BOOL "Disable SDL tests" FORCE)
+	set(SDL_EXAMPLES OFF CACHE BOOL "Disable SDL examples" FORCE)
+	set(SDL_INSTALL OFF CACHE BOOL "Disable SDL installation" FORCE)
+
+	add_subdirectory(SDL EXCLUDE_FROM_ALL)
+endif()

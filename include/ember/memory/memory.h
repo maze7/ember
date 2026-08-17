@@ -67,7 +67,7 @@ namespace ember
 		 */
 		template <typename T, typename... Args> [[nodiscard]] T* new_object(MemoryTag tag, Args&&... args) noexcept
 		{
-			return new_object(heap(tag), std::forward<Args>(args)...);
+			return new_object<T>(heap(tag), std::forward<Args>(args)...);
 		}
 
 		// ptr must point at the most-derived type: deallocation is sized with sizeof(T).

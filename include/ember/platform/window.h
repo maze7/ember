@@ -5,6 +5,8 @@
 #include <ember/core/handle.h>
 #include <glm/glm.hpp>
 
+#include <string_view>
+
 namespace ember
 {
 	struct Window;
@@ -52,7 +54,7 @@ namespace ember
 
 	struct WindowDef
 	{
-		std::string_view title = "Ember";
+		const char* title = "Ember";
 		glm::ivec2 size{1280, 720};
 
 		WindowFlags flags = WindowFlags::Resizable | WindowFlags::HighPixelDensity;

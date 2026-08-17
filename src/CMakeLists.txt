@@ -1,4 +1,4 @@
-# Ember Core module
+# Ember::Core module
 ember_add_module(Core
 	PUBLIC_DEPS
 		fmt::fmt
@@ -15,11 +15,11 @@ add_subdirectory(memory)
 add_subdirectory(sync)
 
 if(WIN32)
-  target_compile_definitions(ember_core PUBLIC EMBER_PLATFORM_WINDOWS)
+	target_compile_definitions(ember_core PUBLIC EMBER_PLATFORM_WINDOWS)
 elseif(APPLE)
-  target_compile_definitions(ember_core PUBLIC EMBER_PLATFORM_MACOS)
+	target_compile_definitions(ember_core PUBLIC EMBER_PLATFORM_MACOS)
 elseif(UNIX)
-  target_compile_definitions(ember_core PUBLIC EMBER_PLATFORM_LINUX)
+	target_compile_definitions(ember_core PUBLIC EMBER_PLATFORM_LINUX)
 endif()
 
 # Ember Core compile definitions
@@ -30,6 +30,18 @@ target_compile_definitions(ember_core PUBLIC
 	$<$<CONFIG:Debug>:EMBER_MEMORY_TRACKING=2>
 	$<$<CONFIG:Profile>:EMBER_MEMORY_TRACKING=1>
 )
+
+if(EMBER_ENABLE_PLATFORM)
+	ember_add_module(Platform
+		PUBLIC_DEPS
+			Ember::Core
+		PRIVATE_DEPS
+			SDL3::SDL3
+	)
+
+	add_subdirectory(input)
+	add_subdirectory(platform)
+endif()
 
 add_library(ember INTERFACE)
 add_library(Ember::Ember ALIAS ember)

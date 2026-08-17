@@ -47,7 +47,6 @@ namespace ember
 		void set_frame_time(u64 now_ns) noexcept
 		{
 			m_keyboard.set_frame_time(now_ns);
-			m_mouse.set_frame_time(now_ns);
 
 			for (Gamepad& gamepad : m_gamepads)
 				gamepad.set_frame_time(now_ns);
@@ -82,6 +81,8 @@ namespace ember
 	public:
 		/// 4 controllers should be sufficient, right?
 		static constexpr u8 MAX_GAMEPADS = 4;
+
+		Input() = default;
 
 		Input(const Input&)			   = delete;
 		Input& operator=(const Input&) = delete;
@@ -123,7 +124,7 @@ namespace ember
 	private:
 		friend class Platform;
 
-		void publish(u64 now_ns)
+		void publish(u64 now_ns) noexcept
 		{
 			m_last_state = m_state;
 			m_state		 = m_next_state;
@@ -145,7 +146,8 @@ namespace ember
 			m_next_state.m_keyboard.on_text(text, window);
 		}
 
-		void on_composition(std::string_view text, i32 selection_start, i32 selection_length, WindowHandle window) noexcept
+		void
+		on_composition(std::string_view text, i32 selection_start, i32 selection_length, WindowHandle window) noexcept
 		{
 			m_next_state.m_keyboard.on_composition(text, selection_start, selection_length, window);
 		}
@@ -167,7 +169,8 @@ namespace ember
 
 		[[nodiscard]] std::optional<u32> connect_gamepad(GamepadId id, const GamepadInfo& info, u64 timestamp) noexcept
 		{
-			// Duplicate add: refresh metadata, retain the same slot.
+			// Search for an existing instance of this controller first
+			// Linear search is fine here as we are limited to 4 controllers.
 			for (Gamepad& gamepad : m_next_state.m_gamepads)
 			{
 				if (gamepad.connected() && gamepad.id() == id)
@@ -175,7 +178,13 @@ namespace ember
 					gamepad.remap(info);
 					return gamepad.index();
 				}
-				else if (!gamepad.connected())
+			}
+
+			// Otherwise, connect it in the first empty slot.
+			// Linear search is fine here as we are limited to 4 controllers.
+			for (Gamepad& gamepad : m_next_state.m_gamepads)
+			{
+				if (!gamepad.connected())
 				{
 					gamepad.connect(id, info, timestamp);
 					return gamepad.index();

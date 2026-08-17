@@ -5,7 +5,12 @@
 #include <ember/input/common.h>
 #include <glm/vec2.hpp>
 
+#include <array>
 #include <bitset>
+#include <cmath>
+#include <compare>
+#include <cstddef>
+#include <string_view>
 
 namespace ember
 {
@@ -15,7 +20,7 @@ namespace ember
 
 		[[nodiscard]] constexpr bool is_valid() const noexcept { return value != 0; }
 
-		constexpr bool operator<=>(const GamepadId&) const noexcept = default;
+		constexpr auto operator<=>(const GamepadId&) const noexcept = default;
 	};
 
 	enum class GamepadButton : u8
@@ -63,6 +68,7 @@ namespace ember
 		SwitchJoyConRight,
 		SwitchJoyConPair,
 		GameCube,
+		Steam,
 	};
 
 	struct GamepadInfo
@@ -89,8 +95,9 @@ namespace ember
 	class Gamepad final
 	{
 	public:
-		static constexpr u32 BUTTON_COUNT = static_cast<u32>(GamepadButton::Count);
-		static constexpr u32 AXIS_COUNT	  = static_cast<u32>(GamepadAxis::Count);
+		static constexpr u32 BUTTON_COUNT	  = static_cast<u32>(GamepadButton::Count);
+		static constexpr u32 AXIS_COUNT		  = static_cast<u32>(GamepadAxis::Count);
+		static constexpr f32 DEFAULT_DEADZONE = 0.1f;
 
 		[[nodiscard]] u32 index() const noexcept { return m_index; }
 
@@ -161,7 +168,7 @@ namespace ember
 			m_frame_ns			= now_ns;
 		}
 
-		void begin_frame(u64 now_ns) noexcept
+		void next_frame(u64 now_ns) noexcept
 		{
 			m_pressed.reset();
 			m_released.reset();
@@ -221,7 +228,7 @@ namespace ember
 			if (!m_connected)
 				return;
 
-			const u32 i	   = index(button);
+			const u32 i			= index(button);
 			const bool was_down = m_down[i];
 
 			if (down == was_down)
@@ -238,7 +245,7 @@ namespace ember
 			m_input_timestamp	   = timestamp_ns;
 		}
 
-		void on_axis(GamepadAxis axis, i16 value, u64 timestamp_ns)
+		void on_axis(GamepadAxis axis, f32 value, u64 timestamp_ns)
 		{
 			if (!m_connected)
 				return;
@@ -253,7 +260,7 @@ namespace ember
 			m_axis_timestamps[i] = timestamp_ns;
 
 			// Avoid analog noise taking over "last used device."
-			if (std::abs(value) >= 0.5f)
+			if (std::abs(value) >= DEFAULT_DEADZONE)
 				m_input_timestamp = timestamp_ns;
 		}
 
@@ -277,4 +284,4 @@ namespace ember
 
 		bool m_connected = false;
 	};
-};
+}

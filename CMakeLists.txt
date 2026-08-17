@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(Ember VERSION 0.1.0 LANGUAGES C CXX)
 
 # Library configuration options
-option(EMBER_ENABLE_PLATFORM "Build platform support" OFF)
+option(EMBER_ENABLE_PLATFORM "Build platform support" ON)
 option(EMBER_ENABLE_GRAPHICS "Build graphics support" OFF)
 option(EMBER_ENABLE_ASSETS   "Build asset system" OFF)
 option(EMBER_ENABLE_AUDIO    "Build audio support" OFF)

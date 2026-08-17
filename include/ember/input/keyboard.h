@@ -1,9 +1,13 @@
 #pragma once
 
-#include <bitset>
 #include <ember/core/common.h>
 #include <ember/input/common.h>
 #include <ember/platform/window.h>
+
+#include <array>
+#include <bitset>
+#include <optional>
+#include <span>
 #include <string_view>
 
 namespace ember
@@ -153,7 +157,7 @@ namespace ember
 		KeypadMinus		 = 86,
 		KeypadPlus		 = 87,
 		KeypadEnter		 = 88,
-		KeypadPeroid	 = 99,
+		KeypadPeriod	 = 99,
 		KeypadEquals	 = 103,
 		KeypadComma		 = 133,
 		KeypadLeftParen	 = 182,
@@ -194,14 +198,14 @@ namespace ember
 	class Keyboard final
 	{
 	public:
-		static constexpr u32 KEY_COUNT	= static_cast<u32>(Key::Count);
+		static constexpr u32 KEY_COUNT = static_cast<u32>(Key::Count);
 
 		struct Composition
 		{
 			std::string_view text;
 			i32 selection_start	 = -1;
 			i32 selection_length = 0;
-			bool active = false;
+			bool active			 = false;
 		};
 
 		Keyboard()
@@ -210,23 +214,31 @@ namespace ember
 			m_composition.reserve(64);
 		}
 
-		Keyboard(const Keyboard& other)
+		Keyboard(const Keyboard& other) : Keyboard() { *this = other; }
+
+		Keyboard& operator=(const Keyboard& other)
 		{
-			m_down = other.m_down;
-			m_pressed = other.m_pressed;
+			if (this == &other)
+				return *this;
+
+			m_down	   = other.m_down;
+			m_pressed  = other.m_pressed;
 			m_released = other.m_released;
 
 			m_timestamps = other.m_timestamps;
 
+			// Copy contents while retaining this String's PMR allocator.
 			m_text.assign(other.m_text.data(), other.m_text.size());
 			m_composition.assign(other.m_composition.data(), other.m_composition.size());
 
-			m_composition_selection_start = other.m_composition_selection_start;
+			m_composition_selection_start  = other.m_composition_selection_start;
 			m_composition_selection_length = other.m_composition_selection_length;
-			m_focused_window = other.m_focused_window;
-			m_input_timestamp = other.m_input_timestamp;
-			m_previous_frame_ns = other.m_previous_frame_ns;
-			m_frame_ns = other.m_frame_ns;
+			m_focused_window			   = other.m_focused_window;
+			m_input_timestamp			   = other.m_input_timestamp;
+			m_previous_frame_ns			   = other.m_previous_frame_ns;
+			m_frame_ns					   = other.m_frame_ns;
+
+			return *this;
 		}
 
 		[[nodiscard]] bool down(Key key) const noexcept { return m_down[index(key)]; }
@@ -239,7 +251,8 @@ namespace ember
 		{
 			u32 i = index(key);
 
-			return input_detail::repeated(m_pressed[i], m_down[i], m_timestamps[i], m_previous_frame_ns, m_frame_ns, config);
+			return input_detail::repeated(
+				m_pressed[i], m_down[i], m_timestamps[i], m_previous_frame_ns, m_frame_ns, config);
 		}
 
 		[[nodiscard]] bool pressed_or_repeated(Key key, RepeatConfig config = {}) const noexcept
@@ -302,53 +315,33 @@ namespace ember
 			return std::nullopt;
 		}
 
-		[[nodiscard]] u64 timestamp(Key key) const noexcept
-		{
-			return m_timestamps[index(key)];
-		}
+		[[nodiscard]] u64 timestamp(Key key) const noexcept { return m_timestamps[index(key)]; }
 
-		[[nodiscard]] u64 input_timestamp() const noexcept
-		{
-			return m_input_timestamp;
-		}
+		[[nodiscard]] u64 input_timestamp() const noexcept { return m_input_timestamp; }
 
-		[[nodiscard]] std::string_view text() const noexcept
-		{
-			return m_text;
-		}
+		[[nodiscard]] std::string_view text() const noexcept { return m_text; }
 
 		[[nodiscard]] Composition composition() const noexcept
 		{
 			return {
-				.text = m_composition,
-				.selection_start = m_composition_selection_length,
+				.text			  = m_composition,
+				.selection_start  = m_composition_selection_start,
 				.selection_length = m_composition_selection_length,
-				.active = !m_composition.empty(),
+				.active			  = !m_composition.empty(),
 			};
 		}
 
-		[[nodiscard]] WindowHandle focused_window() const noexcept
-		{
-			return m_focused_window;
-		}
+		[[nodiscard]] WindowHandle focused_window() const noexcept { return m_focused_window; }
 
-		[[nodiscard]] bool control() const noexcept
-		{
-			return down(Key::LeftControl) || down(Key::RightControl);
-		}
+		[[nodiscard]] bool control() const noexcept { return down(Key::LeftControl) || down(Key::RightControl); }
 
-		[[nodiscard]] bool shift() const noexcept
-		{
-			return down(Key::LeftShift) || down(Key::RightShift);
-		}
+		[[nodiscard]] bool shift() const noexcept { return down(Key::LeftShift) || down(Key::RightShift); }
 
-		[[nodiscard]] bool alt() const noexcept
-		{
-			return down(Key::LeftAlt) || down(Key::RightAlt);
-		}
+		[[nodiscard]] bool alt() const noexcept { return down(Key::LeftAlt) || down(Key::RightAlt); }
 
 	private:
 		friend class Input;
+		friend class InputState;
 
 		using KeyBits = std::bitset<KEY_COUNT>;
 
@@ -362,10 +355,10 @@ namespace ember
 		void set_frame_time(u64 now_ns) noexcept
 		{
 			m_previous_frame_ns = m_frame_ns;
-			m_frame_ns = now_ns;
+			m_frame_ns			= now_ns;
 		}
 
-		void begin_frame(u64 now_ns) noexcept
+		void next_frame(u64 now_ns) noexcept
 		{
 			m_pressed.reset();
 			m_released.reset();
@@ -383,18 +376,21 @@ namespace ember
 			m_text.clear();
 			m_composition.clear();
 
-			m_composition_selection_start = -1;
+			m_composition_selection_start  = -1;
 			m_composition_selection_length = 0;
 
-			m_focused_window = {};
-			m_input_timestamp = 0;
+			m_focused_window	= {};
+			m_input_timestamp	= 0;
 			m_previous_frame_ns = 0;
-			m_frame_ns = 0;
+			m_frame_ns			= 0;
 		}
 
 		void on_key(Key key, bool down, bool repeat, u64 timestamp) noexcept
 		{
-			u32 i = index(key);
+			if (key == Key::Unknown || repeat)
+				return;
+
+			u32 i		  = index(key);
 			bool was_down = m_down[i];
 
 			if (down == was_down)
@@ -407,7 +403,7 @@ namespace ember
 			else
 				m_released[i] = true;
 
-			m_timestamps[i] = timestamp;
+			m_timestamps[i]	  = timestamp;
 			m_input_timestamp = timestamp;
 		}
 
@@ -415,17 +411,18 @@ namespace ember
 		{
 			m_text.append(text.data(), text.size());
 			m_composition.clear();
-			m_composition_selection_start = -1;
+			m_composition_selection_start  = -1;
 			m_composition_selection_length = 0;
-			m_focused_window = window;
+			m_focused_window			   = window;
 		}
 
-		void on_composition(std::string_view text, i32 selection_start, i32 selection_length, WindowHandle window) noexcept
+		void
+		on_composition(std::string_view text, i32 selection_start, i32 selection_length, WindowHandle window) noexcept
 		{
 			m_composition.assign(text.data(), text.size());
-			m_composition_selection_start = selection_start;
+			m_composition_selection_start  = selection_start;
 			m_composition_selection_length = selection_length;
-			m_focused_window = window;
+			m_focused_window			   = window;
 		}
 
 		void on_focus_lost(WindowHandle window, u64 timestamp) noexcept
@@ -444,10 +441,10 @@ namespace ember
 			m_down.reset();
 			m_text.clear();
 			m_composition.clear();
-			m_composition_selection_start = -1;
+			m_composition_selection_start  = -1;
 			m_composition_selection_length = 0;
-			m_focused_window = {};
-			m_input_timestamp = timestamp;
+			m_focused_window			   = {};
+			m_input_timestamp			   = timestamp;
 		}
 
 		KeyBits m_down{};
@@ -456,7 +453,7 @@ namespace ember
 
 		std::array<u64, KEY_COUNT> m_timestamps{};
 
-	 	String m_text;
+		String m_text;
 		String m_composition;
 
 		i32 m_composition_selection_start  = -1;
@@ -464,8 +461,8 @@ namespace ember
 
 		WindowHandle m_focused_window{};
 
-		u64 m_input_timestamp = 0;
+		u64 m_input_timestamp	= 0;
 		u64 m_previous_frame_ns = 0;
-		u64 m_frame_ns = 0;
+		u64 m_frame_ns			= 0;
 	};
 }

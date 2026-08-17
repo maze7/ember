@@ -25,47 +25,48 @@ namespace ember
 		static constexpr u16 BUTTON_COUNT = static_cast<u16>(MouseButton::Count);
 
 		/// Mouse position, relative to the window, in Pixel coordinates.
-		[[nodiscard]] glm::vec2 position() const { return m_position; }
+		[[nodiscard]] glm::vec2 position() const noexcept { return m_position; }
 
 		/// Motion accumulated this frame.
-		[[nodiscard]] glm::vec2 delta() const { return m_delta; }
+		[[nodiscard]] glm::vec2 delta() const noexcept { return m_delta; }
 
 		/// Wheel movement accumulated this frame.
-		[[nodiscard]] glm::vec2 wheel() const { return m_wheel; }
+		[[nodiscard]] glm::vec2 wheel() const noexcept { return m_wheel; }
 
 		/// Handle of the currently focused window.
 		[[nodiscard]] WindowHandle window() const noexcept { return m_window; }
 
 		/// Shorthand to see the `position()` x component
-		[[nodiscard]] float x() const { return m_position.x; }
+		[[nodiscard]] float x() const noexcept { return m_position.x; }
 
 		/// Shorthand to see the `position()` y component
-		[[nodiscard]] float y() const { return m_position.y; }
+		[[nodiscard]] float y() const noexcept { return m_position.y; }
 
 		/// Whether the given MouseButton is currently held down
-		[[nodiscard]] bool down(MouseButton btn) const { return m_down[index(btn)]; }
+		[[nodiscard]] bool down(MouseButton btn) const noexcept { return m_down[index(btn)]; }
 
 		/// Whether the given MouseButton was pressed this frame
-		[[nodiscard]] bool pressed(MouseButton btn) const { return m_pressed[index(btn)]; }
+		[[nodiscard]] bool pressed(MouseButton btn) const noexcept { return m_pressed[index(btn)]; }
 
 		/// Whether the given MouseButton was released this frame
-		[[nodiscard]] bool released(MouseButton btn) const { return m_released[index(btn)]; }
+		[[nodiscard]] bool released(MouseButton btn) const noexcept { return m_released[index(btn)]; }
 
 		/// Returns the timestamp of when the MouseButton was last down
-		[[nodiscard]] u64 button_timestamp(MouseButton btn) const { return m_timestamps[index(btn)]; }
+		[[nodiscard]] u64 button_timestamp(MouseButton btn) const noexcept { return m_timestamps[index(btn)]; }
 
 		/// Returns the timestamp of the last mouse motion
-		[[nodiscard]] u64 motion_timestamp() const { return m_motion_timestamp; }
+		[[nodiscard]] u64 motion_timestamp() const noexcept { return m_motion_timestamp; }
 
 		/// Returns the timestamp of the last input
 		[[nodiscard]] u64 input_timestamp() const noexcept { return m_input_timestamp; }
 
 	private:
 		friend class Input;
+		friend class InputState;
 
 		using ButtonBits = std::bitset<BUTTON_COUNT>;
 
-		[[nodiscard]] static constexpr u32 index(MouseButton btn)
+		[[nodiscard]] static constexpr u32 index(MouseButton btn) noexcept
 		{
 			const auto i = static_cast<u32>(btn);
 			EMBER_ASSERT(i < BUTTON_COUNT);
@@ -96,13 +97,15 @@ namespace ember
 			m_input_timestamp = 0;
 		}
 
-		void on_button(MouseButton btn, bool down, WindowHandle window, u64 timestamp)
+		void on_button(MouseButton btn, bool down, WindowHandle window, u64 timestamp) noexcept
 		{
 			u32 i = index(btn);
 			bool was_down = m_down[i];
 
 			if (down == was_down)
 				return;
+
+			m_down[i] = down;
 
 			if (down)
 				m_pressed[i] = true;
@@ -114,7 +117,7 @@ namespace ember
 			m_window = window;
 		}
 
-		void on_move(glm::vec2 position, glm::vec2 delta, WindowHandle window, u64 timestamp)
+		void on_move(glm::vec2 position, glm::vec2 delta, WindowHandle window, u64 timestamp) noexcept
 		{
 			// Do not combine deltas from different window coordinate spaces.
 			if (m_window != window)
