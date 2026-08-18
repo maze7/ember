@@ -22,6 +22,7 @@ namespace ember
 		Scripting,
 		Network,
 		Platform,
+		Input,
 		Tools,
 		Strings,
 		Count
@@ -40,6 +41,7 @@ namespace ember
 		"Scripting",
 		"Network",
 		"Platform",
+		"Input",
 		"Tools",
 		"Strings");
 
@@ -56,6 +58,7 @@ namespace ember
 		64_mb,	// Scripting
 		64_mb,	// Network
 		64_mb,	// Platform
+		64_mb,	// Input
 		64_mb,	// Tools
 		64_mb,	// Strings
 	};

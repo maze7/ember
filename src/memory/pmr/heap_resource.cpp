@@ -141,13 +141,14 @@ namespace ember
 			HeapResource{MemoryTag::Scripting},
 			HeapResource{MemoryTag::Network},
 			HeapResource{MemoryTag::Platform},
+			HeapResource{MemoryTag::Input},
 			HeapResource{MemoryTag::Tools},
 			HeapResource{MemoryTag::Strings},
 		};
 
 		// Ensure we don't drift from MemoryTag
 		static_assert(
-			static_cast<size_t>(MemoryTag::Count) == 13, "New MemoryTag: add its HeapResource to s_heaps above.");
+			static_cast<size_t>(MemoryTag::Count) == 14, "New MemoryTag: add its HeapResource to s_heaps above.");
 	}
 
 	// Tracking accounts the usable (block) size rather than the requested size: it mirrors
