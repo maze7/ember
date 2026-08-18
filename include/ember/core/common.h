@@ -84,7 +84,6 @@ namespace ember
 	using String	 = std::pmr::string;
 	using StringView = std::string_view;
 
-	template <typename T, size_t Extent = std::dynamic_extent> using Span = std::span<T, Extent>;
 	template <typename K, typename V, typename Hash = ankerl::unordered_dense::hash<K>>
 
 	using HashMap = ankerl::unordered_dense::pmr::map<K, V, Hash>;
