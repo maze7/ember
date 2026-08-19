@@ -40,6 +40,7 @@ namespace ember
 		[[nodiscard]] PumpResult pump_events(Input& input) noexcept;
 
 		WindowHandle create_window(const WindowDef& def) noexcept;
+		NativeWindow native_window(WindowHandle window) const noexcept;
 		void destroy_window(WindowHandle handle) noexcept;
 
 		void set_window_title(WindowHandle handle, const char* title) noexcept;

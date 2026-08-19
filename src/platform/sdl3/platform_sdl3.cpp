@@ -34,65 +34,65 @@ namespace
 		EMBER_ERROR("{} failed: {}", operation, error != nullptr ? error : "unknown SDL error");
 	}
 
-	struct NativeWindow
+	struct SdlWindow
 	{
 		SDL_Window* handle = nullptr;
 		ember::u32 id	   = 0;
 
-		NativeWindow() noexcept = default;
+		SdlWindow() noexcept = default;
 
-		NativeWindow(SDL_Window* native, ember::u32 window_id) noexcept : handle(native), id(window_id) {}
+		SdlWindow(SDL_Window* native, ember::u32 window_id) noexcept : handle(native), id(window_id) {}
 
-		~NativeWindow() noexcept
+		~SdlWindow() noexcept
 		{
 			if (handle != nullptr)
 				SDL_DestroyWindow(handle);
 		}
 
-		NativeWindow(const NativeWindow&)			 = delete;
-		NativeWindow& operator=(const NativeWindow&) = delete;
+		SdlWindow(const SdlWindow&)			   = delete;
+		SdlWindow& operator=(const SdlWindow&) = delete;
 
-		NativeWindow(NativeWindow&& other) noexcept
+		SdlWindow(SdlWindow&& other) noexcept
 			: handle(std::exchange(other.handle, nullptr)), id(std::exchange(other.id, 0))
 		{
 		}
 
-		NativeWindow& operator=(NativeWindow&&) = delete;
+		SdlWindow& operator=(SdlWindow&&) = delete;
 	};
 
-	struct NativeCursor
+	struct SdlCursor
 	{
 		SDL_Cursor* handle = nullptr;
 
-		NativeCursor() noexcept = default;
+		SdlCursor() noexcept = default;
 
-		explicit NativeCursor(SDL_Cursor* native) noexcept : handle(native) {}
+		explicit SdlCursor(SDL_Cursor* native) noexcept : handle(native) {}
 
-		~NativeCursor() noexcept
+		~SdlCursor() noexcept
 		{
 			if (handle != nullptr)
 				SDL_DestroyCursor(handle);
 		}
 
-		NativeCursor(const NativeCursor&)			 = delete;
-		NativeCursor& operator=(const NativeCursor&) = delete;
+		SdlCursor(const SdlCursor&)			   = delete;
+		SdlCursor& operator=(const SdlCursor&) = delete;
 
-		NativeCursor(NativeCursor&& other) noexcept : handle(std::exchange(other.handle, nullptr)) {}
+		SdlCursor(SdlCursor&& other) noexcept : handle(std::exchange(other.handle, nullptr)) {}
 
-		NativeCursor& operator=(NativeCursor&&) = delete;
+		SdlCursor& operator=(SdlCursor&&) = delete;
 	};
 
-	struct NativeGamepad
+	struct SdlGamepad
 	{
 		SDL_Gamepad* handle = nullptr;
 		ember::GamepadId id{};
 		ember::GamepadInfo info{};
 	};
 
-	static_assert(std::is_nothrow_move_constructible_v<NativeWindow>);
-	static_assert(std::is_nothrow_destructible_v<NativeWindow>);
-	static_assert(std::is_nothrow_move_constructible_v<NativeCursor>);
-	static_assert(std::is_nothrow_destructible_v<NativeCursor>);
+	static_assert(std::is_nothrow_move_constructible_v<SdlWindow>);
+	static_assert(std::is_nothrow_destructible_v<SdlWindow>);
+	static_assert(std::is_nothrow_move_constructible_v<SdlCursor>);
+	static_assert(std::is_nothrow_destructible_v<SdlCursor>);
 
 	[[nodiscard]] std::optional<SDL_WindowFlags> to_sdl_window_flags(ember::WindowFlags flags) noexcept
 	{
@@ -273,8 +273,8 @@ namespace ember
 {
 	struct Platform::Impl
 	{
-		using WindowPool   = Pool<Window, NativeWindow>;
-		using CursorPool   = Pool<Cursor, NativeCursor>;
+		using WindowPool   = Pool<Window, SdlWindow>;
+		using CursorPool   = Pool<Cursor, SdlCursor>;
 		using WindowLookup = HashMap<u32, WindowHandle>;
 
 		Impl() noexcept
@@ -318,7 +318,7 @@ namespace ember
 
 		~Impl() noexcept
 		{
-			for (NativeGamepad& gamepad : gamepads)
+			for (SdlGamepad& gamepad : gamepads)
 			{
 				if (gamepad.handle != nullptr)
 				{
@@ -359,9 +359,9 @@ namespace ember
 			return it->second;
 		}
 
-		[[nodiscard]] NativeGamepad* find_gamepad(GamepadId id) noexcept
+		[[nodiscard]] SdlGamepad* find_gamepad(GamepadId id) noexcept
 		{
-			for (NativeGamepad& gamepad : gamepads)
+			for (SdlGamepad& gamepad : gamepads)
 			{
 				if (gamepad.handle != nullptr && gamepad.id == id)
 				{
@@ -378,7 +378,7 @@ namespace ember
 		CursorPool cursors;
 		WindowLookup windows_by_id;
 
-		std::array<NativeGamepad, Input::MAX_GAMEPADS> gamepads{};
+		std::array<SdlGamepad, Input::MAX_GAMEPADS> gamepads{};
 
 		CursorHandle active_cursor{};
 
@@ -445,7 +445,7 @@ namespace ember
 			if (!id.is_valid())
 				return;
 
-			if (NativeGamepad* existing = m_impl->find_gamepad(id); existing != nullptr)
+			if (SdlGamepad* existing = m_impl->find_gamepad(id); existing != nullptr)
 			{
 				existing->info = gamepad_info_from_sdl(existing->handle);
 
@@ -454,9 +454,9 @@ namespace ember
 				return;
 			}
 
-			NativeGamepad* free_slot = nullptr;
+			SdlGamepad* free_slot = nullptr;
 
-			for (NativeGamepad& gamepad : m_impl->gamepads)
+			for (SdlGamepad& gamepad : m_impl->gamepads)
 			{
 				if (gamepad.handle == nullptr)
 				{
@@ -499,7 +499,7 @@ namespace ember
 		{
 			input.disconnect_gamepad(id, timestamp);
 
-			NativeGamepad* gamepad = m_impl->find_gamepad(id);
+			SdlGamepad* gamepad = m_impl->find_gamepad(id);
 
 			if (gamepad == nullptr)
 				return;
@@ -512,7 +512,7 @@ namespace ember
 
 		auto remap_gamepad = [this, &input](GamepadId id) noexcept
 		{
-			NativeGamepad* gamepad = m_impl->find_gamepad(id);
+			SdlGamepad* gamepad = m_impl->find_gamepad(id);
 
 			if (gamepad == nullptr)
 				return;
@@ -545,7 +545,7 @@ namespace ember
 		const u64 initial_timestamp = SDL_GetTicksNS();
 
 		// Reconcile native handles into a newly supplied/cleared Input.
-		for (const NativeGamepad& gamepad : m_impl->gamepads)
+		for (const SdlGamepad& gamepad : m_impl->gamepads)
 		{
 			if (gamepad.handle != nullptr)
 			{
@@ -838,7 +838,7 @@ namespace ember
 		if (!m_impl->is_owner_thread())
 			return;
 
-		NativeWindow* window = m_impl->windows.try_get(handle);
+		auto* window = m_impl->windows.try_get(handle);
 
 		if (window == nullptr)
 		{
@@ -860,7 +860,7 @@ namespace ember
 		if (!m_impl->is_owner_thread())
 			return;
 
-		NativeWindow* window = m_impl->windows.try_get(handle);
+		auto* window = m_impl->windows.try_get(handle);
 
 		if (window == nullptr)
 		{
@@ -884,7 +884,7 @@ namespace ember
 		if (!m_impl->is_owner_thread())
 			return;
 
-		NativeWindow* window = m_impl->windows.try_get(handle);
+		auto* window = m_impl->windows.try_get(handle);
 
 		if (window == nullptr)
 		{
@@ -917,7 +917,7 @@ namespace ember
 		if (!m_impl->is_owner_thread())
 			return;
 
-		NativeWindow* window = m_impl->windows.try_get(handle);
+		auto* window = m_impl->windows.try_get(handle);
 
 		if (window == nullptr)
 		{
@@ -1119,7 +1119,7 @@ namespace ember
 		if (!m_impl->is_owner_thread())
 			return;
 
-		NativeCursor* native = m_impl->cursors.try_get(cursor);
+		SdlCursor* native = m_impl->cursors.try_get(cursor);
 
 		if (native == nullptr)
 		{
@@ -1191,7 +1191,7 @@ namespace ember
 		if (!m_impl->is_owner_thread())
 			return;
 
-		NativeWindow* window = m_impl->windows.try_get(handle);
+		auto* window = m_impl->windows.try_get(handle);
 
 		if (window == nullptr)
 		{
@@ -1213,7 +1213,7 @@ namespace ember
 		if (!m_impl->is_owner_thread())
 			return;
 
-		NativeWindow* window = m_impl->windows.try_get(handle);
+		auto* window = m_impl->windows.try_get(handle);
 
 		if (window == nullptr)
 		{
@@ -1274,7 +1274,7 @@ namespace ember
 		if (!m_impl->is_owner_thread())
 			return;
 
-		NativeGamepad* native = m_impl->find_gamepad(gamepad);
+		SdlGamepad* native = m_impl->find_gamepad(gamepad);
 
 		if (native == nullptr)
 			return;
@@ -1284,5 +1284,18 @@ namespace ember
 		{
 			log_sdl_failure("SDL_RumbleGamepad");
 		}
+	}
+
+	NativeWindow Platform::native_window(WindowHandle handle) const noexcept
+	{
+		if (m_impl == nullptr || !m_impl->is_owner_thread())
+			return {};
+
+		auto* window = m_impl->windows.try_get(handle);
+
+		if (window == nullptr)
+			return {};
+
+		return {.backend = WindowBackend::Sdl3, .value = window->handle};
 	}
 }

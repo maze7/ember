@@ -45,6 +45,12 @@ namespace ember
 		BackendFailure
 	};
 
+	enum class WindowBackend : u8
+	{
+		None,
+		Sdl3
+	};
+
 	enum class CursorMode : u8
 	{
 		Normal,
@@ -58,5 +64,22 @@ namespace ember
 		glm::ivec2 size{1280, 720};
 
 		WindowFlags flags = WindowFlags::Resizable | WindowFlags::HighPixelDensity;
+	};
+
+	struct NativeWindow
+	{
+		WindowBackend backend = WindowBackend::None;
+		void* value = nullptr;
+
+		[[nodiscard]] explicit operator bool() const noexcept
+		{
+			return value != nullptr;
+		}
+
+		/// Returns true if the NativeWindow is of type `query`
+		[[nodiscard]] bool is_type(WindowBackend query) const noexcept
+		{
+			return backend == query;
+		}
 	};
 }
