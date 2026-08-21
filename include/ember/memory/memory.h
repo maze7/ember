@@ -81,10 +81,7 @@ namespace ember
 		}
 
 		// ptr must point at the most-derived type: deallocation is sized with sizeof(T).
-		template <typename T> void delete_object(MemoryTag tag, T* ptr) noexcept
-		{
-			delete_object(heap(tag), ptr);
-		}
+		template <typename T> void delete_object(MemoryTag tag, T* ptr) noexcept { delete_object(heap(tag), ptr); }
 	}
 
 	/// Genuine OOM is engine-fatal: log, break, abort. Resources call this

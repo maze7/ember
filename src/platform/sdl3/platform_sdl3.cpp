@@ -126,6 +126,10 @@ namespace
 			result |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
 		}
 
+#if EMBER_GPU_VULKAN
+		result |= SDL_WINDOW_VULKAN;
+#endif
+
 		return result;
 	}
 

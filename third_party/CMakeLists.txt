@@ -59,3 +59,21 @@ if(EMBER_ENABLE_PLATFORM)
 
 	add_subdirectory(SDL EXCLUDE_FROM_ALL)
 endif()
+
+# Vulkan backend dependencies.
+if (EMBER_USE_VULKAN)
+	add_subdirectory(volk EXCLUDE_FROM_ALL)
+
+	add_library(vma INTERFACE)
+	add_library(vma::vma ALIAS vma)
+	target_include_directories(vma SYSTEM INTERFACE
+		"$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/vma/include>"
+	)
+
+	target_compile_definitions(vma INTERFACE
+		VMA_STATIC_VULKAN_FUNCTIONS=0
+		VMA_DYNAMIC_VULKAN_FUNCTIONS=1
+	)
+
+	target_link_libraries(vma INTERFACE volk::volk_headers)
+endif()

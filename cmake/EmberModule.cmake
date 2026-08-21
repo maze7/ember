@@ -24,10 +24,13 @@ function(ember_add_module name)
 
 	target_compile_features(${target} PUBLIC cxx_std_20)
 
-	target_include_directories(${target} PUBLIC
-								"$<BUILD_INTERFACE:${EMBER_ROOT}/include>"
-								"$<INSTALL_INTERFACE:include>"
-				)
+	target_include_directories(${target}
+		PUBLIC
+			"$<BUILD_INTERFACE:${EMBER_ROOT}/include>"
+			"$<INSTALL_INTERFACE:include>"
+		PRIVATE
+			"$<BUILD_INTERFACE:${EMBER_ROOT}/src>"
+	)
 
 	target_link_libraries(${target} PRIVATE ember_build_options)
 
