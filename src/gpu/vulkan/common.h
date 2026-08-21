@@ -100,7 +100,7 @@ namespace ember::gpu::vk
 			EMBER_ERROR(                                                                                               \
 				"vulkan: {} failed: {} ({})",                                                                          \
 				#expr,                                                                                                 \
-				ember::vk::result_name(ember_vk_result_),                                                              \
+				ember::gpu::vk::result_name(ember_vk_result_),                                                         \
 				static_cast<int>(ember_vk_result_));                                                                   \
 			EMBER_ASSERT(false && "Vulkan call failed");                                                               \
 		}                                                                                                              \

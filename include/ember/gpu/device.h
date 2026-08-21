@@ -2,6 +2,7 @@
 
 #include <ember/core/common.h>
 #include <ember/gpu/common.h>
+#include <ember/gpu/swapchain.h>
 
 // Forward declarations.
 namespace ember
@@ -207,7 +208,7 @@ namespace ember::gpu
 		// [[nodiscard]] SamplerHandle create_sampler(const SamplerDef&& def) noexcept;
 		// [[nodiscard]] GraphicsPipelineHandle create_graphics_pipeline(const GraphicsPipelineDef&& def) noexcept;
 		// [[nodiscard]] ComputePipelineHandle create_compute_pipeline(const ComputePipelineDef&& def) noexcept;
-		// [[nodiscard]] SwapchainHandle create_swapchain(const SwapchainDef&& def) noexcept;
+		[[nodiscard]] SwapchainHandle create_swapchain(const SwapchainDef&& def) noexcept;
 
 		// [[nodiscard]] bool is_valid(BufferHandle handle) noexcept;
 		// [[nodsicard]] bool is_valid(TextureHandle handle) noexcept;
@@ -221,7 +222,10 @@ namespace ember::gpu
 		// void destroy(SamplerHandle handle) noexcept;
 		// void destroy(GraphicsPipelineHandle handle) noexcept;
 		// void destroy(ComputePipelineHandle handle) noexcept;
-		// void destroy(SwapchainHandle handle) noexcept;
+		void destroy(SwapchainHandle handle) noexcept;
+
+		[[nodiscard]] TextureHandle acquire(SwapchainHandle handle) noexcept;
+		[[nodiscard]] Extent2D swapchain_extent(SwapchainHandle handle) const noexcept;
 
 		FrameInfo begin_frame() noexcept;
 		// void submit(CommandList& list) noexcept;

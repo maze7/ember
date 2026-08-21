@@ -1,8 +1,9 @@
 #pragma once
 
+#include "ember/gpu/common.h"
 #include <ember/core/result.h>
-#include <ember/input/input.h>
 #include <ember/input/cursor.h>
+#include <ember/input/input.h>
 #include <ember/platform/window.h>
 
 namespace ember
@@ -20,16 +21,13 @@ namespace ember
 		Platform() noexcept;
 		~Platform() noexcept;
 
-		Platform(const Platform&) = delete;
+		Platform(const Platform&)			 = delete;
 		Platform& operator=(const Platform&) = delete;
 
 		Platform(Platform&& other) noexcept;
 		Platform& operator=(Platform&& other) noexcept;
 
-		[[nodiscard]] explicit operator bool() const noexcept
-		{
-			return m_impl != nullptr;
-		}
+		[[nodiscard]] explicit operator bool() const noexcept { return m_impl != nullptr; }
 
 		/**
 		 * Drains SDL once, folds physical input into Input::NextState,
@@ -46,6 +44,7 @@ namespace ember
 		void set_window_title(WindowHandle handle, const char* title) noexcept;
 		void set_window_size(WindowHandle handle, u32 width, u32 height) noexcept;
 		void set_cursor_mode(WindowHandle window, CursorMode mode) noexcept;
+		[[nodiscard]] glm::uvec2 window_pixel_size(WindowHandle handle) const noexcept;
 
 		CursorHandle create_system_cursor(SystemCursor cursor) noexcept;
 		CursorHandle create_cursor(const CursorImageView& image) noexcept;

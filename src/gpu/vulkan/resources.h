@@ -3,6 +3,7 @@
 #include <ember/containers/pool.h>
 #include <ember/gpu/common.h>
 #include <ember/gpu/device.h>
+#include <ember/gpu/swapchain.h>
 #include <ember/memory/common.h>
 #include <ember/platform/window.h>
 #include <gpu/vulkan/common.h>
@@ -55,17 +56,44 @@ namespace ember::gpu::vk
 		VkPipelineLayout layout = VK_NULL_HANDLE;
 	};
 
+	/// Sentinel for SwapchainData::acquired_image: nothing acquired.
+	inline constexpr u32 NO_IMAGE = ~0u;
+
+	/**
+	 * One swapchain: the native objects, its WSI semaphores and its backbuffer pool entries.
+	 *
+	 * Backbuffers live in the texture pool with owns_image = false, so acquire() returns a
+	 * plain TextureHandle and later render-pass code needs no special cases.
+	 */
 	struct SwapchainData
 	{
 		VkSwapchainKHR swapchain = VK_NULL_HANDLE;
 		VkSurfaceKHR surface	 = VK_NULL_HANDLE;
 		WindowHandle window{};
-		VkFormat format				= VK_FORMAT_UNDEFINED;
-		VkColorSpaceKHR color_space = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+
+		VkSurfaceFormatKHR surface_format{};
+		VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
+		PresentMode requested_mode	  = PresentMode::VSync; // re-resolved on every recreate
+		u32 preferred_image_count	  = 3;
+
 		VkExtent2D extent{};
-		u32 acquired_image = 0;
-		u32 image_count	   = 0;
+		u32 image_count = 0;
 		std::array<TextureHandle, MAX_SWAPCHAIN_IMAGES> images{};
+
+		/// Same-frame acquire cache: a second acquire() in one frame returns the same image.
+		u32 acquired_image = NO_IMAGE;
+		u64 acquired_frame = 0; // frame_index + 1 of the acquiring frame; 0 = never
+
+		/// One per frame slot. Reuse is safe because begin_frame's timeline wait proves the
+		/// submit that consumed the semaphore has retired.
+		std::array<VkSemaphore, MAX_FRAMES_IN_FLIGHT> acquire_semaphores{};
+
+		/// One per swapchain image, indexed by acquired image index. Reuse is safe because
+		/// re-acquiring image i implies the presentation engine consumed its previous wait.
+		std::array<VkSemaphore, MAX_SWAPCHAIN_IMAGES> present_semaphores{};
+
+		bool needs_recreate = false; // set by present results / SUBOPTIMAL at acquire
+		bool suspended		= false; // zero-extent (minimized): acquire returns null
 	};
 
 	struct ResourcePools final

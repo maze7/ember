@@ -959,6 +959,29 @@ namespace ember::gpu::vk
 		vk::set_name(
 			backend, VK_OBJECT_TYPE_SEMAPHORE, reinterpret_cast<u64>(backend.timeline), "ember.frame_timeline");
 
+		for (u32 i = 0; i < backend.frames_in_flight; ++i)
+		{
+			VkCommandPoolCreateInfo pool_info{
+				.sType			  = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+				.queueFamilyIndex = backend.graphics.family,
+			};
+
+			if (vkCreateCommandPool(backend.device, &pool_info, nullptr, &backend.slots[i].pool) != VK_SUCCESS)
+			{
+				EMBER_ERROR("vulkan: frame command pool creation failed");
+				shutdown(backend);
+				return false;
+			}
+
+			VkCommandBufferAllocateInfo alloc_info{
+				.sType				= VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+				.commandPool		= backend.slots[i].pool,
+				.level				= VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+				.commandBufferCount = 1,
+			};
+			EMBER_VK_CHECK(vkAllocateCommandBuffers(backend.device, &alloc_info, &backend.slots[i].commands));
+		}
+
 		EMBER_INFO(
 			"vulkan: {} ({}) | {} | Vulkan {}.{}.{} | {} MB local{}{} | validation {}",
 			backend.caps.adapter_name,
@@ -983,8 +1006,12 @@ namespace ember::gpu::vk
 		{
 			(void)vkDeviceWaitIdle(backend.device);
 
-			// Persist PSOs before destruction: the cache blob is only readable while the device lives.
-			// save_pso_cache(backend);
+			for (FrameSlot& slot : backend.slots)
+			{
+				if (slot.pool != VK_NULL_HANDLE)
+					vkDestroyCommandPool(backend.device, slot.pool, nullptr); // frees its buffers
+				slot = {};
+			}
 
 			if (backend.timeline != VK_NULL_HANDLE)
 				vkDestroySemaphore(backend.device, backend.timeline, nullptr);

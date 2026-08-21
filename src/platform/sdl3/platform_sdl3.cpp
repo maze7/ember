@@ -832,6 +832,34 @@ namespace ember
 		return handle;
 	}
 
+	glm::uvec2 Platform::window_pixel_size(WindowHandle handle) const noexcept
+	{
+		if (m_impl == nullptr)
+			return {};
+
+		EMBER_ASSERT(m_impl->is_owner_thread());
+
+		SdlWindow* window = m_impl->windows.try_get(handle);
+
+		if (window == nullptr)
+			return {};
+
+		int width  = 0;
+		int height = 0;
+
+		if (!SDL_GetWindowSizeInPixels(window->handle, &width, &height))
+		{
+			log_sdl_failure("SDL_GetWindowSizeInPixels");
+			return {};
+		}
+
+		// Minimized windows legitimately report zero; callers treat that as "suspended".
+		return {
+			static_cast<u32>(width < 0 ? 0 : width),
+			static_cast<u32>(height < 0 ? 0 : height),
+		};
+	}
+
 	void Platform::destroy_window(WindowHandle handle) noexcept
 	{
 		if (m_impl == nullptr)

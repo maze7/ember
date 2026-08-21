@@ -27,6 +27,17 @@ namespace ember::gpu::vk
 	struct FrameSlot
 	{
 		u64 submitted = 0; // timeline value that this slot's last end_frame signalled; 0 = never used.
+
+		/// Whole-pool reset each frame (cheaper and more thorough than per-buffer reset).
+		VkCommandPool pool		 = VK_NULL_HANDLE;
+		VkCommandBuffer commands = VK_NULL_HANDLE; // one primary; more when recording parallelizes
+	};
+
+	/// Swapchains acquired this frame; end_frame clears, submits and presents them as a batch.
+	struct PendingPresent
+	{
+		SwapchainHandle swapchain{};
+		u32 image_index = 0;
 	};
 
 	/**
@@ -76,6 +87,9 @@ namespace ember::gpu::vk
 		u32 frames_in_flight = 2;
 		u64 timeline_value	 = 0;
 		bool frame_open		 = false;
+
+		std::array<PendingPresent, MAX_SWAPCHAINS> pending_presents{};
+		u32 pending_present_count = 0;
 
 		DeviceBackend() noexcept					   = default;
 		DeviceBackend(const DeviceBackend&)			   = delete;

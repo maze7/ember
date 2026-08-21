@@ -12,6 +12,7 @@ ember_add_module(Gpu
 		vulkan/device.cpp
 		vulkan/backend.cpp
 		vulkan/vma.cpp
+		vulkan/swapchain.cpp
 	PUBLIC_DEPS
 		Ember::Core
 		Ember::Platform
