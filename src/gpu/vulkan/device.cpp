@@ -330,7 +330,7 @@ namespace ember::gpu
 		++backend.frame_index;
 	}
 
-	SwapchainHandle Device::create_swapchain(const SwapchainDef&& def) noexcept
+	SwapchainHandle Device::create_swapchain(const SwapchainDef& def) noexcept
 	{
 		if (m_backend == nullptr)
 			return {};

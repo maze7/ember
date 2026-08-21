@@ -208,7 +208,7 @@ namespace ember::gpu
 		// [[nodiscard]] SamplerHandle create_sampler(const SamplerDef&& def) noexcept;
 		// [[nodiscard]] GraphicsPipelineHandle create_graphics_pipeline(const GraphicsPipelineDef&& def) noexcept;
 		// [[nodiscard]] ComputePipelineHandle create_compute_pipeline(const ComputePipelineDef&& def) noexcept;
-		[[nodiscard]] SwapchainHandle create_swapchain(const SwapchainDef&& def) noexcept;
+		[[nodiscard]] SwapchainHandle create_swapchain(const SwapchainDef& def) noexcept;
 
 		// [[nodiscard]] bool is_valid(BufferHandle handle) noexcept;
 		// [[nodsicard]] bool is_valid(TextureHandle handle) noexcept;
