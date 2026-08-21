@@ -85,6 +85,31 @@ namespace ember::gpu
 		vk::note_result(*m_backend, vkDeviceWaitIdle(m_backend->device));
 	}
 
+	const DeviceCaps& Device::caps() const noexcept
+	{
+		// A falsy Device still answers caps(): all-zero caps read as "nothing supported", the
+		// least surprising thing guard omitted user code can observe.
+		static constinit DeviceCaps s_null_caps{};
+		return m_backend != nullptr ? m_backend->caps : s_null_caps;
+	}
+
+	bool Device::device_lost() const noexcept
+	{
+		// acquire pairs with note_result's exchange: a true here happens-after the loss.
+		return m_backend != nullptr && m_backend->lost.load(std::memory_order_acquire);
+	}
+
+	u32 Device::validation_error_count() noexcept
+	{
+		// Tests read these after teardown has joined.
+		return vk::debug_state().errors.load(std::memory_order_relaxed);
+	}
+
+	u32 Device::validation_warning_count() noexcept
+	{
+		return vk::debug_state().warnings.load(std::memory_order_relaxed);
+	}
+
 	FrameInfo Device::begin_frame() noexcept
 	{
 		if (m_backend == nullptr)
