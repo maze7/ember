@@ -206,8 +206,19 @@ namespace ember::gpu::vk
 			// Wrap the backbuffers as externally-owned texture pool entries.
 			VkImage images[MAX_SWAPCHAIN_IMAGES];
 			u32 count = 0;
-			vkGetSwapchainImagesKHR(backend.device, data.swapchain, &count, nullptr);
-			EMBER_ASSERT(count <= MAX_SWAPCHAIN_IMAGES);
+			EMBER_VK_CHECK(vkGetSwapchainImagesKHR(backend.device, data.swapchain, &count, nullptr));
+
+			// acquire() indexes per-image state (present semaphores, backbuffer handles) by the driver's
+			// image index, which ranges over the full image array. A swapchain we cannot track in full is
+			// unusable, so this is a hard failure.
+			if (count > MAX_SWAPCHAIN_IMAGES)
+			{
+				EMBER_ERROR("vulkan: swapchain has {} images, ember supports {}", count, MAX_SWAPCHAIN_IMAGES);
+				vkDestroySwapchainKHR(backend.device, data.swapchain, nullptr);
+				data.swapchain = VK_NULL_HANDLE; // consistent "no swapchain"; next acquire retries a full build
+				return false;
+			}
+
 			vkGetSwapchainImagesKHR(backend.device, data.swapchain, &count, images);
 
 			for (u32 i = 0; i < count; ++i)
