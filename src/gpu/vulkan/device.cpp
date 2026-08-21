@@ -369,6 +369,19 @@ namespace ember::gpu
 
 		if (vk::SwapchainData* data = m_backend->resources.swapchains.try_get(handle))
 		{
+			// Acquired-then-destroyed this frame: drop the pending present so end_frame
+			// never walks a dead handle. The acquired image is simply never presented.
+			vk::PendingPresent* pending = m_backend->pending_presents.data();
+			u32& count = m_backend->pending_present_count;
+
+			for (u32 i = 0; i < count;)
+			{
+				if (pending[i].swapchain == handle)
+					pending[i] = pending[--count]; // unordered remove: batch order carries no meaning
+				else
+					++i;
+			}
+
 			vk::swapchain_destroy(*m_backend, *data);
 			(void)m_backend->resources.swapchains.erase(handle);
 		}
