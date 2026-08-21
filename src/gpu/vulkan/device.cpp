@@ -1,5 +1,6 @@
 #include "ember/gpu/common.h"
 #include "ember/sync/thread.h"
+#include "gpu/validation.h"
 #include "gpu/vulkan/swapchain.h"
 #include <ember/core/profile.h>
 #include <ember/gpu/device.h>
@@ -24,17 +25,13 @@ namespace ember::gpu
 	{
 		EMBER_PROFILE_FUNCTION_C(PROFILE_COLOR_RENDER);
 
-		bool expected = false;
-		if (!s_device_claimed.compare_exchange_weak(
-				expected, true, std::memory_order_acq_rel, std::memory_order_acquire))
+		if (s_device_claimed.exchange(true, std::memory_order_acq_rel))
 		{
 			EMBER_ERROR("gpu: only one Device may exist at a time");
 			return;
 		}
 
 		DeviceBackend* backend = memory::new_object<DeviceBackend>(MemoryTag::Graphics);
-		backend->platform	   = def.platform;
-		backend->resources.reserve(def.limits);
 
 		if (!boot(*backend, def))
 		{

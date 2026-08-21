@@ -9,6 +9,7 @@ endif()
 
 ember_add_module(Gpu
 	SOURCES
+		validation.cpp
 		vulkan/device.cpp
 		vulkan/backend.cpp
 		vulkan/vma.cpp

@@ -1,6 +1,7 @@
 #include <ember/containers/span.h>
 #include <ember/core/profile.h>
 #include <ember/memory/common.h>
+#include <gpu/validation.h>
 #include <gpu/vulkan/backend.h>
 #include <gpu/vulkan/common.h>
 #include <memory_resource>
@@ -891,12 +892,16 @@ namespace ember::gpu::vk
 		}
 	}
 
-	bool boot(DeviceBackend& backend, const DeviceDef& def) noexcept
+	bool boot(DeviceBackend& backend, const DeviceDef& raw_def) noexcept
 	{
 		EMBER_PROFILE_FUNCTION_C(PROFILE_COLOR_RENDER);
 
+		// Cheap copy (PODs + pointers). From here on, every def field is in contract.
+		const DeviceDef def = validated(raw_def);
+
 		backend.platform		 = def.platform;
 		backend.frames_in_flight = def.frames_in_flight;
+		backend.resources.reserve(def.limits);
 
 		// Vulkan instance (loader, layers, WSI extensions, debug messenger)
 		if (!create_instance(backend, def))
