@@ -1010,6 +1010,7 @@ namespace ember::gpu::vk
 		if (backend.device != VK_NULL_HANDLE)
 		{
 			(void)vkDeviceWaitIdle(backend.device);
+			drain_deferred_destroys(backend, UINT64_MAX);
 
 			for (FrameSlot& slot : backend.slots)
 			{

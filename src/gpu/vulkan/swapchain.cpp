@@ -125,6 +125,31 @@ namespace ember::gpu::vk
 		}
 
 		/**
+		 * Retires every per-image object of the current VkSwapchainKHR: the pool handles die now,
+		 * the native views and present semaphores die through the destroy queue when the frames
+		 * that could touch them retire. The swapchain object itself is the caller's to defer.
+		 */
+		void retire_backbuffers(DeviceBackend& backend, SwapchainData& data) noexcept
+		{
+			for (u32 i = 0; i < data.image_count; ++i)
+			{
+				if (data.images[i].is_null())
+					continue;
+
+				if (TextureHot* hot = backend.resources.textures.try_get(data.images[i]))
+					defer_destroy(backend, hot->sampled_view);
+
+				defer_destroy(backend, data.present_semaphores[i]);
+				data.present_semaphores[i] = VK_NULL_HANDLE;
+
+				(void)backend.resources.textures.erase(data.images[i]);
+				data.images[i] = {};
+			}
+
+			data.image_count = 0;
+		}
+
+		/**
 		 * (Re)creates the VkSwapchainKHR and its backbuffer pool entries. The old swapchain is
 		 * passed as oldSwapchain so the driver can recycle buffers across resizes.
 		 *
@@ -194,10 +219,12 @@ namespace ember::gpu::vk
 				return false;
 			}
 
-			// Old generation retires now (callers guaranteed idle this slice).
-			destroy_backbuffer_views(backend, data);
+			// Old generation retires when the frames that could touch it do; the driver
+			// already got its recycling shot via oldSwapchain above.
+			retire_backbuffers(backend, data);
+
 			if (old != VK_NULL_HANDLE)
-				vkDestroySwapchainKHR(backend.device, old, nullptr);
+				defer_destroy(backend, old);
 
 			data.swapchain = swapchain;
 			data.extent	   = extent;
@@ -245,6 +272,11 @@ namespace ember::gpu::vk
 				set_name(backend, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<u64>(images[i]), "ember.backbuffer");
 			}
 
+			VkSemaphoreCreateInfo semaphore_info{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+			for (u32 i = 0; i < count; ++i)
+				EMBER_VK_CHECK(
+					vkCreateSemaphore(backend.device, &semaphore_info, nullptr, &data.present_semaphores[i]));
+
 			data.image_count = count;
 			return true;
 		}
@@ -278,9 +310,6 @@ namespace ember::gpu::vk
 		for (u32 i = 0; i < backend.frames_in_flight; ++i)
 			EMBER_VK_CHECK(vkCreateSemaphore(backend.device, &semaphore_info, nullptr, &data.acquire_semaphores[i]));
 
-		for (u32 i = 0; i < MAX_SWAPCHAIN_IMAGES; ++i)
-			EMBER_VK_CHECK(vkCreateSemaphore(backend.device, &semaphore_info, nullptr, &data.present_semaphores[i]));
-
 		EMBER_INFO(
 			"vulkan: swapchain {}x{} x{} images | {}",
 			data.extent.width,
@@ -293,33 +322,19 @@ namespace ember::gpu::vk
 
 	void swapchain_destroy(DeviceBackend& backend, SwapchainData& data) noexcept
 	{
-		// Cold path (teardown / explicit destroy): idling beats lifetime machinery here.
-		(void)vkDeviceWaitIdle(backend.device);
-
-		destroy_backbuffer_views(backend, data);
+		retire_backbuffers(backend, data);
 
 		for (VkSemaphore& semaphore : data.acquire_semaphores)
 		{
-			if (semaphore != VK_NULL_HANDLE)
-				vkDestroySemaphore(backend.device, semaphore, nullptr);
+			defer_destroy(backend, semaphore);
 			semaphore = VK_NULL_HANDLE;
 		}
 
-		for (VkSemaphore& semaphore : data.present_semaphores)
-		{
-			if (semaphore != VK_NULL_HANDLE)
-				vkDestroySemaphore(backend.device, semaphore, nullptr);
-			semaphore = VK_NULL_HANDLE;
-		}
-
-		if (data.swapchain != VK_NULL_HANDLE)
-			vkDestroySwapchainKHR(backend.device, data.swapchain, nullptr);
-
-		if (data.surface != VK_NULL_HANDLE)
-			platform::vk::destroy_surface(backend.instance, data.surface);
-
+		defer_destroy(backend, data.swapchain);
 		data.swapchain = VK_NULL_HANDLE;
-		data.surface   = VK_NULL_HANDLE;
+
+		defer_destroy(backend, data.surface);
+		data.surface = VK_NULL_HANDLE;
 	}
 
 	TextureHandle swapchain_acquire(DeviceBackend& backend, SwapchainHandle handle, u32 slot) noexcept
@@ -343,9 +358,6 @@ namespace ember::gpu::vk
 
 		if (data.suspended || data.needs_recreate || extent_changed || data.swapchain == VK_NULL_HANDLE)
 		{
-			// Simplification (see build()): idle before retiring the old generation.
-			(void)vkDeviceWaitIdle(backend.device);
-
 			if (!build(backend, data))
 				return {};
 
@@ -386,8 +398,6 @@ namespace ember::gpu::vk
 
 			if (result == VK_ERROR_OUT_OF_DATE_KHR)
 			{
-				(void)vkDeviceWaitIdle(backend.device);
-
 				if (!build(backend, data) || data.suspended)
 					return {};
 

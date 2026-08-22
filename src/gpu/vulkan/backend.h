@@ -1,9 +1,11 @@
 #pragma once
 
+#include <ember/core/common.h>
 #include <ember/gpu/common.h>
 #include <ember/gpu/device.h>
 #include <ember/sync/thread.h>
 #include <gpu/vulkan/common.h>
+#include <gpu/vulkan/destroy_queue.h>
 #include <gpu/vulkan/resources.h>
 
 #include <vk_mem_alloc.h>
@@ -71,6 +73,8 @@ namespace ember::gpu::vk
 		Queue graphics{}; // owns submission; also presents (checked at adapter selection)
 		Queue compute{};  // dedicated async-compute family when the adapter has one, else == graphics
 		Queue transfer{}; // dedicated DMA family when present, else == graphics
+
+		DestroyQueue deferred{};
 
 		VkPhysicalDeviceProperties properties{};
 		VkPhysicalDeviceMemoryProperties memory_properties{};

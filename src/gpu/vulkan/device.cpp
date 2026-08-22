@@ -83,6 +83,10 @@ namespace ember::gpu
 		EMBER_PROFILE_SCOPE_C("gpu: wait_idle", PROFILE_COLOR_WAIT);
 
 		vk::note_result(*m_backend, vkDeviceWaitIdle(m_backend->device));
+
+		// Idle means everything signaled: even entries stamped for a submit that never
+		// happened (an open frame at teardown) are safe now.
+		vk::drain_deferred_destroys(*m_backend, UINT64_MAX);
 	}
 
 	const DeviceCaps& Device::caps() const noexcept
@@ -139,6 +143,10 @@ namespace ember::gpu
 		}
 
 		EMBER_VK_CHECK(vkResetCommandPool(m_backend->device, m_backend->slots[slot].pool, 0));
+
+		// The wait above proved wait_value completed; the graveyard rides the frame pacing
+		// and needs no extra queries.
+		vk::drain_deferred_destroys(*m_backend, wait_value);
 		m_backend->pending_present_count = 0;
 		m_backend->frame_open			 = true;
 
