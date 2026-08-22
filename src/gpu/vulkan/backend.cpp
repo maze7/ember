@@ -7,7 +7,6 @@
 #include <memory_resource>
 #include <platform/vulkan/wsi.h>
 #include <vulkan/vulkan_core.h>
-#include <gpu/vulkan/buffer.h>
 
 namespace ember::gpu::vk
 {
