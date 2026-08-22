@@ -1,5 +1,5 @@
+#include <ember/gpu/device.h>
 #include <gpu/vulkan/swapchain.h>
-
 #include <ember/core/profile.h>
 #include <ember/gpu/common.h>
 #include <ember/platform/platform.h>
@@ -7,7 +7,7 @@
 
 #include <algorithm>
 
-namespace ember::gpu::vk
+namespace ember::gpu
 {
 	namespace
 	{
@@ -107,7 +107,7 @@ namespace ember::gpu::vk
 
 		/// The window's pixel size, clamped to surface limits. {0,0} = minimized (suspend).
 		[[nodiscard]] VkExtent2D resolve_extent(
-			const DeviceState& backend, const SwapchainData& data, const VkSurfaceCapabilitiesKHR& caps) noexcept
+			const DeviceState& backend, const vk::SwapchainData& data, const VkSurfaceCapabilitiesKHR& caps) noexcept
 		{
 			// 0xFFFFFFFF means "the surface follows the swapchain" (Wayland); the window is
 			// the authority then. Otherwise the surface dictates exactly.
@@ -127,14 +127,14 @@ namespace ember::gpu::vk
 		 * the native views and present semaphores die through the destroy queue when the frames
 		 * that could touch them retire. The swapchain object itself is the caller's to defer.
 		 */
-		void retire_backbuffers(DeviceState& backend, SwapchainData& data) noexcept
+		void retire_backbuffers(DeviceState& backend, vk::SwapchainData& data) noexcept
 		{
 			for (u32 i = 0; i < data.image_count; ++i)
 			{
-				if (const TextureHot* hot = backend.resources.textures.try_get(data.images[i]))
-					defer_destroy(backend, hot->sampled_view);
+				if (const vk::TextureHot* hot = backend.resources.textures.try_get(data.images[i]))
+					vk::defer_destroy(backend, hot->sampled_view);
 
-				defer_destroy(backend, data.present_semaphores[i]);
+				vk::defer_destroy(backend, data.present_semaphores[i]);
 				data.present_semaphores[i] = VK_NULL_HANDLE;
 
 				(void)backend.resources.textures.erase(data.images[i]);
@@ -142,6 +142,23 @@ namespace ember::gpu::vk
 			}
 
 			data.image_count = 0;
+		}
+
+		void destroy_swapchain_data(DeviceState& state, vk::SwapchainData& data) noexcept
+		{
+			retire_backbuffers(state, data);
+
+			for (auto& semaphore : data.acquire_semaphores)
+			{
+				vk::defer_destroy(state, semaphore);
+				semaphore = VK_NULL_HANDLE;
+			}
+
+			vk::defer_destroy(state, data.swapchain);
+			data.swapchain = VK_NULL_HANDLE;
+
+			vk::defer_destroy(state, data.surface);
+			data.surface = VK_NULL_HANDLE;
 		}
 
 		enum class Build : u8
@@ -156,7 +173,7 @@ namespace ember::gpu::vk
 		 * passed as oldSwapchain so the driver can recycle buffers across resizes; its retired
 		 * objects then age out through the destroy queue.
 		 */
-		[[nodiscard]] Build build(DeviceState& backend, SwapchainData& data) noexcept
+		[[nodiscard]] Build build(DeviceState& backend, vk::SwapchainData& data) noexcept
 		{
 			EMBER_PROFILE_FUNCTION_C(PROFILE_COLOR_RENDER);
 
@@ -211,7 +228,7 @@ namespace ember::gpu::vk
 			if (const VkResult result = vkCreateSwapchainKHR(backend.device, &info, nullptr, &swapchain);
 				result != VK_SUCCESS)
 			{
-				EMBER_ERROR("vulkan: vkCreateSwapchainKHR failed: {}", result_name(result));
+				EMBER_ERROR("vulkan: vkCreateSwapchainKHR failed: {}", vk::result_name(result));
 				return Build::Failed;
 			}
 
@@ -220,7 +237,7 @@ namespace ember::gpu::vk
 			retire_backbuffers(backend, data);
 
 			if (old != VK_NULL_HANDLE)
-				defer_destroy(backend, old);
+				vk::defer_destroy(backend, old);
 
 			data.swapchain = swapchain;
 			data.extent	   = extent;
@@ -261,14 +278,14 @@ namespace ember::gpu::vk
 					vkCreateSemaphore(backend.device, &semaphore_info, nullptr, &data.present_semaphores[i]));
 
 				data.images[i] = backend.resources.textures.insert(
-					TextureHot{.image = images[i], .sampled_view = view},
-					TextureCold{
+					vk::TextureHot{.image = images[i], .sampled_view = view},
+					vk::TextureCold{
 						.extent		= {extent.width, extent.height, 1},
 						.format		= data.surface_format.format,
 						.owns_image = false, // the swapchain owns these; destroy() must skip them
 					});
 
-				set_name(backend, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<u64>(images[i]), "ember.backbuffer");
+				vk::set_name(backend, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<u64>(images[i]), "ember.backbuffer");
 			}
 
 			data.image_count = count;
@@ -284,7 +301,7 @@ namespace ember::gpu::vk
 		}
 	}
 
-	bool swapchain_create(DeviceState& backend, const SwapchainDef& def, SwapchainData& data) noexcept
+	bool vk::swapchain_create(DeviceState& backend, const SwapchainDef& def, vk::SwapchainData& data) noexcept
 	{
 		data.window				   = def.window;
 		data.requested_mode		   = def.present_mode;
@@ -302,7 +319,7 @@ namespace ember::gpu::vk
 		// Suspended (created while minimized) is fine: the first acquire after restore builds.
 		if (build(backend, data) == Build::Failed)
 		{
-			swapchain_destroy(backend, data);
+			destroy_swapchain_data(backend, data);
 			return false;
 		}
 
@@ -316,26 +333,9 @@ namespace ember::gpu::vk
 		return true;
 	}
 
-	void swapchain_destroy(DeviceState& backend, SwapchainData& data) noexcept
+	TextureHandle vk::swapchain_acquire(DeviceState& backend, SwapchainHandle handle) noexcept
 	{
-		retire_backbuffers(backend, data);
-
-		for (VkSemaphore& semaphore : data.acquire_semaphores)
-		{
-			defer_destroy(backend, semaphore);
-			semaphore = VK_NULL_HANDLE;
-		}
-
-		defer_destroy(backend, data.swapchain);
-		data.swapchain = VK_NULL_HANDLE;
-
-		defer_destroy(backend, data.surface);
-		data.surface = VK_NULL_HANDLE;
-	}
-
-	TextureHandle swapchain_acquire(DeviceState& backend, SwapchainHandle handle) noexcept
-	{
-		SwapchainData& data = backend.resources.swapchains.get(handle);
+		vk::SwapchainData& data = backend.resources.swapchains.get(handle);
 
 		// Same-frame cache: only the first acquire per frame pays for anything.
 		const u64 frame_token = backend.frame_index + 1;
@@ -363,7 +363,7 @@ namespace ember::gpu::vk
 		// same semaphore is safe. Bounded: one recreate attempt, then give up this frame.
 		for (u32 attempt = 0; attempt < 2; ++attempt)
 		{
-			u32 image_index		  = NO_IMAGE;
+			u32 image_index		  = vk::NO_IMAGE;
 			const VkResult result = vkAcquireNextImageKHR(
 				backend.device,
 				data.swapchain,
@@ -396,11 +396,39 @@ namespace ember::gpu::vk
 				continue;
 			}
 
-			note_result(backend, result);
-			EMBER_ERROR("vulkan: vkAcquireNextImageKHR failed: {}", result_name(result));
+			vk::note_result(backend, result);
+			EMBER_ERROR("vulkan: vkAcquireNextImageKHR failed: {}", vk::result_name(result));
 			return {};
 		}
 
 		return {};
+	}
+
+	void Device::destroy(SwapchainHandle handle) noexcept
+	{
+		if (m_backend == nullptr)
+			return;
+
+		EMBER_ASSERT(m_backend->owner_thread == current_thread_id());
+
+		vk::SwapchainData* data = m_backend->resources.swapchains.try_get(handle);
+
+		if (data == nullptr)
+			return;
+
+		// Remove a pending presentation of this swapchain.
+		PendingPresent* pending = m_backend->pending_presents.data();
+		u32& count = m_backend->pending_present_count;
+
+		for (u32 i = 0; i < count;)
+		{
+			if (pending[i].swapchain == handle)
+				pending[i] = pending[--count]; // unordered remove: batch order carries no meaning
+			else
+				++i;
+		}
+
+		destroy_swapchain_data(*m_backend, *data);
+		(void)m_backend->resources.swapchains.erase(handle);
 	}
 }
