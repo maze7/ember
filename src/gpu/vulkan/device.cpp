@@ -4,7 +4,7 @@
 #include "gpu/vulkan/swapchain.h"
 #include <ember/core/profile.h>
 #include <ember/gpu/device.h>
-#include <gpu/vulkan/backend.h>
+#include <gpu/vulkan/device_state.h>
 #include <gpu/vulkan/buffer.h>
 #include <gpu/vulkan/resources.h>
 #include <vulkan/vulkan_core.h>
@@ -28,7 +28,7 @@ namespace ember::gpu
 			return;
 		}
 
-		DeviceBackend* backend = memory::new_object<DeviceBackend>(MemoryTag::Graphics);
+		DeviceState* backend = memory::new_object<DeviceState>(MemoryTag::Graphics);
 
 		if (!vk::boot(*backend, def))
 		{
@@ -55,7 +55,7 @@ namespace ember::gpu
 		// 4. Release SDL vulkan loader through WSI.
 		wait_idle();
 
-		DeviceBackend* backend = std::exchange(m_backend, nullptr);
+		DeviceState* backend = std::exchange(m_backend, nullptr);
 
 		// Surviving swapchains: destroy with a warning — user code should have destroyed them.
 		for (auto it = backend->resources.swapchains.begin(); it != backend->resources.swapchains.end(); ++it)
@@ -103,12 +103,12 @@ namespace ember::gpu
 	u32 Device::validation_error_count() noexcept
 	{
 		// Tests read these after teardown has joined.
-		return vk::debug_state().errors.load(std::memory_order_relaxed);
+		return debug_state().errors.load(std::memory_order_relaxed);
 	}
 
 	u32 Device::validation_warning_count() noexcept
 	{
-		return vk::debug_state().warnings.load(std::memory_order_relaxed);
+		return debug_state().warnings.load(std::memory_order_relaxed);
 	}
 
 	FrameInfo Device::begin_frame() noexcept
@@ -155,7 +155,7 @@ namespace ember::gpu
 		if (m_backend == nullptr)
 			return;
 
-		DeviceBackend& backend = *m_backend;
+		DeviceState& backend = *m_backend;
 
 		EMBER_ASSERT(m_backend->owner_thread == current_thread_id());
 		EMBER_ASSERT(backend.frame_open && "end_frame without begin_frame");
@@ -376,7 +376,7 @@ namespace ember::gpu
 		{
 			// Acquired-then-destroyed this frame: drop the pending present so end_frame
 			// never walks a dead handle. The acquired image is simply never presented.
-			vk::PendingPresent* pending = m_backend->pending_presents.data();
+			PendingPresent* pending = m_backend->pending_presents.data();
 			u32& count					= m_backend->pending_present_count;
 
 			for (u32 i = 0; i < count;)

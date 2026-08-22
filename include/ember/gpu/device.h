@@ -133,7 +133,7 @@ namespace ember::gpu
 		u32 slot		= 0; // frame_index % frames_in_flight
 	};
 
-	struct DeviceBackend;
+	struct DeviceState;
 
 	/**
 	 * The GPU device: owns every GPU object, the frame loop and the bindless heap.
@@ -219,8 +219,8 @@ namespace ember::gpu
 		[[nodiscard]] static u32 validation_warning_count() noexcept;
 
 	private:
-		/// Compile-time polymorphic platform-specific backend (Vulkan, DX12, etc.)
-		DeviceBackend* m_backend = nullptr;
+		/// Compile-time polymorphic platform-specific state (Vulkan, DX12, etc.)
+		DeviceState* m_backend = nullptr;
 	};
 }
 

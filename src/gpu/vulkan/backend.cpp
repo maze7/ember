@@ -2,7 +2,7 @@
 #include <ember/core/profile.h>
 #include <ember/memory/common.h>
 #include <gpu/validation.h>
-#include <gpu/vulkan/backend.h>
+#include <gpu/vulkan/device_state.h>
 #include <gpu/vulkan/common.h>
 #include <memory_resource>
 #include <platform/vulkan/wsi.h>
@@ -319,7 +319,7 @@ namespace ember::gpu::vk
 		 * Validation is optional-with-warning: ship machines don't have the layer installed,
 		 * a missing layer must never stop the game from booting.
 		 */
-		[[nodiscard]] bool create_instance(DeviceBackend& backend, const DeviceDef& def) noexcept
+		[[nodiscard]] bool create_instance(DeviceState& backend, const DeviceDef& def) noexcept
 		{
 			/// Loader. With a Platform, SDL owns the Vulkan library so our calls and its surface
 			/// creation share one loader instance; headless boots dlopen it via volk (tests, CI).
@@ -507,7 +507,7 @@ namespace ember::gpu::vk
 
 		/// Rejects adapters that cannot run ember's contract. Fills `out` for the ones that can.
 		[[nodiscard]] bool
-		query_adapter(const DeviceBackend& backend, VkPhysicalDevice handle, AdapterInfo& out) noexcept
+		query_adapter(const DeviceState& backend, VkPhysicalDevice handle, AdapterInfo& out) noexcept
 		{
 			out.handle = handle;
 			vkGetPhysicalDeviceProperties(handle, &out.properties);
@@ -622,7 +622,7 @@ namespace ember::gpu::vk
 		 * Filter-then-score: query_adapter rejects anything that cannot run the contract, then
 		 * the best-scoring survivor wins. Strictly-greater keeps enumeration order on ties.
 		 */
-		[[nodiscard]] bool select_adapter(const DeviceBackend& backend, const DeviceDef& def, AdapterInfo& out) noexcept
+		[[nodiscard]] bool select_adapter(const DeviceState& backend, const DeviceDef& def, AdapterInfo& out) noexcept
 		{
 			u32 count = 0;
 
@@ -672,7 +672,7 @@ namespace ember::gpu::vk
 		 * GPU time. One queue per distinct family; dedicated compute/transfer families are
 		 * created now so async work needs no boot changes later.
 		 */
-		[[nodiscard]] bool create_device(DeviceBackend& backend, const AdapterInfo& adapter) noexcept
+		[[nodiscard]] bool create_device(DeviceState& backend, const AdapterInfo& adapter) noexcept
 		{
 			const f32 priority = 1.0f;
 			VkDeviceQueueCreateInfo queue_infos[3]{};
@@ -777,7 +777,7 @@ namespace ember::gpu::vk
 			// Direct device-level entry points: no per-call dispatch through the loader.
 			volkLoadDevice(backend.device);
 
-			const auto fetch_queue = [&](u32 family, vk::Queue& queue)
+			const auto fetch_queue = [&](u32 family, Queue& queue)
 			{
 				queue.family = family;
 				vkGetDeviceQueue(backend.device, family, 0, &queue.handle);
@@ -802,7 +802,7 @@ namespace ember::gpu::vk
 		}
 
 		/// VMA fetches every entry point through volk's two loaders; nothing links libvulkan.
-		[[nodiscard]] bool create_allocator(DeviceBackend& backend) noexcept
+		[[nodiscard]] bool create_allocator(DeviceState& backend) noexcept
 		{
 			VmaVulkanFunctions functions{};
 			functions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
@@ -837,7 +837,7 @@ namespace ember::gpu::vk
 		 * caps (wireframe, indirect_count, sampler_minmax, mesh_shaders) were already set while
 		 * enabling them in create_device.
 		 */
-		void fill_caps(DeviceBackend& backend, const AdapterInfo& adapter) noexcept
+		void fill_caps(DeviceState& backend, const AdapterInfo& adapter) noexcept
 		{
 			DeviceCaps& caps					 = backend.caps;
 			const VkPhysicalDeviceLimits& limits = backend.properties.limits;
@@ -893,7 +893,7 @@ namespace ember::gpu::vk
 		}
 	}
 
-	bool boot(DeviceBackend& backend, const DeviceDef& raw_def) noexcept
+	bool boot(DeviceState& backend, const DeviceDef& raw_def) noexcept
 	{
 		EMBER_PROFILE_FUNCTION_C(PROFILE_COLOR_RENDER);
 
@@ -1004,7 +1004,7 @@ namespace ember::gpu::vk
 		return true;
 	}
 
-	void shutdown(DeviceBackend& backend) noexcept
+	void shutdown(DeviceState& backend) noexcept
 	{
 		EMBER_PROFILE_FUNCTION_C(PROFILE_COLOR_RENDER);
 

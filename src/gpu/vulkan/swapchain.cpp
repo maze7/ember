@@ -107,7 +107,7 @@ namespace ember::gpu::vk
 
 		/// The window's pixel size, clamped to surface limits. {0,0} = minimized (suspend).
 		[[nodiscard]] VkExtent2D resolve_extent(
-			const DeviceBackend& backend, const SwapchainData& data, const VkSurfaceCapabilitiesKHR& caps) noexcept
+			const DeviceState& backend, const SwapchainData& data, const VkSurfaceCapabilitiesKHR& caps) noexcept
 		{
 			// 0xFFFFFFFF means "the surface follows the swapchain" (Wayland); the window is
 			// the authority then. Otherwise the surface dictates exactly.
@@ -127,7 +127,7 @@ namespace ember::gpu::vk
 		 * the native views and present semaphores die through the destroy queue when the frames
 		 * that could touch them retire. The swapchain object itself is the caller's to defer.
 		 */
-		void retire_backbuffers(DeviceBackend& backend, SwapchainData& data) noexcept
+		void retire_backbuffers(DeviceState& backend, SwapchainData& data) noexcept
 		{
 			for (u32 i = 0; i < data.image_count; ++i)
 			{
@@ -156,7 +156,7 @@ namespace ember::gpu::vk
 		 * passed as oldSwapchain so the driver can recycle buffers across resizes; its retired
 		 * objects then age out through the destroy queue.
 		 */
-		[[nodiscard]] Build build(DeviceBackend& backend, SwapchainData& data) noexcept
+		[[nodiscard]] Build build(DeviceState& backend, SwapchainData& data) noexcept
 		{
 			EMBER_PROFILE_FUNCTION_C(PROFILE_COLOR_RENDER);
 
@@ -284,7 +284,7 @@ namespace ember::gpu::vk
 		}
 	}
 
-	bool swapchain_create(DeviceBackend& backend, const SwapchainDef& def, SwapchainData& data) noexcept
+	bool swapchain_create(DeviceState& backend, const SwapchainDef& def, SwapchainData& data) noexcept
 	{
 		data.window				   = def.window;
 		data.requested_mode		   = def.present_mode;
@@ -316,7 +316,7 @@ namespace ember::gpu::vk
 		return true;
 	}
 
-	void swapchain_destroy(DeviceBackend& backend, SwapchainData& data) noexcept
+	void swapchain_destroy(DeviceState& backend, SwapchainData& data) noexcept
 	{
 		retire_backbuffers(backend, data);
 
@@ -333,7 +333,7 @@ namespace ember::gpu::vk
 		data.surface = VK_NULL_HANDLE;
 	}
 
-	TextureHandle swapchain_acquire(DeviceBackend& backend, SwapchainHandle handle) noexcept
+	TextureHandle swapchain_acquire(DeviceState& backend, SwapchainHandle handle) noexcept
 	{
 		SwapchainData& data = backend.resources.swapchains.get(handle);
 

@@ -1,6 +1,6 @@
 #include "ember/gpu/common.h"
 #include <ember/gpu/buffer.h>
-#include <gpu/vulkan/backend.h>
+#include <gpu/vulkan/device_state.h>
 
 #include <cstring>
 #include <vulkan/vulkan_core.h>
@@ -36,7 +36,7 @@ namespace ember::gpu::vk
 		}
 	}
 
-	BufferHandle create_buffer(DeviceBackend& backend, const BufferDef& def) noexcept
+	BufferHandle create_buffer(DeviceState& backend, const BufferDef& def) noexcept
 	{
 		if (def.size == 0)
 		{
@@ -130,7 +130,7 @@ namespace ember::gpu::vk
 		return handle;
 	}
 
-	void destroy_buffer(DeviceBackend& backend, BufferHandle handle) noexcept
+	void destroy_buffer(DeviceState& backend, BufferHandle handle) noexcept
 	{
 		BufferHot* hot = backend.resources.buffers.try_get(handle);
 		if (hot == nullptr)

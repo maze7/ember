@@ -2,7 +2,7 @@
 #include <platform/vulkan/wsi.h>
 
 #include <ember/sync/thread.h>
-#include <gpu/vulkan/backend.h>
+#include <gpu/vulkan/device_state.h>
 
 #include <vulkan/vulkan_core.h>
 
@@ -10,7 +10,7 @@ namespace ember::gpu::vk
 {
 	namespace
 	{
-		void enqueue(DeviceBackend& backend, DeferredDestroy dead) noexcept
+		void enqueue(DeviceState& backend, DeferredDestroy dead) noexcept
 		{
 			EMBER_ASSERT(backend.owner_thread == current_thread_id());
 			EMBER_ASSERT(dead.kind != DeferredDestroy::Kind::None);
@@ -24,7 +24,7 @@ namespace ember::gpu::vk
 		}
 	}
 
-	void defer_destroy(DeviceBackend& backend, VkBuffer buffer, VmaAllocation allocation) noexcept
+	void defer_destroy(DeviceState& backend, VkBuffer buffer, VmaAllocation allocation) noexcept
 	{
 		enqueue(
 			backend,
@@ -35,34 +35,34 @@ namespace ember::gpu::vk
 			});
 	}
 
-	void defer_destroy(DeviceBackend& backend, VkImage image, VmaAllocation allocation) noexcept
+	void defer_destroy(DeviceState& backend, VkImage image, VmaAllocation allocation) noexcept
 	{
 		enqueue(
 			backend,
 			{.handle = reinterpret_cast<u64>(image), .allocation = allocation, .kind = DeferredDestroy::Kind::Image});
 	}
 
-	void defer_destroy(DeviceBackend& backend, VkImageView view) noexcept
+	void defer_destroy(DeviceState& backend, VkImageView view) noexcept
 	{
 		enqueue(backend, {.handle = reinterpret_cast<u64>(view), .kind = DeferredDestroy::Kind::ImageView});
 	}
 
-	void defer_destroy(DeviceBackend& backend, VkSemaphore semaphore) noexcept
+	void defer_destroy(DeviceState& backend, VkSemaphore semaphore) noexcept
 	{
 		enqueue(backend, {.handle = reinterpret_cast<u64>(semaphore), .kind = DeferredDestroy::Kind::Semaphore});
 	}
 
-	void defer_destroy(DeviceBackend& backend, VkSwapchainKHR swapchain) noexcept
+	void defer_destroy(DeviceState& backend, VkSwapchainKHR swapchain) noexcept
 	{
 		enqueue(backend, {.handle = reinterpret_cast<u64>(swapchain), .kind = DeferredDestroy::Kind::Swapchain});
 	}
 
-	void defer_destroy(DeviceBackend& backend, VkSurfaceKHR surface) noexcept
+	void defer_destroy(DeviceState& backend, VkSurfaceKHR surface) noexcept
 	{
 		enqueue(backend, {.handle = reinterpret_cast<u64>(surface), .kind = DeferredDestroy::Kind::Surface});
 	}
 
-	void drain_deferred_destroys(DeviceBackend& backend, u64 completed) noexcept
+	void drain_deferred_destroys(DeviceState& backend, u64 completed) noexcept
 	{
 		EMBER_ASSERT(backend.owner_thread == current_thread_id());
 
