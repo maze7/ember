@@ -5,6 +5,7 @@
 #include <ember/core/profile.h>
 #include <ember/gpu/device.h>
 #include <gpu/vulkan/backend.h>
+#include <gpu/vulkan/buffer.h>
 #include <gpu/vulkan/resources.h>
 #include <vulkan/vulkan_core.h>
 
@@ -421,5 +422,39 @@ namespace ember::gpu
 			return {data->extent.width, data->extent.height};
 
 		return {};
+	}
+
+	BufferHandle Device::create_buffer(const BufferDef& def) noexcept
+	{
+		if (m_backend == nullptr)
+			return {};
+
+		EMBER_ASSERT(m_backend->owner_thread == current_thread_id());
+		return vk::create_buffer(*m_backend, def);
+	}
+
+	void Device::destroy(BufferHandle handle) noexcept
+	{
+		if (m_backend == nullptr)
+			return;
+
+		EMBER_ASSERT(m_backend->owner_thread == current_thread_id());
+		vk::destroy_buffer(*m_backend, handle);
+	}
+
+	bool Device::is_valid(BufferHandle handle) const noexcept
+	{
+		return m_backend != nullptr && m_backend->resources.buffers.contains(handle);
+	}
+
+	void* Device::mapped(BufferHandle handle) noexcept
+	{
+		if (m_backend == nullptr)
+			return nullptr;
+
+		if (auto* cold = m_backend->resources.buffers.try_get_cold(handle))
+			return cold->mapped;
+
+		return nullptr;
 	}
 }

@@ -24,6 +24,7 @@ namespace ember::gpu::vk
 	{
 		VmaAllocation allocation = VK_NULL_HANDLE;
 		VkDeviceSize size		 = 0;
+		void* mapped			 = nullptr; // non-null iff Upload/Readback (VMA persistent map)
 	};
 
 	struct TextureHot

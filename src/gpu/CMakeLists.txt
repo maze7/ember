@@ -14,6 +14,7 @@ ember_add_module(Gpu
 		vulkan/backend.cpp
 		vulkan/vma.cpp
 		vulkan/swapchain.cpp
+		vulkan/buffer.cpp
 		vulkan/destroy_queue.cpp
 	PUBLIC_DEPS
 		Ember::Core
