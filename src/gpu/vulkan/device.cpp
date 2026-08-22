@@ -380,7 +380,7 @@ namespace ember::gpu
 			// Acquired-then-destroyed this frame: drop the pending present so end_frame
 			// never walks a dead handle. The acquired image is simply never presented.
 			vk::PendingPresent* pending = m_backend->pending_presents.data();
-			u32& count = m_backend->pending_present_count;
+			u32& count					= m_backend->pending_present_count;
 
 			for (u32 i = 0; i < count;)
 			{
@@ -409,8 +409,7 @@ namespace ember::gpu
 			return {};
 		}
 
-		const u32 slot = static_cast<u32>(m_backend->frame_index % m_backend->frames_in_flight);
-		return vk::swapchain_acquire(*m_backend, handle, slot);
+		return vk::swapchain_acquire(*m_backend, handle);
 	}
 
 	Extent2D Device::swapchain_extent(SwapchainHandle handle) const noexcept

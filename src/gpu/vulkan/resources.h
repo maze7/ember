@@ -93,7 +93,6 @@ namespace ember::gpu::vk
 		std::array<VkSemaphore, MAX_SWAPCHAIN_IMAGES> present_semaphores{};
 
 		bool needs_recreate = false; // set by present results / SUBOPTIMAL at acquire
-		bool suspended		= false; // zero-extent (minimized): acquire returns null
 	};
 
 	struct ResourcePools final

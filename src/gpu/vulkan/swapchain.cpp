@@ -1,12 +1,11 @@
-#include "ember/gpu/common.h"
 #include <gpu/vulkan/swapchain.h>
 
 #include <ember/core/profile.h>
+#include <ember/gpu/common.h>
 #include <ember/platform/platform.h>
 #include <platform/vulkan/wsi.h>
 
 #include <algorithm>
-#include <vulkan/vulkan_core.h>
 
 namespace ember::gpu::vk
 {
@@ -18,11 +17,13 @@ namespace ember::gpu::vk
 		 */
 		[[nodiscard]] VkSurfaceFormatKHR choose_surface_format(VkPhysicalDevice adapter, VkSurfaceKHR surface) noexcept
 		{
+			constexpr u32 MAX_FORMATS = 64;
+
 			u32 count = 0;
 			vkGetPhysicalDeviceSurfaceFormatsKHR(adapter, surface, &count, nullptr);
 
-			VkSurfaceFormatKHR formats[64];
-			count = std::min(count, 64u);
+			VkSurfaceFormatKHR formats[MAX_FORMATS];
+			count = std::min(count, MAX_FORMATS);
 			vkGetPhysicalDeviceSurfaceFormatsKHR(adapter, surface, &count, formats);
 
 			constexpr VkFormat PREFERRED[] = {
@@ -46,23 +47,23 @@ namespace ember::gpu::vk
 							 : VkSurfaceFormatKHR{VK_FORMAT_B8G8R8A8_SRGB, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR};
 		}
 
-		/// Requested mode when the surface offsets it; FIFO otherwise (the only guaranteed mode).
+		/// Requested mode when the surface offers it; FIFO otherwise (the only guaranteed mode).
 		[[nodiscard]] VkPresentModeKHR
 		choose_present_mode(VkPhysicalDevice adapter, VkSurfaceKHR surface, PresentMode requested) noexcept
 		{
 			if (requested == PresentMode::VSync)
 				return VK_PRESENT_MODE_FIFO_KHR;
 
-			VkPresentModeKHR wanted =
+			const VkPresentModeKHR wanted =
 				requested == PresentMode::Mailbox ? VK_PRESENT_MODE_MAILBOX_KHR : VK_PRESENT_MODE_IMMEDIATE_KHR;
 
-			// Retrieve the number of present modes
+			constexpr u32 MAX_MODES = 8;
+
 			u32 count = 0;
 			vkGetPhysicalDeviceSurfacePresentModesKHR(adapter, surface, &count, nullptr);
 
-			// Retrieve the actual present modes
-			VkPresentModeKHR modes[8];
-			count = std::min(count, 8u);
+			VkPresentModeKHR modes[MAX_MODES];
+			count = std::min(count, MAX_MODES);
 			vkGetPhysicalDeviceSurfacePresentModesKHR(adapter, surface, &count, modes);
 
 			for (u32 i = 0; i < count; ++i)
@@ -71,6 +72,20 @@ namespace ember::gpu::vk
 
 			EMBER_INFO("vulkan: requested present mode unavailable, using VSync");
 			return VK_PRESENT_MODE_FIFO_KHR;
+		}
+
+		/// Log-friendly name for the modes this layer can select.
+		[[nodiscard]] const char* present_mode_name(VkPresentModeKHR mode) noexcept
+		{
+			switch (mode)
+			{
+				case VK_PRESENT_MODE_MAILBOX_KHR:
+					return "mailbox";
+				case VK_PRESENT_MODE_IMMEDIATE_KHR:
+					return "immediate";
+				default:
+					return "vsync";
+			}
 		}
 
 		/// Wayland compositors may only offer PRE_MULTIPLIED; never hardcode OPAQUE.
@@ -107,23 +122,6 @@ namespace ember::gpu::vk
 			};
 		}
 
-		void destroy_backbuffer_views(DeviceBackend& backend, SwapchainData& data) noexcept
-		{
-			for (u32 i = 0; i < data.image_count; ++i)
-			{
-				if (data.images[i].is_null())
-					continue;
-
-				if (const TextureHot* hot = backend.resources.textures.try_get(data.images[i]))
-					vkDestroyImageView(backend.device, hot->sampled_view, nullptr);
-
-				(void)backend.resources.textures.erase(data.images[i]);
-				data.images[i] = {};
-			}
-
-			data.image_count = 0;
-		}
-
 		/**
 		 * Retires every per-image object of the current VkSwapchainKHR: the pool handles die now,
 		 * the native views and present semaphores die through the destroy queue when the frames
@@ -133,10 +131,7 @@ namespace ember::gpu::vk
 		{
 			for (u32 i = 0; i < data.image_count; ++i)
 			{
-				if (data.images[i].is_null())
-					continue;
-
-				if (TextureHot* hot = backend.resources.textures.try_get(data.images[i]))
+				if (const TextureHot* hot = backend.resources.textures.try_get(data.images[i]))
 					defer_destroy(backend, hot->sampled_view);
 
 				defer_destroy(backend, data.present_semaphores[i]);
@@ -149,14 +144,19 @@ namespace ember::gpu::vk
 			data.image_count = 0;
 		}
 
+		enum class Build : u8
+		{
+			Ok,
+			Suspended, // zero extent (minimized): nothing (re)built, any existing swapchain kept
+			Failed,
+		};
+
 		/**
 		 * (Re)creates the VkSwapchainKHR and its backbuffer pool entries. The old swapchain is
-		 * passed as oldSwapchain so the driver can recycle buffers across resizes.
-		 *
-		 * Deliberate simplification for this slice: callers wait-idle before retiring old
-		 * objects. The deferred-deletion slice replaces that wait with per-slot retirement.
+		 * passed as oldSwapchain so the driver can recycle buffers across resizes; its retired
+		 * objects then age out through the destroy queue.
 		 */
-		[[nodiscard]] bool build(DeviceBackend& backend, SwapchainData& data) noexcept
+		[[nodiscard]] Build build(DeviceBackend& backend, SwapchainData& data) noexcept
 		{
 			EMBER_PROFILE_FUNCTION_C(PROFILE_COLOR_RENDER);
 
@@ -164,25 +164,21 @@ namespace ember::gpu::vk
 			if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(backend.adapter, data.surface, &surface_caps) != VK_SUCCESS)
 			{
 				EMBER_ERROR("vulkan: surface capability query failed");
-				return false;
+				return Build::Failed;
 			}
 
 			const VkExtent2D extent = resolve_extent(backend, data, surface_caps);
 
-			// Minimized: never create a zero-extent swapchain; acquire() reports suspended.
+			// Minimized: never create a zero-extent swapchain. Any existing one stays; it is
+			// still valid after restore, or the next acquire's OUT_OF_DATE rebuilds it.
 			if (extent.width == 0 || extent.height == 0)
-			{
-				data.suspended = true;
-				return true;
-			}
+				return Build::Suspended;
 
-			// maxImageCount == 0 means unbounded.
+			// maxImageCount == 0 means unbounded; the engine max keeps per-image arrays indexable.
 			u32 image_count = std::max(data.preferred_image_count, surface_caps.minImageCount);
+			image_count		= std::min(image_count, MAX_SWAPCHAIN_IMAGES);
 			if (surface_caps.maxImageCount != 0)
 				image_count = std::min(image_count, surface_caps.maxImageCount);
-
-			// Hard cap, not truncation: present semaphores are indexed by image index.
-			EMBER_ASSERT(image_count <= MAX_SWAPCHAIN_IMAGES);
 
 			data.surface_format = choose_surface_format(backend.adapter, data.surface);
 			data.present_mode	= choose_present_mode(backend.adapter, data.surface, data.requested_mode);
@@ -216,7 +212,7 @@ namespace ember::gpu::vk
 				result != VK_SUCCESS)
 			{
 				EMBER_ERROR("vulkan: vkCreateSwapchainKHR failed: {}", result_name(result));
-				return false;
+				return Build::Failed;
 			}
 
 			// Old generation retires when the frames that could touch it do; the driver
@@ -228,7 +224,6 @@ namespace ember::gpu::vk
 
 			data.swapchain = swapchain;
 			data.extent	   = extent;
-			data.suspended = false;
 
 			// Wrap the backbuffers as externally-owned texture pool entries.
 			VkImage images[MAX_SWAPCHAIN_IMAGES];
@@ -237,16 +232,18 @@ namespace ember::gpu::vk
 
 			// acquire() indexes per-image state (present semaphores, backbuffer handles) by the driver's
 			// image index, which ranges over the full image array. A swapchain we cannot track in full is
-			// unusable, so this is a hard failure.
+			// unusable, so this is a hard failure. Never acquired from, so immediate destroy is legal.
 			if (count > MAX_SWAPCHAIN_IMAGES)
 			{
 				EMBER_ERROR("vulkan: swapchain has {} images, ember supports {}", count, MAX_SWAPCHAIN_IMAGES);
 				vkDestroySwapchainKHR(backend.device, data.swapchain, nullptr);
 				data.swapchain = VK_NULL_HANDLE; // consistent "no swapchain"; next acquire retries a full build
-				return false;
+				return Build::Failed;
 			}
 
-			vkGetSwapchainImagesKHR(backend.device, data.swapchain, &count, images);
+			EMBER_VK_CHECK(vkGetSwapchainImagesKHR(backend.device, data.swapchain, &count, images));
+
+			const VkSemaphoreCreateInfo semaphore_info{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 
 			for (u32 i = 0; i < count; ++i)
 			{
@@ -260,6 +257,8 @@ namespace ember::gpu::vk
 
 				VkImageView view = VK_NULL_HANDLE;
 				EMBER_VK_CHECK(vkCreateImageView(backend.device, &view_info, nullptr, &view));
+				EMBER_VK_CHECK(
+					vkCreateSemaphore(backend.device, &semaphore_info, nullptr, &data.present_semaphores[i]));
 
 				data.images[i] = backend.resources.textures.insert(
 					TextureHot{.image = images[i], .sampled_view = view},
@@ -272,13 +271,16 @@ namespace ember::gpu::vk
 				set_name(backend, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<u64>(images[i]), "ember.backbuffer");
 			}
 
-			VkSemaphoreCreateInfo semaphore_info{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-			for (u32 i = 0; i < count; ++i)
-				EMBER_VK_CHECK(
-					vkCreateSemaphore(backend.device, &semaphore_info, nullptr, &data.present_semaphores[i]));
-
 			data.image_count = count;
-			return true;
+
+			EMBER_INFO(
+				"vulkan: swapchain {}x{} x{} images | {}",
+				extent.width,
+				extent.height,
+				count,
+				present_mode_name(data.present_mode));
+
+			return Build::Ok;
 		}
 	}
 
@@ -297,25 +299,19 @@ namespace ember::gpu::vk
 			return false;
 		}
 
-		if (!build(backend, data))
+		// Suspended (created while minimized) is fine: the first acquire after restore builds.
+		if (build(backend, data) == Build::Failed)
 		{
 			swapchain_destroy(backend, data);
 			return false;
 		}
 
-		// Per-slot acquire + per-image present semaphores. Created for the compile-time image
-		// maximum so a recreate that grows image_count never needs new semaphores.
-		VkSemaphoreCreateInfo semaphore_info{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+		// Per-slot acquire semaphores, created once: frames_in_flight is fixed at boot, so a
+		// recreate never needs more.
+		const VkSemaphoreCreateInfo semaphore_info{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 
 		for (u32 i = 0; i < backend.frames_in_flight; ++i)
 			EMBER_VK_CHECK(vkCreateSemaphore(backend.device, &semaphore_info, nullptr, &data.acquire_semaphores[i]));
-
-		EMBER_INFO(
-			"vulkan: swapchain {}x{} x{} images | {}",
-			data.extent.width,
-			data.extent.height,
-			data.image_count,
-			data.present_mode == VK_PRESENT_MODE_FIFO_KHR ? "vsync" : "unlocked");
 
 		return true;
 	}
@@ -337,7 +333,7 @@ namespace ember::gpu::vk
 		data.surface = VK_NULL_HANDLE;
 	}
 
-	TextureHandle swapchain_acquire(DeviceBackend& backend, SwapchainHandle handle, u32 slot) noexcept
+	TextureHandle swapchain_acquire(DeviceBackend& backend, SwapchainHandle handle) noexcept
 	{
 		SwapchainData& data = backend.resources.swapchains.get(handle);
 
@@ -346,26 +342,22 @@ namespace ember::gpu::vk
 		if (data.acquired_frame == frame_token)
 			return data.images[data.acquired_image];
 
+		// Minimized: report suspended without touching the swapchain; it revives on restore.
 		const glm::uvec2 pixels = backend.platform->window_pixel_size(data.window);
-
 		if (pixels.x == 0 || pixels.y == 0)
-		{
-			data.suspended = true;
 			return {};
-		}
 
 		const bool extent_changed = pixels.x != data.extent.width || pixels.y != data.extent.height;
 
-		if (data.suspended || data.needs_recreate || extent_changed || data.swapchain == VK_NULL_HANDLE)
+		if (data.needs_recreate || extent_changed || data.swapchain == VK_NULL_HANDLE)
 		{
-			if (!build(backend, data))
+			if (build(backend, data) != Build::Ok)
 				return {};
 
 			data.needs_recreate = false;
-
-			if (data.suspended)
-				return {};
 		}
+
+		const u32 slot = static_cast<u32>(backend.frame_index % backend.frames_in_flight);
 
 		// OUT_OF_DATE signals nothing and leaves the semaphore unsignaled, so retrying with the
 		// same semaphore is safe. Bounded: one recreate attempt, then give up this frame.
@@ -398,7 +390,7 @@ namespace ember::gpu::vk
 
 			if (result == VK_ERROR_OUT_OF_DATE_KHR)
 			{
-				if (!build(backend, data) || data.suspended)
+				if (build(backend, data) != Build::Ok)
 					return {};
 
 				continue;
