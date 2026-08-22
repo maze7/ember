@@ -11,10 +11,6 @@
 
 namespace ember::gpu
 {
-	struct DeviceBackend final : vk::DeviceBackend
-	{
-	};
-
 	namespace
 	{
 		/// One device at a time: pool indicies are bindless slots, so two devices sharing
@@ -34,7 +30,7 @@ namespace ember::gpu
 
 		DeviceBackend* backend = memory::new_object<DeviceBackend>(MemoryTag::Graphics);
 
-		if (!boot(*backend, def))
+		if (!vk::boot(*backend, def))
 		{
 			memory::delete_object(MemoryTag::Graphics, backend);
 			s_device_claimed.store(false, std::memory_order_release);
@@ -69,7 +65,7 @@ namespace ember::gpu
 		}
 		backend->resources.swapchains.clear();
 
-		shutdown(*backend);
+		vk::shutdown(*backend);
 		memory::delete_object(MemoryTag::Graphics, backend);
 
 		s_device_claimed.store(false, std::memory_order_release);
@@ -159,7 +155,7 @@ namespace ember::gpu
 		if (m_backend == nullptr)
 			return;
 
-		vk::DeviceBackend& backend = *m_backend;
+		DeviceBackend& backend = *m_backend;
 
 		EMBER_ASSERT(m_backend->owner_thread == current_thread_id());
 		EMBER_ASSERT(backend.frame_open && "end_frame without begin_frame");

@@ -672,7 +672,7 @@ namespace ember::gpu::vk
 		 * GPU time. One queue per distinct family; dedicated compute/transfer families are
 		 * created now so async work needs no boot changes later.
 		 */
-		[[nodiscard]] bool create_device(vk::DeviceBackend& backend, const AdapterInfo& adapter) noexcept
+		[[nodiscard]] bool create_device(DeviceBackend& backend, const AdapterInfo& adapter) noexcept
 		{
 			const f32 priority = 1.0f;
 			VkDeviceQueueCreateInfo queue_infos[3]{};

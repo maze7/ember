@@ -7,10 +7,13 @@
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan_core.h>
 
-namespace ember::gpu::vk
+namespace ember::gpu
 {
 	struct DeviceBackend;
+}
 
+namespace ember::gpu::vk
+{
 	/**
 	 * One deferred native destruction: destroyed once the frame timeline passes `value`.
 	 */
