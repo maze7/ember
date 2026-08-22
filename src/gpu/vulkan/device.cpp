@@ -54,15 +54,17 @@ namespace ember::gpu
 		// 4. Release SDL vulkan loader through WSI.
 		wait_idle();
 
-		DeviceState* backend = std::exchange(m_backend, nullptr);
-
-		// Surviving swapchains: destroy with a warning — user code should have destroyed them.
-		for (auto it = backend->resources.swapchains.begin(); it != backend->resources.swapchains.end(); ++it)
+		auto& swapchains = m_backend->resources.swapchains;
+		for (auto it = swapchains.begin(); it != swapchains.end();)
 		{
+			SwapchainHandle handle = it.handle();
+			++it;
+
 			EMBER_WARN("gpu: swapchain leaked at device destruction");
-			vk::swapchain_destroy(*backend, *it);
+			destroy(handle);
 		}
-		backend->resources.swapchains.clear();
+
+		DeviceState* backend = std::exchange(m_backend, nullptr);
 
 		vk::shutdown(*backend);
 		memory::delete_object(MemoryTag::Graphics, backend);
