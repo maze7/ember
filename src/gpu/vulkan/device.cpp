@@ -6,6 +6,7 @@
 #include <ember/gpu/device.h>
 #include <gpu/vulkan/device_state.h>
 #include <gpu/vulkan/resources.h>
+#include <gpu/vulkan/common.h>
 #include <vulkan/vulkan_core.h>
 
 namespace ember::gpu
@@ -958,6 +959,7 @@ namespace ember::gpu
 	Device::Device(const DeviceDef& def) noexcept
 	{
 		EMBER_PROFILE_FUNCTION_C(PROFILE_COLOR_RENDER);
+		EMBER_ASSERT(::ember::gpu::is_valid(def));
 
 		if (s_device_claimed.exchange(true, std::memory_order_acq_rel))
 		{
@@ -965,13 +967,13 @@ namespace ember::gpu
 			return;
 		}
 
-		DeviceState* state		= memory::new_object<DeviceState>(MemoryTag::Graphics);
-		state->platform			= def.platform;
-		state->frames_in_flight = def.frames_in_flight;
-		state->resources.reserve(def.limits);
+		m_state		= memory::new_object<DeviceState>(MemoryTag::Graphics);
+		m_state->platform			= def.platform;
+		m_state->frames_in_flight = def.frames_in_flight;
+		m_state->resources.reserve(def.limits);
 
 		// Create Vulkan instance (loader, layers, WSI extensions, debug messenger)
-		if (!create_instance(*state, def))
+		if (!create_instance(*m_state, def))
 		{
 			shutdown();
 			return;
@@ -979,26 +981,26 @@ namespace ember::gpu
 
 		// Adapter. Filter on require dfeature set, then score by preference.
 		AdapterInfo adapter{};
-		if (!select_adapter(*state, def, adapter))
+		if (!select_adapter(*m_state, def, adapter))
 		{
 			shutdown();
 			return;
 		}
 
-		state->adapter	  = adapter.handle;
-		state->properties = adapter.properties;
-		vkGetPhysicalDeviceMemoryProperties(state->adapter, &state->memory_properties);
+		m_state->adapter	  = adapter.handle;
+		m_state->properties = adapter.properties;
+		vkGetPhysicalDeviceMemoryProperties(m_state->adapter, &m_state->memory_properties);
 
 		// Logical device, queues, allocator
-		if (!create_device(*state, adapter) && !create_allocator(*state))
+		if (!create_device(*m_state, adapter) || !create_allocator(*m_state))
 		{
 			shutdown();
 			return;
 		}
 
-		fill_caps(*state, adapter);
+		fill_caps(*m_state, adapter);
 
-		if (!create_frame_resources(*state))
+		if (!create_frame_resources(*m_state))
 		{
 			shutdown();
 			return;
@@ -1006,18 +1008,16 @@ namespace ember::gpu
 
 		EMBER_INFO(
 			"vulkan: {} ({}) | {} | Vulkan {}.{}.{} | {} MB local{}{} | validation {}",
-			state->caps.adapter_name,
-			enum_names<AdapterKind>()[(u32)state->caps.adapter_kind],
+			m_state->caps.adapter_name,
+			enum_names<AdapterKind>()[(u32)m_state->caps.adapter_kind],
 			adapter.driver,
-			VK_API_VERSION_MAJOR(state->caps.api_version),
-			VK_API_VERSION_MINOR(state->caps.api_version),
-			VK_API_VERSION_PATCH(state->caps.api_version),
-			state->caps.device_local_bytes / (1024 * 1024),
-			state->caps.host_visible_device_local ? " (ReBAR)" : "",
-			state->caps.mesh_shaders ? " | mesh shaders" : "",
-			state->validation ? "on" : "off");
-
-		m_state = state;
+			VK_API_VERSION_MAJOR(m_state->caps.api_version),
+			VK_API_VERSION_MINOR(m_state->caps.api_version),
+			VK_API_VERSION_PATCH(m_state->caps.api_version),
+			m_state->caps.device_local_bytes / (1024 * 1024),
+			m_state->caps.host_visible_device_local ? " (ReBAR)" : "",
+			m_state->caps.mesh_shaders ? " | mesh shaders" : "",
+			m_state->validation ? "on" : "off");
 	}
 
 	Device::~Device() noexcept { shutdown(); }

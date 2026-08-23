@@ -110,34 +110,4 @@ namespace ember::gpu
 		u32 owner_thread = current_thread_id(); // the thread that constructed the Device
 		std::atomic<bool> lost{false};			// sticky VK_ERROR_DEVICE_LOST
 	};
-
-	namespace vk
-	{
-		/// Sets the debug name for a given vulkan object. Useful for viewing in RenderDoc.
-		inline void set_name(const DeviceState& backend, VkObjectType type, u64 handle, const char* name) noexcept
-		{
-			if (backend.device == VK_NULL_HANDLE || name == nullptr)
-				return;
-
-			VkDebugUtilsObjectNameInfoEXT info{
-				.sType		  = VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT,
-				.pNext		  = nullptr,
-				.objectType	  = type,
-				.objectHandle = handle,
-				.pObjectName  = name,
-			};
-
-			(void)vkSetDebugUtilsObjectNameEXT(backend.device, &info);
-		}
-
-		/// Device loss is stick: every later call no-ops and the app is expected to tear down.
-		inline void note_result(DeviceState& backend, VkResult result) noexcept
-		{
-			if (result == VK_ERROR_DEVICE_LOST) [[unlikely]]
-			{
-				if (!backend.lost.exchange(true, std::memory_order_acq_rel))
-					EMBER_ERROR("vulkan: device lost (TDR or driver fault); the Device must be recreated");
-			}
-		}
-	}
 }

@@ -225,6 +225,86 @@ namespace ember::gpu
 		/// Compile-time polymorphic platform-specific state (Vulkan, DX12, etc.)
 		DeviceState* m_state = nullptr;
 	};
+
+	namespace detail
+	{
+		[[nodiscard]] constexpr bool valid_capacity(u32 value, u32 maximum) noexcept
+		{
+			return value != 0 && value <= maximum;
+		}
+	}
+
+	[[nodiscard]] constexpr bool is_valid(const DeviceLimits& limits) noexcept
+	{
+		constexpr u32 MAX_POOL_CAPACITY = std::numeric_limits<u16>::max();
+
+		const u32 general_pools[] = {
+			limits.max_buffers,
+			limits.max_textures,
+			limits.max_graphics_pipelines,
+			limits.max_compute_pipelines,
+		};
+
+		for (const u32 capacity : general_pools)
+		{
+			if (!detail::valid_capacity(capacity, MAX_POOL_CAPACITY))
+			{
+				return false;
+			}
+		}
+
+		if (!detail::valid_capacity(limits.max_samplers, MAX_BINDLESS_SAMPLERS))
+		{
+			return false;
+		}
+
+		if (!detail::valid_capacity(limits.max_swapchains, MAX_SWAPCHAINS))
+		{
+			return false;
+		}
+
+		if (limits.max_recording_threads == 0)
+			return false;
+
+		if (limits.max_command_lists_per_frame == 0)
+			return false;
+
+		return true;
+	}
+
+	[[nodiscard]] constexpr bool is_valid(const DeviceDef& def) noexcept
+	{
+		if (def.app_name == nullptr)
+			return false;
+
+		if (def.frames_in_flight == 0 || def.frames_in_flight > MAX_FRAMES_IN_FLIGHT)
+		{
+			return false;
+		}
+
+		if (def.transient_ring_bytes == 0 || def.staging_ring_bytes == 0)
+		{
+			return false;
+		}
+
+		if (!def.enable_validation && (def.enable_sync_validation || def.break_on_validation_error))
+		{
+			return false;
+		}
+
+		if (!is_valid(def.limits))
+			return false;
+
+		switch (def.adapter)
+		{
+			case AdapterPreference::Discrete:
+			case AdapterPreference::Integrated:
+			case AdapterPreference::Any:
+				return true;
+		}
+
+		return false;
+	}
 }
 
 namespace ember
