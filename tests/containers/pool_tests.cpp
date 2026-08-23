@@ -683,7 +683,8 @@ namespace
 		EXPECT_EQ(assigned.get(first), 101);
 		EXPECT_EQ(assigned.get(second), 202);
 
-		assigned = std::move(assigned);
+		BasicPool& self = assigned;
+		assigned = std::move(self);
 
 		EXPECT_EQ(assigned.get(first), 101);
 		EXPECT_EQ(assigned.get(second), 202);

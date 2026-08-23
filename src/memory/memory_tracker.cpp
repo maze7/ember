@@ -86,12 +86,15 @@ namespace ember
 			return previous_bytes;
 		}
 
+#if EMBER_MEMORY_TRACKING >= 2
 		void decrement_counters(Counters& counters, u64 size) noexcept
 		{
 			(void)counters.current_bytes.fetch_sub(size, std::memory_order_relaxed);
 			(void)counters.current_count.fetch_sub(1, std::memory_order_relaxed);
 		}
+#endif
 
+#if EMBER_MEMORY_TRACKING == 1
 		void decrement_atomic_saturating(std::atomic<u64>& counter, u64 amount) noexcept
 		{
 			u64 observed = counter.load(std::memory_order_relaxed);
@@ -111,6 +114,7 @@ namespace ember
 			decrement_atomic_saturating(counters.current_bytes, size);
 			decrement_atomic_saturating(counters.current_count, 1);
 		}
+#endif
 
 		[[nodiscard]] memory_tracker::TagStats read_counters(const Counters& counters) noexcept
 		{

@@ -142,7 +142,7 @@ namespace ember
 		/// From an initializer list
 		EMBER_FINLINE constexpr Span(std::initializer_list<value_type> list EMBER_LIFETIMEBOUND) noexcept
 			requires(std::is_const_v<T>)
-			: m_data(list.begin()), m_size(list.size())
+			: Span(list.begin(), list.size())
 		{
 		}
 

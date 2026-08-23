@@ -30,3 +30,8 @@ target_compile_definitions(ember_gpu
 		EMBER_GPU_VULKAN=1
 		VK_NO_PROTOTYPES
 )
+
+# Designated initializers are used for a lot of vulkan structs. This keeps the warnings from polluting
+target_compile_options(ember_gpu PRIVATE
+	$<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-Wno-missing-field-initializers>
+)

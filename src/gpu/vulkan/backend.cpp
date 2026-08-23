@@ -177,7 +177,7 @@ namespace ember::gpu::vk
 			bool mesh_shader   = false;
 			bool memory_budget = false;
 			u32 subgroup_size  = 0;
-			char driver[128]   = {};
+			char driver[VK_MAX_DRIVER_NAME_SIZE + VK_MAX_DRIVER_INFO_SIZE]   = {};
 		};
 
 		[[nodiscard]] bool has_layer(Span<const VkLayerProperties> layers, const char* name) noexcept
@@ -841,7 +841,7 @@ namespace ember::gpu::vk
 			DeviceCaps& caps					 = backend.caps;
 			const VkPhysicalDeviceLimits& limits = backend.properties.limits;
 
-			std::snprintf(caps.adapter_name, sizeof(caps.adapter_name), "%s", backend.properties.deviceName);
+			std::snprintf(caps.adapter_name, sizeof(caps.adapter_name), "%.*s", static_cast<int>(sizeof(caps.adapter_name) - 1), backend.properties.deviceName);
 			caps.vendor_id	  = backend.properties.vendorID;
 			caps.device_id	  = backend.properties.deviceID;
 			caps.api_version  = backend.properties.apiVersion;
