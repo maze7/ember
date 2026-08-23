@@ -304,17 +304,17 @@ namespace ember::gpu
 
 	SwapchainHandle Device::create_swapchain(const SwapchainDef& def) noexcept
 	{
-		if (m_backend == nullptr)
+		if (m_state == nullptr)
 			return {};
 
-		EMBER_ASSERT(m_backend->owner_thread == current_thread_id());
-		if (m_backend->platform == nullptr)
+		EMBER_ASSERT(m_state->owner_thread == current_thread_id());
+		if (m_state->platform == nullptr)
 		{
 			EMBER_ERROR("gpu: cannot create a swapchain on a headless device");
 			return {};
 		}
 
-		auto& swapchains = m_backend->resources.swapchains;
+		auto& swapchains = m_state->resources.swapchains;
 		const SwapchainHandle handle = swapchains.emplace();
 
 		if (handle.is_null())
@@ -329,7 +329,7 @@ namespace ember::gpu
 		data.preferred_image_count = def.image_count;
 
 		// Surface first: it outlives every swapchain generation for this window.
-		data.surface = platform::vk::create_surface(m_backend->platform->native_window(def.window), m_backend->instance);
+		data.surface = platform::vk::create_surface(m_state->platform->native_window(def.window), m_state->instance);
 
 		if (data.surface == VK_NULL_HANDLE)
 		{
@@ -339,9 +339,9 @@ namespace ember::gpu
 		}
 
 		// Suspended (created while minimized) is fine: the first acquire after restore builds.
-		if (build(*m_backend, data) == Build::Failed)
+		if (build(*m_state, data) == Build::Failed)
 		{
-			destroy_swapchain_data(*m_backend, data);
+			destroy_swapchain_data(*m_state, data);
 			(void)swapchains.erase(handle);
 			return {};
 		}
@@ -350,35 +350,35 @@ namespace ember::gpu
 		// recreate never needs more.
 		const VkSemaphoreCreateInfo semaphore_info{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 
-		for (u32 i = 0; i < m_backend->frames_in_flight; ++i)
-			EMBER_VK_CHECK(vkCreateSemaphore(m_backend->device, &semaphore_info, nullptr, &data.acquire_semaphores[i]));
+		for (u32 i = 0; i < m_state->frames_in_flight; ++i)
+			EMBER_VK_CHECK(vkCreateSemaphore(m_state->device, &semaphore_info, nullptr, &data.acquire_semaphores[i]));
 
 		return handle;
 	}
 
 	TextureHandle Device::acquire(SwapchainHandle handle) noexcept
 	{
-		if (m_backend == nullptr)
+		if (m_state == nullptr)
 			return {};
 
-		EMBER_ASSERT(m_backend->owner_thread == current_thread_id());
-		EMBER_ASSERT(m_backend->frame_open && "acquire outside begin_frame/end_frame");
+		EMBER_ASSERT(m_state->owner_thread == current_thread_id());
+		EMBER_ASSERT(m_state->frame_open && "acquire outside begin_frame/end_frame");
 
-		if (!m_backend->resources.swapchains.contains(handle))
+		if (!m_state->resources.swapchains.contains(handle))
 		{
 			EMBER_ASSERT(false && "Invalid SwapchainHandle");
 			return {};
 		}
 
-		vk::SwapchainData& data = m_backend->resources.swapchains.get(handle);
+		vk::SwapchainData& data = m_state->resources.swapchains.get(handle);
 
 		// Same-frame cache: only the first acquire per frame pays for anything.
-		const u64 frame_token = m_backend->frame_index + 1;
+		const u64 frame_token = m_state->frame_index + 1;
 		if (data.acquired_frame == frame_token)
 			return data.images[data.acquired_image];
 
 		// Minimized: report suspended without touching the swapchain; it revives on restore.
-		const glm::uvec2 pixels = m_backend->platform->window_pixel_size(data.window);
+		const glm::uvec2 pixels = m_state->platform->window_pixel_size(data.window);
 		if (pixels.x == 0 || pixels.y == 0)
 			return {};
 
@@ -386,13 +386,13 @@ namespace ember::gpu
 
 		if (data.needs_recreate || extent_changed || data.swapchain == VK_NULL_HANDLE)
 		{
-			if (build(*m_backend, data) != Build::Ok)
+			if (build(*m_state, data) != Build::Ok)
 				return {};
 
 			data.needs_recreate = false;
 		}
 
-		const u32 slot = static_cast<u32>(m_backend->frame_index % m_backend->frames_in_flight);
+		const u32 slot = static_cast<u32>(m_state->frame_index % m_state->frames_in_flight);
 
 		// OUT_OF_DATE signals nothing and leaves the semaphore unsignaled, so retrying with the
 		// same semaphore is safe. Bounded: one recreate attempt, then give up this frame.
@@ -400,7 +400,7 @@ namespace ember::gpu
 		{
 			u32 image_index		  = vk::NO_IMAGE;
 			const VkResult result = vkAcquireNextImageKHR(
-				m_backend->device,
+				m_state->device,
 				data.swapchain,
 				UINT64_MAX,
 				data.acquire_semaphores[slot],
@@ -414,8 +414,8 @@ namespace ember::gpu
 				data.acquired_image	 = image_index;
 				data.acquired_frame	 = frame_token;
 
-				EMBER_ASSERT(m_backend->pending_present_count < MAX_SWAPCHAINS);
-				m_backend->pending_presents[m_backend->pending_present_count++] = {
+				EMBER_ASSERT(m_state->pending_present_count < MAX_SWAPCHAINS);
+				m_state->pending_presents[m_state->pending_present_count++] = {
 					.swapchain	 = handle,
 					.image_index = image_index,
 				};
@@ -425,13 +425,13 @@ namespace ember::gpu
 
 			if (result == VK_ERROR_OUT_OF_DATE_KHR)
 			{
-				if (build(*m_backend, data) != Build::Ok)
+				if (build(*m_state, data) != Build::Ok)
 					return {};
 
 				continue;
 			}
 
-			vk::note_result(*m_backend, result);
+			vk::note_result(*m_state, result);
 			EMBER_ERROR("vulkan: vkAcquireNextImageKHR failed: {}", vk::result_name(result));
 			return {};
 		}
@@ -441,10 +441,10 @@ namespace ember::gpu
 
 	Extent2D Device::swapchain_extent(SwapchainHandle handle) const noexcept
 	{
-		if (m_backend == nullptr)
+		if (m_state == nullptr)
 			return {};
 
-		if (auto* data = m_backend->resources.swapchains.try_get(handle))
+		if (auto* data = m_state->resources.swapchains.try_get(handle))
 			return {data->extent.width, data->extent.height};
 
 		return {};
@@ -452,19 +452,19 @@ namespace ember::gpu
 
 	void Device::destroy(SwapchainHandle handle) noexcept
 	{
-		if (m_backend == nullptr)
+		if (m_state == nullptr)
 			return;
 
-		EMBER_ASSERT(m_backend->owner_thread == current_thread_id());
+		EMBER_ASSERT(m_state->owner_thread == current_thread_id());
 
-		vk::SwapchainData* data = m_backend->resources.swapchains.try_get(handle);
+		vk::SwapchainData* data = m_state->resources.swapchains.try_get(handle);
 
 		if (data == nullptr)
 			return;
 
 		// Remove a pending presentation of this swapchain.
-		PendingPresent* pending = m_backend->pending_presents.data();
-		u32& count = m_backend->pending_present_count;
+		PendingPresent* pending = m_state->pending_presents.data();
+		u32& count = m_state->pending_present_count;
 
 		for (u32 i = 0; i < count;)
 		{
@@ -474,7 +474,7 @@ namespace ember::gpu
 				++i;
 		}
 
-		destroy_swapchain_data(*m_backend, *data);
-		(void)m_backend->resources.swapchains.erase(handle);
+		destroy_swapchain_data(*m_state, *data);
+		(void)m_state->resources.swapchains.erase(handle);
 	}
 }

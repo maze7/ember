@@ -113,12 +113,6 @@ namespace ember::gpu
 
 	namespace vk
 	{
-		/// Full backend boot. Loader -> instance -> adapter -> device -> allocator -> PSO cache -> pools -> timeline
-		[[nodiscard]] bool boot(DeviceState& backend, const DeviceDef& def) noexcept;
-
-		/// Reverse of boot(), in struct reverse dependency order. Idempotent.
-		void shutdown(DeviceState& backend) noexcept;
-
 		/// Sets the debug name for a given vulkan object. Useful for viewing in RenderDoc.
 		inline void set_name(const DeviceState& backend, VkObjectType type, u64 handle, const char* name) noexcept
 		{

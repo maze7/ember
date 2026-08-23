@@ -175,7 +175,7 @@ namespace ember::gpu
 		Device(Device&&)				 = delete;
 		Device& operator=(Device&&)		 = delete;
 
-		[[nodiscard]] explicit operator bool() const noexcept { return m_backend != nullptr; }
+		[[nodiscard]] explicit operator bool() const noexcept { return m_state != nullptr; }
 
 		[[nodiscard]] const DeviceCaps& caps() const noexcept;
 		[[nodiscard]] bool device_lost() const noexcept;
@@ -219,8 +219,11 @@ namespace ember::gpu
 		[[nodiscard]] static u32 validation_warning_count() noexcept;
 
 	private:
+		void destroy_resources() noexcept;
+		void shutdown() noexcept;
+
 		/// Compile-time polymorphic platform-specific state (Vulkan, DX12, etc.)
-		DeviceState* m_backend = nullptr;
+		DeviceState* m_state = nullptr;
 	};
 }
 

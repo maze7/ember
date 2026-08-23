@@ -1,6 +1,6 @@
 #include "ember/gpu/common.h"
 #include "ember/sync/thread.h"
-#include "gpu/validation.h"
+#include "platform/vulkan/wsi.h"
 #include <ember/core/common.h>
 #include <ember/core/profile.h>
 #include <ember/gpu/device.h>
@@ -15,6 +15,944 @@ namespace ember::gpu
 		/// One device at a time: pool indicies are bindless slots, so two devices sharing
 		/// handle types would alias each other's heaps. Mirrors the Platform claim guard.
 		constinit std::atomic<bool> s_device_claimed{false};
+
+		/// Appends `next` to a pNext chain and advances the tail.
+		inline void chain_append(VkBaseOutStructure*& tail, void* next) noexcept
+		{
+			tail->pNext = static_cast<VkBaseOutStructure*>(next);
+			tail		= tail->pNext;
+		}
+
+		/**
+		 * Every feature struct ember queries or enables, as plain members.
+		 * The REQUIRED_* tables point into these; build_feature_chain() wires the pNext chain.
+		 *
+		 * A new extension is one member here, one conditional in build_feature_chain(), and its
+		 * table entries.
+		 */
+		struct FeatureSet
+		{
+			VkPhysicalDeviceFeatures2 features2{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+			VkPhysicalDeviceVulkan11Features vulkan11{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+			VkPhysicalDeviceVulkan12Features vulkan12{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+			VkPhysicalDeviceVulkan13Features vulkan13{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+			VkPhysicalDeviceMeshShaderFeaturesEXT mesh_shader{
+				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
+
+			// Copying a wired set would dangle its internal chain; keep it impossible.
+			FeatureSet() noexcept					 = default;
+			FeatureSet(const FeatureSet&)			 = delete;
+			FeatureSet& operator=(const FeatureSet&) = delete;
+		};
+
+		/**
+		 * Wires the chain and returns its head, ready for vkGetPhysicalDeviceFeatures2 or
+		 * VkDeviceCreateInfo::pNext. Wire each instance one. Extension structs join only when the
+		 * adapter offers the extension: for device creation, a feature struct without its extension
+		 * enabled is a validation error.
+		 */
+		[[nodiscard]] VkPhysicalDeviceFeatures2* build_feature_chain(FeatureSet& set, bool with_mesh_shader) noexcept
+		{
+			auto* tail = reinterpret_cast<VkBaseOutStructure*>(&set.features2);
+
+			chain_append(tail, &set.vulkan11);
+			chain_append(tail, &set.vulkan12);
+			chain_append(tail, &set.vulkan13);
+
+			if (with_mesh_shader)
+				chain_append(tail, &set.mesh_shader);
+
+			return &set.features2;
+		}
+
+		/// One required feature: a typed pointer-to-member plus its name for diagnostics.
+		template <typename S> struct FeatureRef
+		{
+			VkBool32 S::* flag;
+			const char* name;
+		};
+
+		using Features10 = VkPhysicalDeviceFeatures;
+		using Features11 = VkPhysicalDeviceVulkan11Features;
+		using Features12 = VkPhysicalDeviceVulkan12Features;
+		using Features13 = VkPhysicalDeviceVulkan13Features;
+
+		// Stringizes each member exactly once
+#define EMBER_FEATURE(S, m)                                                                                            \
+	FeatureRef<S> { &S::m, #m }
+
+		/**
+		 * The required feature set, one table per chain struct. An adapter missing any entry
+		 * is rejected by name. The same tables drive enabling at device creation, so the check
+		 * and the enable can never drift. Grouping comments say *why* each feature is required.
+		 */
+		constexpr FeatureRef<Features10> REQUIRED_10[] = {
+			// Roadmap 2022 feature set
+			EMBER_FEATURE(Features10, samplerAnisotropy),
+			EMBER_FEATURE(Features10, depthClamp),
+			EMBER_FEATURE(Features10, depthBiasClamp),
+			EMBER_FEATURE(Features10, independentBlend),
+			EMBER_FEATURE(Features10, imageCubeArray),
+			EMBER_FEATURE(Features10, fragmentStoresAndAtomics),
+			EMBER_FEATURE(Features10, fullDrawIndexUint32),
+			EMBER_FEATURE(Features10, drawIndirectFirstInstance),
+			EMBER_FEATURE(Features10, shaderStorageImageExtendedFormats),
+			// Desktop-universal, required by ember
+			EMBER_FEATURE(Features10, multiDrawIndirect),
+			EMBER_FEATURE(Features10, textureCompressionBC),
+			EMBER_FEATURE(Features10, shaderStorageImageReadWithoutFormat),
+			EMBER_FEATURE(Features10, shaderStorageImageWriteWithoutFormat),
+		};
+
+		constexpr FeatureRef<Features11> REQUIRED_11[] = {
+			// Roadmap 2022 feature set
+			EMBER_FEATURE(Features11, shaderDrawParameters),
+		};
+
+		constexpr FeatureRef<Features12> REQUIRED_12[] = {
+			// 1.2 core-mandatory
+			EMBER_FEATURE(Features12, timelineSemaphore),
+			EMBER_FEATURE(Features12, hostQueryReset),
+			// Roadmap 2022 feature set: the bindless heap and friends
+			EMBER_FEATURE(Features12, descriptorIndexing),
+			EMBER_FEATURE(Features12, runtimeDescriptorArray),
+			EMBER_FEATURE(Features12, descriptorBindingPartiallyBound),
+			EMBER_FEATURE(Features12, descriptorBindingSampledImageUpdateAfterBind),
+			EMBER_FEATURE(Features12, descriptorBindingStorageImageUpdateAfterBind),
+			EMBER_FEATURE(Features12, descriptorBindingStorageBufferUpdateAfterBind),
+			EMBER_FEATURE(Features12, descriptorBindingUpdateUnusedWhilePending),
+			EMBER_FEATURE(Features12, shaderSampledImageArrayNonUniformIndexing),
+			EMBER_FEATURE(Features12, shaderStorageBufferArrayNonUniformIndexing),
+			EMBER_FEATURE(Features12, shaderStorageImageArrayNonUniformIndexing),
+			EMBER_FEATURE(Features12, scalarBlockLayout),
+		};
+
+		constexpr FeatureRef<Features13> REQUIRED_13[] = {
+			// 1.3 core-mandatory
+			EMBER_FEATURE(Features13, dynamicRendering),
+			EMBER_FEATURE(Features13, synchronization2),
+			EMBER_FEATURE(Features13, maintenance4),
+		};
+
+#undef EMBER_FEATURE
+
+		/**
+		 * Scans a whole table before answering, so an under-spec adapter logs its complete gap
+		 * list in one boot instead of one feature per attempt.
+		 */
+		template <typename S, size_t N>
+		[[nodiscard]] bool
+		check_features(const S& available, const FeatureRef<S> (&required)[N], const char* adapter_name) noexcept
+		{
+			bool ok = true;
+
+			for (const FeatureRef<S>& feature : required)
+			{
+				if (available.*feature.flag != VK_TRUE)
+				{
+					EMBER_INFO("vulkan: skipping {}: missing feature {}", adapter_name, feature.name);
+					ok = false;
+				}
+			}
+
+			return ok;
+		}
+
+		template <typename S, size_t N> void enable_features(S& enabled, const FeatureRef<S> (&required)[N]) noexcept
+		{
+			for (const FeatureRef<S>& feature : required)
+				enabled.*feature.flag = VK_TRUE;
+		}
+
+		[[nodiscard]] bool has_layer(Span<const VkLayerProperties> layers, const char* name) noexcept
+		{
+			return std::any_of(
+				layers.begin(),
+				layers.end(),
+				[name](const VkLayerProperties& layer) { return std::strcmp(layer.layerName, name) == 0; });
+		}
+
+		[[nodiscard]] bool has_extension(Span<const VkExtensionProperties> extensions, const char* name) noexcept
+		{
+			return std::any_of(
+				extensions.begin(),
+				extensions.end(),
+				[name](const VkExtensionProperties& ext) { return std::strcmp(ext.extensionName, name) == 0; });
+		}
+
+		/// Appends the instance extensions exposed by `layer` (null = loader + implicit layers)
+		void append_instance_extensions(const char* layer, Vector<VkExtensionProperties>& out) noexcept
+		{
+			u32 count = 0;
+
+			if (vkEnumerateInstanceExtensionProperties(layer, &count, nullptr) != VK_SUCCESS || count == 0)
+				return;
+
+			size_t base = out.size();
+			out.resize(base + count);
+
+			if (vkEnumerateInstanceExtensionProperties(layer, &count, out.data() + base) != VK_SUCCESS)
+				out.resize(base);
+		}
+
+		VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
+			VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+			VkDebugUtilsMessageTypeFlagsEXT /*types*/,
+			const VkDebugUtilsMessengerCallbackDataEXT* data,
+			void* user) noexcept
+		{
+			DebugState& debug = *static_cast<DebugState*>(user);
+			const char* id	  = data->pMessageIdName != nullptr ? data->pMessageIdName : "?";
+
+			if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0)
+			{
+				debug.errors.fetch_add(1, std::memory_order_relaxed);
+				EMBER_ERROR("vulkan[{}]: {}", id, data->pMessage);
+				// Breaks inside the offending vkCmd*/vkCreate* call: the call stack is the diagnosis.
+				EMBER_ASSERT(!debug.break_on_error && "Vulkan validation error");
+			}
+			else if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) != 0)
+			{
+				debug.warnings.fetch_add(1, std::memory_order_relaxed);
+				EMBER_WARN("vulkan[{}]: {}", id, data->pMessage);
+			}
+			else
+			{
+				EMBER_TRACE("vulkan[{}]: {}", id, data->pMessage);
+			}
+
+			return VK_FALSE; // never abort the call: the layer's job is to report
+		}
+
+		constexpr const char* VALIDATION_LAYER = "VK_LAYER_KHRONOS_validation";
+
+		/// Loader -> layers/extensions -> instance -> volk instance table -> debug messenger.
+		[[nodiscard]] bool create_instance(DeviceState& state, const DeviceDef& def) noexcept
+		{
+			/// Loader. With a Platform*, SDL owns the Vulkan library so our calls and its
+			/// surface creation share one loader instance; headless boots dlopen it via volk.
+			if (state.platform != nullptr)
+			{
+				const auto proc = platform::vk::get_instance_proc_addr();
+
+				if (proc == nullptr)
+				{
+					EMBER_ERROR("vulkan: platform provided no Vulkan loader");
+					return false;
+				}
+
+				volkInitializeCustom(proc);
+			}
+			else if (auto result = volkInitialize(); result != VK_SUCCESS)
+			{
+				EMBER_ERROR("vulkan: no Vulkan loader on this system ({})", vk::result_name(result));
+				return false;
+			}
+
+			u32 loader_version = volkGetInstanceVersion();
+			if (loader_version < vk::API_VERSION)
+			{
+				EMBER_ERROR(
+					"vulkan: loader supports {}.{}, Vulkan 1.3 is required",
+					VK_API_VERSION_MAJOR(loader_version),
+					VK_API_VERSION_MINOR(loader_version));
+				return false;
+			}
+
+			Vector<VkLayerProperties> layers(&memory::heap(MemoryTag::Graphics));
+			u32 layer_count = 0;
+
+			if (vkEnumerateInstanceLayerProperties(&layer_count, nullptr) == VK_SUCCESS && layer_count != 0)
+			{
+				layers.resize(layer_count);
+
+				if (vkEnumerateInstanceLayerProperties(&layer_count, layers.data()) != VK_SUCCESS)
+					layers.clear();
+			}
+
+			Vector<VkExtensionProperties> extensions(&memory::heap(MemoryTag::Graphics));
+			append_instance_extensions(nullptr, extensions);
+
+			Vector<const char*> enabled_layers(&memory::heap(MemoryTag::Graphics));
+			Vector<const char*> enabled_extensions(&memory::heap(MemoryTag::Graphics));
+
+			if (def.enable_validation)
+			{
+				if (has_layer(layers, VALIDATION_LAYER))
+				{
+					enabled_layers.push_back(VALIDATION_LAYER);
+					state.validation = true;
+
+					// The layer contributes extensions of its own (VK_EXT_validation_features).
+					append_instance_extensions(VALIDATION_LAYER, extensions);
+				}
+				else
+				{
+					EMBER_WARN("vulkan: {} not installed, running without validation", VALIDATION_LAYER);
+				}
+			}
+
+			// Debug utils stays on in every build when available: object names and pass labels
+			// in RenderDoc/Nsight cost nothing measurable.
+			if (has_extension(extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME))
+			{
+				enabled_extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+				state.debug_utils = true;
+			}
+
+			const Span<const char* const> wsi = platform::vk::instance_extensions();
+
+			if (wsi.empty())
+			{
+				EMBER_ERROR("vulkan: platform reports no Vulkan window-system support");
+				return false;
+			}
+
+			for (const char* name : wsi)
+			{
+				if (!has_extension(extensions, name))
+				{
+					EMBER_ERROR("vulkan: window system needs {} which this loader lacks", name);
+					return false;
+				}
+
+				enabled_extensions.push_back(name);
+			}
+
+			// pNext chain. Passing the messenger info to vkCreateInstance makes instance
+			// creation and destruction themselves validated; the same struct creates the
+			// persistent messenger below.
+			const void* next = nullptr;
+
+			VkDebugUtilsMessengerCreateInfoEXT messenger_info{
+				.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+				.messageSeverity =
+					VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+				.messageType =
+					VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+				.pfnUserCallback = debug_callback,
+				.pUserData		 = &debug_state(),
+			};
+
+			if (state.debug_utils)
+			{
+				messenger_info.pNext = next;
+				next				 = &messenger_info;
+			}
+
+			const VkValidationFeatureEnableEXT sync_validation[] = {
+				VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT};
+
+			VkValidationFeaturesEXT validation_features{
+				.sType						   = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT,
+				.enabledValidationFeatureCount = 1,
+				.pEnabledValidationFeatures	   = sync_validation,
+			};
+
+			if (state.validation && def.enable_sync_validation)
+			{
+				if (has_extension(extensions, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME))
+				{
+					enabled_extensions.push_back(VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
+					validation_features.pNext = next;
+					next					  = &validation_features;
+				}
+				else
+				{
+					EMBER_WARN(
+						"vulkan: synchronization validation requested but {} is unavailable",
+						VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
+				}
+			}
+
+			VkApplicationInfo app_info{
+				.sType				= VK_STRUCTURE_TYPE_APPLICATION_INFO,
+				.pApplicationName	= def.app_name,
+				.applicationVersion = VK_MAKE_VERSION(1, 0, 0),
+				.pEngineName		= "Ember",
+				.engineVersion		= VK_MAKE_VERSION(0, 1, 0),
+				.apiVersion			= vk::API_VERSION,
+			};
+
+			VkInstanceCreateInfo info{
+				.sType					 = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+				.pNext					 = next,
+				.pApplicationInfo		 = &app_info,
+				.enabledLayerCount		 = static_cast<u32>(enabled_layers.size()),
+				.ppEnabledLayerNames	 = enabled_layers.data(),
+				.enabledExtensionCount	 = static_cast<u32>(enabled_extensions.size()),
+				.ppEnabledExtensionNames = enabled_extensions.data(),
+			};
+
+			if (auto result = vkCreateInstance(&info, nullptr, &state.instance); result != VK_SUCCESS)
+			{
+				EMBER_ERROR("vulkan: vkCreateInstance failed: {}", vk::result_name(result));
+				state.instance = VK_NULL_HANDLE;
+				return false;
+			}
+
+			// instance-level entry points only; device ones load per device in create_device,
+			// skipping the loader's runtime dispatch trampoline entirely.
+			volkLoadInstanceOnly(state.instance);
+
+			if (state.debug_utils)
+			{
+				messenger_info.pNext = nullptr;
+
+				if (vkCreateDebugUtilsMessengerEXT(state.instance, &messenger_info, nullptr, &state.messenger) !=
+					VK_SUCCESS)
+				{
+					EMBER_WARN("vulkan: debug messenger creation failed; continuing without it");
+					state.messenger = VK_NULL_HANDLE;
+				}
+			}
+
+			return true;
+		}
+
+		/// Everything adapter selection learns and device creation consumes.
+		struct AdapterInfo
+		{
+			VkPhysicalDevice handle = VK_NULL_HANDLE;
+			VkPhysicalDeviceProperties properties{};
+
+			u32 graphics_family = VK_QUEUE_FAMILY_IGNORED;
+			u32 compute_family	= VK_QUEUE_FAMILY_IGNORED; // dedicated (no graphics); optional
+			u32 transfer_family = VK_QUEUE_FAMILY_IGNORED; // dedicated (no graphics/compute); optional
+
+			bool mesh_shader											   = false;
+			bool memory_budget											   = false;
+			u32 subgroup_size											   = 0;
+			char driver[VK_MAX_DRIVER_NAME_SIZE + VK_MAX_DRIVER_INFO_SIZE] = {};
+		};
+
+		[[nodiscard]] AdapterKind to_adapter_kind(VkPhysicalDeviceType type) noexcept
+		{
+			switch (type)
+			{
+				case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
+					return AdapterKind::Integrated;
+				case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
+					return AdapterKind::Discrete;
+				case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
+					return AdapterKind::Virtual;
+				case VK_PHYSICAL_DEVICE_TYPE_CPU:
+					return AdapterKind::Cpu;
+				default:
+					return AdapterKind::Other;
+			}
+		}
+
+		/// Higher wins; strictly-greater comparison keeps enumeration order on ties (deterministic).
+		[[nodiscard]] int adapter_score(AdapterKind kind, AdapterPreference preference) noexcept
+		{
+			switch (preference)
+			{
+				case AdapterPreference::Any:
+					return 1;
+
+				case AdapterPreference::Integrated:
+					switch (kind)
+					{
+						case AdapterKind::Integrated:
+							return 4;
+						case AdapterKind::Discrete:
+							return 3;
+						case AdapterKind::Virtual:
+							return 2;
+						case AdapterKind::Cpu:
+							return 1;
+						default:
+							return 0;
+					}
+
+				case AdapterPreference::Discrete:
+				default:
+					switch (kind)
+					{
+						case AdapterKind::Discrete:
+							return 4;
+						case AdapterKind::Integrated:
+							return 3;
+						case AdapterKind::Virtual:
+							return 2;
+						case AdapterKind::Cpu:
+							return 1;
+						default:
+							return 0;
+					}
+			}
+		}
+
+		[[nodiscard]] u32 find_queue_family(
+			Span<const VkQueueFamilyProperties> families, VkQueueFlags required, VkQueueFlags forbidden) noexcept
+		{
+			for (u32 i = 0; i < families.size(); ++i)
+			{
+				const VkQueueFlags flags = families[i].queueFlags;
+
+				if ((flags & required) == required && (flags & forbidden) == 0)
+					return i;
+			}
+
+			return VK_QUEUE_FAMILY_IGNORED;
+		}
+
+		/// Rejects adapters that cannot run ember's contract. Fills `out` for the ones that can.
+		[[nodiscard]] bool query_adapter(const DeviceState& state, VkPhysicalDevice handle, AdapterInfo& out) noexcept
+		{
+			out.handle = handle;
+			vkGetPhysicalDeviceProperties(handle, &out.properties);
+
+			const char* name = out.properties.deviceName;
+
+			if (out.properties.apiVersion < vk::API_VERSION)
+			{
+				EMBER_INFO(
+					"vulkan: skipping {}: Vulkan {}.{} < 1.3",
+					name,
+					VK_API_VERSION_MAJOR(out.properties.apiVersion),
+					VK_API_VERSION_MINOR(out.properties.apiVersion));
+				return false;
+			}
+
+			Vector<VkExtensionProperties> extensions(&memory::heap(MemoryTag::Graphics));
+			u32 count = 0;
+
+			if (vkEnumerateDeviceExtensionProperties(handle, nullptr, &count, nullptr) == VK_SUCCESS && count != 0)
+			{
+				extensions.resize(count);
+
+				if (vkEnumerateDeviceExtensionProperties(handle, nullptr, &count, extensions.data()) != VK_SUCCESS)
+					extensions.clear();
+			}
+
+			if (state.platform != nullptr && !has_extension(extensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
+			{
+				EMBER_INFO("vulkan: skipping {}: no {}", name, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+				return false;
+			}
+
+			out.mesh_shader	  = has_extension(extensions, VK_EXT_MESH_SHADER_EXTENSION_NAME);
+			out.memory_budget = has_extension(extensions, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+
+			// Features: reject on missing required ones, logging every gap in a single pass.
+			FeatureSet available{};
+			vkGetPhysicalDeviceFeatures2(handle, build_feature_chain(available, out.mesh_shader));
+
+			bool features_ok  = true;
+			features_ok		 &= check_features(available.features2.features, REQUIRED_10, name);
+			features_ok		 &= check_features(available.vulkan11, REQUIRED_11, name);
+			features_ok		 &= check_features(available.vulkan12, REQUIRED_12, name);
+			features_ok		 &= check_features(available.vulkan13, REQUIRED_13, name);
+
+			if (!features_ok)
+				return false;
+
+			// Extension present but its features aren't: treat as absent.
+			if (out.mesh_shader &&
+				(available.mesh_shader.meshShader != VK_TRUE || available.mesh_shader.taskShader != VK_TRUE))
+				out.mesh_shader = false;
+
+			// Queues. The main family must do graphics+compute (universal on desktop) and, when a
+			// window system exists, present: a separate present queue would buy queue-ownership
+			// transfers every frame for zero real-world benefit on PC.
+			Vector<VkQueueFamilyProperties> families(&memory::heap(MemoryTag::Graphics));
+			vkGetPhysicalDeviceQueueFamilyProperties(handle, &count, nullptr);
+			families.resize(count);
+			vkGetPhysicalDeviceQueueFamilyProperties(handle, &count, families.data());
+
+			for (u32 i = 0; i < count; ++i)
+			{
+				constexpr VkQueueFlags GRAPHICS_COMPUTE = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
+
+				if ((families[i].queueFlags & GRAPHICS_COMPUTE) != GRAPHICS_COMPUTE)
+					continue;
+
+				if (state.platform != nullptr && !platform::vk::presentation_supported(state.instance, handle, i))
+					continue;
+
+				out.graphics_family = i;
+				break;
+			}
+
+			if (out.graphics_family == VK_QUEUE_FAMILY_IGNORED)
+			{
+				EMBER_INFO(
+					"vulkan: skipping {}: no graphics+compute{} queue family",
+					name,
+					state.platform != nullptr ? "+present" : "");
+				return false;
+			}
+
+			// Dedicated families for future async work; absent on some adapters, and that's fine.
+			out.compute_family = find_queue_family(families, VK_QUEUE_COMPUTE_BIT, VK_QUEUE_GRAPHICS_BIT);
+			out.transfer_family =
+				find_queue_family(families, VK_QUEUE_TRANSFER_BIT, VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT);
+
+			// Properties beyond 1.0: subgroup size for caps, driver name/info for the boot log.
+			VkPhysicalDeviceDriverProperties driver{
+				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
+			};
+			VkPhysicalDeviceVulkan11Properties props11{
+				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES,
+				.pNext = &driver,
+			};
+			VkPhysicalDeviceProperties2 props2{
+				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+				.pNext = &props11,
+			};
+			vkGetPhysicalDeviceProperties2(handle, &props2);
+
+			out.subgroup_size = props11.subgroupSize;
+			std::snprintf(out.driver, sizeof(out.driver), "%s %s", driver.driverName, driver.driverInfo);
+
+			return true;
+		}
+
+		/**
+		 * Filter-then-score: query_adapter rejects anything that cannot run the contract, then
+		 * the best-scoring survivor wins. Strictly-greater keeps enumeration order on ties.
+		 */
+		[[nodiscard]] bool select_adapter(const DeviceState& backend, const DeviceDef& def, AdapterInfo& out) noexcept
+		{
+			u32 count = 0;
+
+			if (vkEnumeratePhysicalDevices(backend.instance, &count, nullptr) != VK_SUCCESS || count == 0)
+			{
+				EMBER_ERROR("vulkan: no physical devices");
+				return false;
+			}
+
+			Vector<VkPhysicalDevice> adapters(&memory::heap(MemoryTag::Graphics));
+			adapters.resize(count);
+
+			if (vkEnumeratePhysicalDevices(backend.instance, &count, adapters.data()) != VK_SUCCESS)
+				return false;
+
+			int best_score = -1;
+
+			for (VkPhysicalDevice handle : adapters)
+			{
+				AdapterInfo candidate{};
+
+				if (!query_adapter(backend, handle, candidate))
+					continue;
+
+				const int score = adapter_score(to_adapter_kind(candidate.properties.deviceType), def.adapter);
+
+				// Copy-on-better on purpose: boot reads the winner's full AdapterInfo.
+				if (score > best_score)
+				{
+					best_score = score;
+					out		   = candidate;
+				}
+			}
+
+			if (best_score < 0)
+			{
+				EMBER_ERROR("vulkan: no adapter satisfies the Vulkan 1.3 feature set ember requires");
+				return false;
+			}
+
+			return true;
+		}
+
+		/**
+		 * Logical device with exactly the required tables plus available optionals — never
+		 * "everything the adapter has": unused features (robustBufferAccess, ...) can cost real
+		 * GPU time. One queue per distinct family; dedicated compute/transfer families are
+		 * created now so async work needs no boot changes later.
+		 */
+		[[nodiscard]] bool create_device(DeviceState& state, const AdapterInfo& adapter) noexcept
+		{
+			const f32 priority = 1.0f;
+			VkDeviceQueueCreateInfo queue_infos[3]{};
+			u32 queue_count = 0;
+
+			// present_family == graphics_family by the selection contract, so three slots suffice.
+			const auto add_queue = [&](u32 family)
+			{
+				if (family == VK_QUEUE_FAMILY_IGNORED)
+					return;
+
+				for (u32 i = 0; i < queue_count; ++i)
+					if (queue_infos[i].queueFamilyIndex == family)
+						return;
+
+				queue_infos[queue_count++] = {
+					.sType			  = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+					.queueFamilyIndex = family,
+					.queueCount		  = 1,
+					.pQueuePriorities = &priority,
+				};
+			};
+
+			add_queue(adapter.graphics_family);
+			add_queue(adapter.compute_family);
+			add_queue(adapter.transfer_family);
+
+			FeatureSet available{};
+			vkGetPhysicalDeviceFeatures2(adapter.handle, build_feature_chain(available, adapter.mesh_shader));
+
+			FeatureSet enabled{};
+			enable_features(enabled.features2.features, REQUIRED_10);
+			enable_features(enabled.vulkan11, REQUIRED_11);
+			enable_features(enabled.vulkan12, REQUIRED_12);
+			enable_features(enabled.vulkan13, REQUIRED_13);
+
+			// Optional features, enabled when present. Plain code, not a table: each has a
+			// heterogeneous target (user-facing caps vs backend-only flags) that a uniform
+			// table can't express without machinery outweighing four entries.
+			if (available.vulkan12.drawIndirectCount == VK_TRUE)
+			{
+				enabled.vulkan12.drawIndirectCount = VK_TRUE;
+				state.caps.indirect_count		   = true;
+			}
+
+			if (available.vulkan12.samplerFilterMinmax == VK_TRUE)
+			{
+				enabled.vulkan12.samplerFilterMinmax = VK_TRUE;
+				state.caps.sampler_minmax			 = true;
+			}
+
+			if (available.vulkan12.bufferDeviceAddress == VK_TRUE)
+			{
+				enabled.vulkan12.bufferDeviceAddress = VK_TRUE;
+				state.buffer_device_address			 = true;
+			}
+
+			if (available.features2.features.fillModeNonSolid == VK_TRUE)
+			{
+				enabled.features2.features.fillModeNonSolid = VK_TRUE;
+				state.caps.wireframe						= true;
+			}
+
+			const char* extensions[3];
+			u32 extension_count = 0;
+
+			if (state.platform != nullptr)
+				extensions[extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+
+			// Extension-gated features: the extension string and its feature structs travel
+			// together, which is why mesh shaders live here and not in the tables.
+			if (adapter.mesh_shader)
+			{
+				extensions[extension_count++]  = VK_EXT_MESH_SHADER_EXTENSION_NAME;
+				enabled.mesh_shader.taskShader = VK_TRUE;
+				enabled.mesh_shader.meshShader = VK_TRUE;
+				state.caps.mesh_shaders		   = true;
+			}
+
+			if (adapter.memory_budget)
+			{
+				extensions[extension_count++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+				state.memory_budget			  = true;
+			}
+
+			VkDeviceCreateInfo info{
+				.sType					 = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+				.pNext					 = build_feature_chain(enabled, adapter.mesh_shader),
+				.queueCreateInfoCount	 = queue_count,
+				.pQueueCreateInfos		 = queue_infos,
+				.enabledExtensionCount	 = extension_count,
+				.ppEnabledExtensionNames = extensions,
+			};
+
+			if (auto result = vkCreateDevice(adapter.handle, &info, nullptr, &state.device); result != VK_SUCCESS)
+			{
+				EMBER_ERROR("vulkan: vkCreateDevice failed: {}", vk::result_name(result));
+				state.device = VK_NULL_HANDLE;
+				return false;
+			}
+
+			// Direct device-level entry points: no per-call dispatch through the loader.
+			volkLoadDevice(state.device);
+
+			const auto fetch_queue = [&](u32 family, Queue& queue)
+			{
+				queue.family = family;
+				vkGetDeviceQueue(state.device, family, 0, &queue.handle);
+			};
+
+			fetch_queue(adapter.graphics_family, state.graphics);
+
+			if (adapter.compute_family != VK_QUEUE_FAMILY_IGNORED)
+				fetch_queue(adapter.compute_family, state.compute);
+			else
+				state.compute = state.graphics;
+
+			if (adapter.transfer_family != VK_QUEUE_FAMILY_IGNORED)
+				fetch_queue(adapter.transfer_family, state.transfer);
+			else
+				state.transfer = state.graphics;
+
+			vk::set_name(state, VK_OBJECT_TYPE_DEVICE, (u64)state.device, "ember.device");
+			vk::set_name(state, VK_OBJECT_TYPE_QUEUE, (u64)state.graphics.handle, "ember.queue.graphics");
+
+			return true;
+		}
+
+		/// VMA fetches every entry point through volk's two loaders; nothing links libvulkan.
+		[[nodiscard]] bool create_allocator(DeviceState& state) noexcept
+		{
+			VmaVulkanFunctions functions{};
+			functions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
+			functions.vkGetDeviceProcAddr	= vkGetDeviceProcAddr;
+
+			// Assignment, not designated init: VMA's member order is not stable across versions.
+			VmaAllocatorCreateInfo info{};
+			info.physicalDevice	  = state.adapter;
+			info.device			  = state.device;
+			info.instance		  = state.instance;
+			info.pVulkanFunctions = &functions;
+			info.vulkanApiVersion = vk::API_VERSION;
+
+			if (state.buffer_device_address)
+				info.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+
+			if (state.memory_budget)
+				info.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+
+			if (const VkResult result = vmaCreateAllocator(&info, &state.allocator); result != VK_SUCCESS)
+			{
+				EMBER_ERROR("vulkan: vmaCreateAllocator failed: {}", vk::result_name(result));
+				state.allocator = VK_NULL_HANDLE;
+				return false;
+			}
+
+			return true;
+		}
+
+		/**
+		 * Everything user code and the backend consult at runtime, derived once. Optional-feature
+		 * caps (wireframe, indirect_count, sampler_minmax, mesh_shaders) were already set while
+		 * enabling them in create_device.
+		 */
+		void fill_caps(DeviceState& state, const AdapterInfo& adapter) noexcept
+		{
+			DeviceCaps& caps					 = state.caps;
+			const VkPhysicalDeviceLimits& limits = state.properties.limits;
+
+			std::snprintf(
+				caps.adapter_name,
+				sizeof(caps.adapter_name),
+				"%.*s",
+				static_cast<int>(sizeof(caps.adapter_name) - 1),
+				state.properties.deviceName);
+			caps.vendor_id	  = state.properties.vendorID;
+			caps.device_id	  = state.properties.deviceID;
+			caps.api_version  = state.properties.apiVersion;
+			caps.adapter_kind = to_adapter_kind(state.properties.deviceType);
+
+			// Memory: total device-local, and whether a large DEVICE_LOCAL|HOST_VISIBLE type
+			// exists. A 256 MB heap is the pre-ReBAR BAR window; anything larger is ReBAR/SAM or
+			// unified memory, which lets the transient ring live in VRAM.
+			const VkPhysicalDeviceMemoryProperties& mem = state.memory_properties;
+
+			for (u32 i = 0; i < mem.memoryHeapCount; ++i)
+				if ((mem.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0)
+					caps.device_local_bytes += mem.memoryHeaps[i].size;
+
+			for (u32 i = 0; i < mem.memoryTypeCount; ++i)
+			{
+				constexpr VkMemoryPropertyFlags LOCAL_VISIBLE =
+					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+
+				const VkMemoryType& type = mem.memoryTypes[i];
+
+				if ((type.propertyFlags & LOCAL_VISIBLE) == LOCAL_VISIBLE &&
+					mem.memoryHeaps[type.heapIndex].size > 256_mb)
+					caps.host_visible_device_local = true;
+			}
+
+			caps.constant_buffer_offset_alignment = static_cast<u32>(limits.minUniformBufferOffsetAlignment);
+			caps.storage_buffer_offset_alignment  = static_cast<u32>(limits.minStorageBufferOffsetAlignment);
+			caps.max_constant_block_bytes		  = std::min<u32>(limits.maxUniformBufferRange, 64u * 1024u);
+			caps.copy_row_pitch_alignment		  = static_cast<u32>(limits.optimalBufferCopyRowPitchAlignment);
+			caps.copy_offset_alignment			  = static_cast<u32>(limits.optimalBufferCopyOffsetAlignment);
+
+			caps.max_texture_2d		   = limits.maxImageDimension2D;
+			caps.max_texture_3d		   = limits.maxImageDimension3D;
+			caps.max_texture_layers	   = limits.maxImageArrayLayers;
+			caps.max_color_attachments = std::min(limits.maxColorAttachments, MAX_COLOR_ATTACHMENTS);
+			caps.max_anisotropy		   = static_cast<u32>(limits.maxSamplerAnisotropy);
+			caps.subgroup_size		   = adapter.subgroup_size;
+
+			caps.timestamps			 = limits.timestampComputeAndGraphics == VK_TRUE && limits.timestampPeriod > 0.0f;
+			caps.timestamp_period_ns = limits.timestampPeriod;
+
+			caps.ray_tracing = false; // reserved
+
+			// Contract sanity: guaranteed by spec minimums, asserted so a broken driver is loud.
+			EMBER_ASSERT(limits.maxPushConstantsSize >= PUSH_CONSTANT_BYTES);
+			EMBER_ASSERT(limits.maxBoundDescriptorSets >= 2);
+		}
+
+		[[nodiscard]] bool create_frame_resources(DeviceState& state) noexcept
+		{
+			VkSemaphoreTypeCreateInfo type_info{
+				.sType		   = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+				.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+				.initialValue  = 0,
+			};
+
+			VkSemaphoreCreateInfo semaphore_info{
+				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+				.pNext = &type_info,
+			};
+
+			VkSemaphore timeline = VK_NULL_HANDLE;
+			VkResult result		 = vkCreateSemaphore(state.device, &semaphore_info, nullptr, &timeline);
+
+			if (result != VK_SUCCESS)
+			{
+				EMBER_ERROR("vulkan: timeline semaphore creation failed: {}", vk::result_name(result));
+				return false;
+			}
+
+			state.timeline = timeline;
+			vk::set_name(state, VK_OBJECT_TYPE_SEMAPHORE, reinterpret_cast<u64>(timeline), "ember.frame_timeline");
+
+			for (u32 i = 0; i < state.frames_in_flight; ++i)
+			{
+				FrameSlot& slot = state.slots[i];
+				VkCommandPoolCreateInfo pool_info{
+					.sType			  = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+					.queueFamilyIndex = state.graphics.family,
+				};
+
+				VkCommandPool pool = VK_NULL_HANDLE;
+				result			   = vkCreateCommandPool(state.device, &pool_info, nullptr, &pool);
+
+				if (result != VK_SUCCESS)
+				{
+					EMBER_ERROR("vulkan: frame command pool creation failed: {}", vk::result_name(result));
+					return false;
+				}
+
+				// Publish immediately so centralized rollback can destroy it.
+				slot.pool = pool;
+				VkCommandBufferAllocateInfo allocation_info{
+					.sType				= VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+					.commandPool		= pool,
+					.level				= VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+					.commandBufferCount = 1,
+				};
+
+				VkCommandBuffer commands = VK_NULL_HANDLE;
+				result					 = vkAllocateCommandBuffers(state.device, &allocation_info, &commands);
+				if (result != VK_SUCCESS)
+				{
+					EMBER_ERROR("vulkan: frame command-buffer allocation failed: {}", vk::result_name(result));
+					return false;
+				}
+
+				slot.commands = commands;
+			}
+
+			return true;
+		}
 	}
 
 	Device::Device(const DeviceDef& def) noexcept
@@ -27,74 +965,154 @@ namespace ember::gpu
 			return;
 		}
 
-		DeviceState* backend = memory::new_object<DeviceState>(MemoryTag::Graphics);
+		DeviceState* state		= memory::new_object<DeviceState>(MemoryTag::Graphics);
+		state->platform			= def.platform;
+		state->frames_in_flight = def.frames_in_flight;
+		state->resources.reserve(def.limits);
 
-		if (!vk::boot(*backend, def))
+		// Create Vulkan instance (loader, layers, WSI extensions, debug messenger)
+		if (!create_instance(*state, def))
 		{
-			memory::delete_object(MemoryTag::Graphics, backend);
-			s_device_claimed.store(false, std::memory_order_release);
+			shutdown();
 			return;
 		}
 
-		m_backend = backend;
+		// Adapter. Filter on require dfeature set, then score by preference.
+		AdapterInfo adapter{};
+		if (!select_adapter(*state, def, adapter))
+		{
+			shutdown();
+			return;
+		}
+
+		state->adapter	  = adapter.handle;
+		state->properties = adapter.properties;
+		vkGetPhysicalDeviceMemoryProperties(state->adapter, &state->memory_properties);
+
+		// Logical device, queues, allocator
+		if (!create_device(*state, adapter) && !create_allocator(*state))
+		{
+			shutdown();
+			return;
+		}
+
+		fill_caps(*state, adapter);
+
+		if (!create_frame_resources(*state))
+		{
+			shutdown();
+			return;
+		}
+
+		EMBER_INFO(
+			"vulkan: {} ({}) | {} | Vulkan {}.{}.{} | {} MB local{}{} | validation {}",
+			state->caps.adapter_name,
+			enum_names<AdapterKind>()[(u32)state->caps.adapter_kind],
+			adapter.driver,
+			VK_API_VERSION_MAJOR(state->caps.api_version),
+			VK_API_VERSION_MINOR(state->caps.api_version),
+			VK_API_VERSION_PATCH(state->caps.api_version),
+			state->caps.device_local_bytes / (1024 * 1024),
+			state->caps.host_visible_device_local ? " (ReBAR)" : "",
+			state->caps.mesh_shaders ? " | mesh shaders" : "",
+			state->validation ? "on" : "off");
+
+		m_state = state;
 	}
 
-	Device::~Device() noexcept
+	Device::~Device() noexcept { shutdown(); }
+
+	void Device::shutdown() noexcept
 	{
-		if (m_backend == nullptr)
+		if (m_state == nullptr)
 			return;
 
-		EMBER_PROFILE_FUNCTION_C(PROFILE_COLOR_RENDER);
-		EMBER_ASSERT(m_backend->owner_thread == current_thread_id());
+		EMBER_ASSERT(m_state->owner_thread == current_thread_id());
 
-		// Required ordering:
-		// 1. Stop GPU work
-		// 2. Destroy all native pooled resources
-		// 3. Destroy device/context
-		// 4. Release SDL vulkan loader through WSI.
-		wait_idle();
+		// Partial initialization may not have created a device yet.
+		if (m_state->device != VK_NULL_HANDLE)
+			(void)vkDeviceWaitIdle(m_state->device);
 
-		auto& buffers = m_backend->resources.buffers;
-		for (auto it = buffers.begin(); it != buffers.end();)
+		// Destroy surviving user resources while m_state is still published.
+		if (m_state->device != VK_NULL_HANDLE)
 		{
-			const BufferHandle handle = it.handle();
-			++it;
-
-			EMBER_WARN("gpu: buiffer leaked at device destruction");
-			destroy(handle);
+			destroy_resources();
+			vk::drain_deferred_destroys(*m_state, UINT64_MAX);
 		}
 
-		auto& swapchains = m_backend->resources.swapchains;
+		// Destroy vulkan device & all resources that depend on it
+		DeviceState* dead = std::exchange(m_state, nullptr);
+		if (dead->device != VK_NULL_HANDLE)
+		{
+			for (FrameSlot& slot : dead->slots)
+				if (slot.pool != VK_NULL_HANDLE)
+					vkDestroyCommandPool(dead->device, slot.pool, nullptr);
+
+			if (dead->timeline != VK_NULL_HANDLE)
+				vkDestroySemaphore(dead->device, dead->timeline, nullptr);
+
+			if (dead->pipeline_cache != VK_NULL_HANDLE)
+				vkDestroyPipelineCache(dead->device, dead->pipeline_cache, nullptr);
+
+			if (dead->allocator != VK_NULL_HANDLE)
+				vmaDestroyAllocator(dead->allocator);
+
+			vkDestroyDevice(dead->device, nullptr);
+		}
+
+		// Destroy debug messenger
+		if (dead->messenger != VK_NULL_HANDLE)
+			vkDestroyDebugUtilsMessengerEXT(dead->instance, dead->messenger, nullptr);
+
+		// Destroy vulkan instance
+		if (dead->instance != VK_NULL_HANDLE)
+			vkDestroyInstance(dead->instance, nullptr);
+
+		volkFinalize();
+
+		if (dead->platform != nullptr)
+			platform::vk::release_loader();
+
+		memory::delete_object(MemoryTag::Graphics, dead);
+		s_device_claimed.store(false, std::memory_order_release);
+	}
+
+	void Device::destroy_resources() noexcept
+	{
+		// Destroy swapchains
+		auto& swapchains = m_state->resources.swapchains;
 		for (auto it = swapchains.begin(); it != swapchains.end();)
 		{
-			SwapchainHandle handle = it.handle();
+			const SwapchainHandle handle = it.handle();
 			++it;
-
 			EMBER_WARN("gpu: swapchain leaked at device destruction");
 			destroy(handle);
 		}
 
-		vk::drain_deferred_destroys(*m_backend, UINT64_MAX);
-		DeviceState* backend = std::exchange(m_backend, nullptr);
-		vk::shutdown(*backend);
-		memory::delete_object(MemoryTag::Graphics, backend);
-
-		s_device_claimed.store(false, std::memory_order_release);
+		// Destroy buffers
+		auto& buffers = m_state->resources.buffers;
+		for (auto it = buffers.begin(); it != buffers.end();)
+		{
+			const BufferHandle handle = it.handle();
+			++it;
+			EMBER_WARN("gpu: buffer leaked at device destruction");
+			destroy(handle);
+		}
 	}
 
 	void Device::wait_idle() noexcept
 	{
-		if (m_backend == nullptr)
+		if (m_state == nullptr)
 			return;
 
-		EMBER_ASSERT(m_backend->owner_thread == current_thread_id());
+		EMBER_ASSERT(m_state->owner_thread == current_thread_id());
 		EMBER_PROFILE_SCOPE_C("gpu: wait_idle", PROFILE_COLOR_WAIT);
 
-		vk::note_result(*m_backend, vkDeviceWaitIdle(m_backend->device));
+		vk::note_result(*m_state, vkDeviceWaitIdle(m_state->device));
 
 		// Idle means everything signaled: even entries stamped for a submit that never
 		// happened (an open frame at teardown) are safe now.
-		vk::drain_deferred_destroys(*m_backend, UINT64_MAX);
+		vk::drain_deferred_destroys(*m_state, UINT64_MAX);
 	}
 
 	const DeviceCaps& Device::caps() const noexcept
@@ -102,13 +1120,13 @@ namespace ember::gpu
 		// A falsy Device still answers caps(): all-zero caps read as "nothing supported", the
 		// least surprising thing guard omitted user code can observe.
 		static constinit DeviceCaps s_null_caps{};
-		return m_backend != nullptr ? m_backend->caps : s_null_caps;
+		return m_state != nullptr ? m_state->caps : s_null_caps;
 	}
 
 	bool Device::device_lost() const noexcept
 	{
 		// acquire pairs with note_result's exchange: a true here happens-after the loss.
-		return m_backend != nullptr && m_backend->lost.load(std::memory_order_acquire);
+		return m_state != nullptr && m_state->lost.load(std::memory_order_acquire);
 	}
 
 	u32 Device::validation_error_count() noexcept
@@ -117,21 +1135,18 @@ namespace ember::gpu
 		return debug_state().errors.load(std::memory_order_relaxed);
 	}
 
-	u32 Device::validation_warning_count() noexcept
-	{
-		return debug_state().warnings.load(std::memory_order_relaxed);
-	}
+	u32 Device::validation_warning_count() noexcept { return debug_state().warnings.load(std::memory_order_relaxed); }
 
 	FrameInfo Device::begin_frame() noexcept
 	{
-		if (m_backend == nullptr)
+		if (m_state == nullptr)
 			return {};
 
-		EMBER_ASSERT(m_backend->owner_thread == current_thread_id());
-		EMBER_ASSERT(!m_backend->frame_open && "begin_frame called twice without end_frame");
+		EMBER_ASSERT(m_state->owner_thread == current_thread_id());
+		EMBER_ASSERT(!m_state->frame_open && "begin_frame called twice without end_frame");
 
-		u32 slot	   = static_cast<u32>(m_backend->frame_index % m_backend->frames_in_flight);
-		u64 wait_value = m_backend->slots[slot].submitted;
+		u32 slot	   = static_cast<u32>(m_state->frame_index % m_state->frames_in_flight);
+		u64 wait_value = m_state->slots[slot].submitted;
 
 		/// The one wait that makes everything safe to reuse: this slot's previous submit has
 		/// fully retired, so its command pools, deletion bucket and ring slice are free.
@@ -143,32 +1158,32 @@ namespace ember::gpu
 			VkSemaphoreWaitInfo wait_info{
 				.sType			= VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
 				.semaphoreCount = 1,
-				.pSemaphores	= &m_backend->timeline,
+				.pSemaphores	= &m_state->timeline,
 				.pValues		= &wait_value,
 			};
 
-			vk::note_result(*m_backend, vkWaitSemaphores(m_backend->device, &wait_info, UINT64_MAX));
+			vk::note_result(*m_state, vkWaitSemaphores(m_state->device, &wait_info, UINT64_MAX));
 		}
 
-		EMBER_VK_CHECK(vkResetCommandPool(m_backend->device, m_backend->slots[slot].pool, 0));
+		EMBER_VK_CHECK(vkResetCommandPool(m_state->device, m_state->slots[slot].pool, 0));
 
 		// The wait above proved wait_value completed; the graveyard rides the frame pacing
 		// and needs no extra queries.
-		vk::drain_deferred_destroys(*m_backend, wait_value);
-		m_backend->pending_present_count = 0;
-		m_backend->frame_open			 = true;
+		vk::drain_deferred_destroys(*m_state, wait_value);
+		m_state->pending_present_count = 0;
+		m_state->frame_open			   = true;
 
-		return {.frame_index = static_cast<u32>(m_backend->frame_index), .slot = slot};
+		return {.frame_index = static_cast<u32>(m_state->frame_index), .slot = slot};
 	}
 
 	void Device::end_frame() noexcept
 	{
-		if (m_backend == nullptr)
+		if (m_state == nullptr)
 			return;
 
-		DeviceState& backend = *m_backend;
+		DeviceState& backend = *m_state;
 
-		EMBER_ASSERT(m_backend->owner_thread == current_thread_id());
+		EMBER_ASSERT(m_state->owner_thread == current_thread_id());
 		EMBER_ASSERT(backend.frame_open && "end_frame without begin_frame");
 
 		const u32 slot	= static_cast<u32>(backend.frame_index % backend.frames_in_flight);

@@ -38,10 +38,10 @@ namespace ember::gpu
 
 	BufferHandle Device::create_buffer(const BufferDef& def) noexcept
 	{
-		if (m_backend == nullptr)
+		if (m_state == nullptr)
 			return {};
 
-		EMBER_ASSERT(m_backend->owner_thread == current_thread_id());
+		EMBER_ASSERT(m_state->owner_thread == current_thread_id());
 
 		if (def.size == 0)
 		{
@@ -58,7 +58,7 @@ namespace ember::gpu
 
 		// Free while the feature is present, and it is what makes GPU-driven vertex pulling
 		// and draw-record buffers possible.
-		if (m_backend->buffer_device_address)
+		if (m_state->buffer_device_address)
 			buffer_info.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 
 		VmaAllocationCreateInfo alloc_info{};
@@ -83,7 +83,7 @@ namespace ember::gpu
 		VmaAllocation allocation = VK_NULL_HANDLE;
 		VmaAllocationInfo result{};
 
-		if (auto vr = vmaCreateBuffer(m_backend->allocator, &buffer_info, &alloc_info, &buffer, &allocation, &result);
+		if (auto vr = vmaCreateBuffer(m_state->allocator, &buffer_info, &alloc_info, &buffer, &allocation, &result);
 			vr != VK_SUCCESS)
 		{
 			EMBER_ERROR("gpu: buffer '{}' ({} bytes) failed: {}", def.name, def.size, vk::result_name(vr));
@@ -91,28 +91,28 @@ namespace ember::gpu
 		}
 
 		VkDeviceAddress address = 0;
-		if (m_backend->buffer_device_address)
+		if (m_state->buffer_device_address)
 		{
 			VkBufferDeviceAddressInfo address_info{
 				.sType	= VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
 				.buffer = buffer,
 			};
 
-			address = vkGetBufferDeviceAddress(m_backend->device, &address_info);
+			address = vkGetBufferDeviceAddress(m_state->device, &address_info);
 		}
 
-		BufferHandle handle = m_backend->resources.buffers.insert(
+		BufferHandle handle = m_state->resources.buffers.insert(
 			vk::BufferHot{.handle = buffer, .address = address},
 			vk::BufferCold{.allocation = allocation, .size = def.size, .mapped = result.pMappedData});
 
 		if (handle.is_null())
 		{
 			EMBER_ERROR("gpu: buffer pool exhausted ({})", def.name);
-			vmaDestroyBuffer(m_backend->allocator, buffer, allocation);
+			vmaDestroyBuffer(m_state->allocator, buffer, allocation);
 			return {};
 		}
 
-		vk::set_name(*m_backend, VK_OBJECT_TYPE_BUFFER, reinterpret_cast<u64>(buffer), def.name);
+		vk::set_name(*m_state, VK_OBJECT_TYPE_BUFFER, reinterpret_cast<u64>(buffer), def.name);
 
 		if (!def.initial_data.empty())
 		{
@@ -123,7 +123,7 @@ namespace ember::gpu
 				// Mapped memory: write it directly, flush for non-coherent heaps
 				// (a no-op on coherent ones, i.e. all desktop in practice).
 				memcpy(result.pMappedData, def.initial_data.data(), def.initial_data.size());
-				(void)vmaFlushAllocation(m_backend->allocator, allocation, 0, def.initial_data.size());
+				(void)vmaFlushAllocation(m_state->allocator, allocation, 0, def.initial_data.size());
 			}
 			else
 			{
@@ -137,32 +137,32 @@ namespace ember::gpu
 
 	void Device::destroy(BufferHandle handle) noexcept
 	{
-		if (m_backend == nullptr)
+		if (m_state == nullptr)
 			return;
 
-		EMBER_ASSERT(m_backend->owner_thread == current_thread_id());
+		EMBER_ASSERT(m_state->owner_thread == current_thread_id());
 
-		vk::BufferHot* hot = m_backend->resources.buffers.try_get(handle);
+		vk::BufferHot* hot = m_state->resources.buffers.try_get(handle);
 		if (hot == nullptr)
 			return;
 
 		// Erase-then-defer: the handle (and its bindless slot) dies immediately; the
 		// native object outlives every frame that can reference it.
-		vk::defer_destroy(*m_backend, hot->handle, m_backend->resources.buffers.get_cold(handle).allocation);
-		(void)m_backend->resources.buffers.erase(handle);
+		vk::defer_destroy(*m_state, hot->handle, m_state->resources.buffers.get_cold(handle).allocation);
+		(void)m_state->resources.buffers.erase(handle);
 	}
 
 	bool Device::is_valid(BufferHandle handle) const noexcept
 	{
-		return m_backend != nullptr && m_backend->resources.buffers.contains(handle);
+		return m_state != nullptr && m_state->resources.buffers.contains(handle);
 	}
 
 	void* Device::mapped(BufferHandle handle) noexcept
 	{
-		if (m_backend == nullptr)
+		if (m_state == nullptr)
 			return nullptr;
 
-		if (auto* cold = m_backend->resources.buffers.try_get_cold(handle))
+		if (auto* cold = m_state->resources.buffers.try_get_cold(handle))
 			return cold->mapped;
 
 		return nullptr;
