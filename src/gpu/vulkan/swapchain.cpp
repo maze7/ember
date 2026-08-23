@@ -301,49 +301,83 @@ namespace ember::gpu
 		}
 	}
 
-	bool vk::swapchain_create(DeviceState& backend, const SwapchainDef& def, vk::SwapchainData& data) noexcept
+	SwapchainHandle Device::create_swapchain(const SwapchainDef& def) noexcept
 	{
+		if (m_backend == nullptr)
+			return {};
+
+		EMBER_ASSERT(m_backend->owner_thread == current_thread_id());
+		if (m_backend->platform == nullptr)
+		{
+			EMBER_ERROR("gpu: cannot create a swapchain on a headless device");
+			return {};
+		}
+
+		auto& swapchains = m_backend->resources.swapchains;
+		const SwapchainHandle handle = swapchains.emplace();
+
+		if (handle.is_null())
+		{
+			EMBER_ERROR("gpu: swapchain pool exhausted");
+			return {};
+		}
+
+		vk::SwapchainData& data = swapchains.get(handle);
 		data.window				   = def.window;
 		data.requested_mode		   = def.present_mode;
 		data.preferred_image_count = def.image_count;
 
 		// Surface first: it outlives every swapchain generation for this window.
-		data.surface = platform::vk::create_surface(backend.platform->native_window(def.window), backend.instance);
+		data.surface = platform::vk::create_surface(m_backend->platform->native_window(def.window), m_backend->instance);
 
 		if (data.surface == VK_NULL_HANDLE)
 		{
 			EMBER_ERROR("vulkan: surface creation failed");
-			return false;
+			(void)swapchains.erase(handle);
+			return {};
 		}
 
 		// Suspended (created while minimized) is fine: the first acquire after restore builds.
-		if (build(backend, data) == Build::Failed)
+		if (build(*m_backend, data) == Build::Failed)
 		{
-			destroy_swapchain_data(backend, data);
-			return false;
+			destroy_swapchain_data(*m_backend, data);
+			(void)swapchains.erase(handle);
+			return {};
 		}
 
 		// Per-slot acquire semaphores, created once: frames_in_flight is fixed at boot, so a
 		// recreate never needs more.
 		const VkSemaphoreCreateInfo semaphore_info{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 
-		for (u32 i = 0; i < backend.frames_in_flight; ++i)
-			EMBER_VK_CHECK(vkCreateSemaphore(backend.device, &semaphore_info, nullptr, &data.acquire_semaphores[i]));
+		for (u32 i = 0; i < m_backend->frames_in_flight; ++i)
+			EMBER_VK_CHECK(vkCreateSemaphore(m_backend->device, &semaphore_info, nullptr, &data.acquire_semaphores[i]));
 
-		return true;
+		return handle;
 	}
 
-	TextureHandle vk::swapchain_acquire(DeviceState& backend, SwapchainHandle handle) noexcept
+	TextureHandle Device::acquire(SwapchainHandle handle) noexcept
 	{
-		vk::SwapchainData& data = backend.resources.swapchains.get(handle);
+		if (m_backend == nullptr)
+			return {};
+
+		EMBER_ASSERT(m_backend->owner_thread == current_thread_id());
+		EMBER_ASSERT(m_backend->frame_open && "acquire outside begin_frame/end_frame");
+
+		if (!m_backend->resources.swapchains.contains(handle))
+		{
+			EMBER_ASSERT(false && "Invalid SwapchainHandle");
+			return {};
+		}
+
+		vk::SwapchainData& data = m_backend->resources.swapchains.get(handle);
 
 		// Same-frame cache: only the first acquire per frame pays for anything.
-		const u64 frame_token = backend.frame_index + 1;
+		const u64 frame_token = m_backend->frame_index + 1;
 		if (data.acquired_frame == frame_token)
 			return data.images[data.acquired_image];
 
 		// Minimized: report suspended without touching the swapchain; it revives on restore.
-		const glm::uvec2 pixels = backend.platform->window_pixel_size(data.window);
+		const glm::uvec2 pixels = m_backend->platform->window_pixel_size(data.window);
 		if (pixels.x == 0 || pixels.y == 0)
 			return {};
 
@@ -351,13 +385,13 @@ namespace ember::gpu
 
 		if (data.needs_recreate || extent_changed || data.swapchain == VK_NULL_HANDLE)
 		{
-			if (build(backend, data) != Build::Ok)
+			if (build(*m_backend, data) != Build::Ok)
 				return {};
 
 			data.needs_recreate = false;
 		}
 
-		const u32 slot = static_cast<u32>(backend.frame_index % backend.frames_in_flight);
+		const u32 slot = static_cast<u32>(m_backend->frame_index % m_backend->frames_in_flight);
 
 		// OUT_OF_DATE signals nothing and leaves the semaphore unsignaled, so retrying with the
 		// same semaphore is safe. Bounded: one recreate attempt, then give up this frame.
@@ -365,7 +399,7 @@ namespace ember::gpu
 		{
 			u32 image_index		  = vk::NO_IMAGE;
 			const VkResult result = vkAcquireNextImageKHR(
-				backend.device,
+				m_backend->device,
 				data.swapchain,
 				UINT64_MAX,
 				data.acquire_semaphores[slot],
@@ -379,8 +413,8 @@ namespace ember::gpu
 				data.acquired_image	 = image_index;
 				data.acquired_frame	 = frame_token;
 
-				EMBER_ASSERT(backend.pending_present_count < MAX_SWAPCHAINS);
-				backend.pending_presents[backend.pending_present_count++] = {
+				EMBER_ASSERT(m_backend->pending_present_count < MAX_SWAPCHAINS);
+				m_backend->pending_presents[m_backend->pending_present_count++] = {
 					.swapchain	 = handle,
 					.image_index = image_index,
 				};
@@ -390,16 +424,27 @@ namespace ember::gpu
 
 			if (result == VK_ERROR_OUT_OF_DATE_KHR)
 			{
-				if (build(backend, data) != Build::Ok)
+				if (build(*m_backend, data) != Build::Ok)
 					return {};
 
 				continue;
 			}
 
-			vk::note_result(backend, result);
+			vk::note_result(*m_backend, result);
 			EMBER_ERROR("vulkan: vkAcquireNextImageKHR failed: {}", vk::result_name(result));
 			return {};
 		}
+
+		return {};
+	}
+
+	Extent2D Device::swapchain_extent(SwapchainHandle handle) const noexcept
+	{
+		if (m_backend == nullptr)
+			return {};
+
+		if (auto* data = m_backend->resources.swapchains.try_get(handle))
+			return {data->extent.width, data->extent.height};
 
 		return {};
 	}
