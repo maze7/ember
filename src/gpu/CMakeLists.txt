@@ -12,9 +12,9 @@ ember_add_module(Gpu
 		validation.cpp
 		vulkan/device.cpp
 		vulkan/device_buffer.cpp
+		vulkan/device_swapchain.cpp
 		vulkan/backend.cpp
 		vulkan/vma.cpp
-		vulkan/swapchain.cpp
 		vulkan/destroy_queue.cpp
 	PUBLIC_DEPS
 		Ember::Core

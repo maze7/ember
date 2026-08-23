@@ -1,7 +1,7 @@
 #include "ember/gpu/common.h"
 #include "ember/sync/thread.h"
 #include "gpu/validation.h"
-#include "gpu/vulkan/swapchain.h"
+#include <ember/core/common.h>
 #include <ember/core/profile.h>
 #include <ember/gpu/device.h>
 #include <gpu/vulkan/device_state.h>
@@ -54,6 +54,16 @@ namespace ember::gpu
 		// 4. Release SDL vulkan loader through WSI.
 		wait_idle();
 
+		auto& buffers = m_backend->resources.buffers;
+		for (auto it = buffers.begin(); it != buffers.end();)
+		{
+			const BufferHandle handle = it.handle();
+			++it;
+
+			EMBER_WARN("gpu: buiffer leaked at device destruction");
+			destroy(handle);
+		}
+
 		auto& swapchains = m_backend->resources.swapchains;
 		for (auto it = swapchains.begin(); it != swapchains.end();)
 		{
@@ -64,8 +74,8 @@ namespace ember::gpu
 			destroy(handle);
 		}
 
+		vk::drain_deferred_destroys(*m_backend, UINT64_MAX);
 		DeviceState* backend = std::exchange(m_backend, nullptr);
-
 		vk::shutdown(*backend);
 		memory::delete_object(MemoryTag::Graphics, backend);
 

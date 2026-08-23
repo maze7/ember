@@ -1,8 +1,9 @@
+#include <ember/core/logger.h>
 #include <ember/gpu/device.h>
-#include <gpu/vulkan/swapchain.h>
 #include <ember/core/profile.h>
 #include <ember/gpu/common.h>
 #include <ember/platform/platform.h>
+#include <gpu/vulkan/device_state.h>
 #include <platform/vulkan/wsi.h>
 
 #include <algorithm>
