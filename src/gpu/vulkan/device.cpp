@@ -17,6 +17,24 @@ namespace ember::gpu
 		/// handle types would alias each other's heaps. Mirrors the Platform claim guard.
 		constinit std::atomic<bool> s_device_claimed{false};
 
+		/// Convenience wrapper for Vulkan's count-then-fetch dance.
+		template <class T, class F>
+		[[nodiscard]] Vector<T> enumerate(F&& fetch) noexcept
+		{
+			Vector<T> out(&memory::heap(MemoryTag::Graphics));
+			u32 count = 0;
+
+			if (fetch(&count, nullptr) != VK_SUCCESS || count == 0)
+				return out;
+
+			out.resize(count);
+
+			if (fetch(&count, out.data()) != VK_SUCCESS)
+				out.clear();
+
+			return out;
+		}
+
 		/// Appends `next` to a pNext chain and advances the tail.
 		inline void chain_append(VkBaseOutStructure*& tail, void* next) noexcept
 		{
@@ -184,16 +202,11 @@ namespace ember::gpu
 		/// Appends the instance extensions exposed by `layer` (null = loader + implicit layers)
 		void append_instance_extensions(const char* layer, Vector<VkExtensionProperties>& out) noexcept
 		{
-			u32 count = 0;
+			const auto found = enumerate<VkExtensionProperties>(
+				[layer](u32* count, VkExtensionProperties* data)
+				{ return vkEnumerateInstanceExtensionProperties(layer, count, data); });
 
-			if (vkEnumerateInstanceExtensionProperties(layer, &count, nullptr) != VK_SUCCESS || count == 0)
-				return;
-
-			size_t base = out.size();
-			out.resize(base + count);
-
-			if (vkEnumerateInstanceExtensionProperties(layer, &count, out.data() + base) != VK_SUCCESS)
-				out.resize(base);
+			out.insert(out.end(), found.begin(), found.end());
 		}
 
 		VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
@@ -221,6 +234,9 @@ namespace ember::gpu
 			{
 				EMBER_TRACE("vulkan[{}]: {}", id, data->pMessage);
 			}
+
+			if (debug.break_on_error)
+				EMBER_DEBUG_BREAK();
 
 			return VK_FALSE; // never abort the call: the layer's job is to report
 		}
@@ -260,16 +276,7 @@ namespace ember::gpu
 				return false;
 			}
 
-			Vector<VkLayerProperties> layers(&memory::heap(MemoryTag::Graphics));
-			u32 layer_count = 0;
-
-			if (vkEnumerateInstanceLayerProperties(&layer_count, nullptr) == VK_SUCCESS && layer_count != 0)
-			{
-				layers.resize(layer_count);
-
-				if (vkEnumerateInstanceLayerProperties(&layer_count, layers.data()) != VK_SUCCESS)
-					layers.clear();
-			}
+			const auto layers = enumerate<VkLayerProperties>(vkEnumerateInstanceLayerProperties);
 
 			Vector<VkExtensionProperties> extensions(&memory::heap(MemoryTag::Graphics));
 			append_instance_extensions(nullptr, extensions);
@@ -517,16 +524,9 @@ namespace ember::gpu
 				return false;
 			}
 
-			Vector<VkExtensionProperties> extensions(&memory::heap(MemoryTag::Graphics));
-			u32 count = 0;
-
-			if (vkEnumerateDeviceExtensionProperties(handle, nullptr, &count, nullptr) == VK_SUCCESS && count != 0)
-			{
-				extensions.resize(count);
-
-				if (vkEnumerateDeviceExtensionProperties(handle, nullptr, &count, extensions.data()) != VK_SUCCESS)
-					extensions.clear();
-			}
+			const auto extensions = enumerate<VkExtensionProperties>(
+				[handle](u32* count, VkExtensionProperties* data)
+				{ return vkEnumerateDeviceExtensionProperties(handle, nullptr, count, data); });
 
 			if (state.platform != nullptr && !has_extension(extensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
 			{
@@ -558,12 +558,14 @@ namespace ember::gpu
 			// Queues. The main family must do graphics+compute (universal on desktop) and, when a
 			// window system exists, present: a separate present queue would buy queue-ownership
 			// transfers every frame for zero real-world benefit on PC.
-			Vector<VkQueueFamilyProperties> families(&memory::heap(MemoryTag::Graphics));
-			vkGetPhysicalDeviceQueueFamilyProperties(handle, &count, nullptr);
-			families.resize(count);
-			vkGetPhysicalDeviceQueueFamilyProperties(handle, &count, families.data());
+			const auto families = enumerate<VkQueueFamilyProperties>(
+				[handle](u32* count, VkQueueFamilyProperties* data)
+				{
+					vkGetPhysicalDeviceQueueFamilyProperties(handle, count, data);
+					return VK_SUCCESS; // void query: adapted to the shared protocol
+				});
 
-			for (u32 i = 0; i < count; ++i)
+			for (u32 i = 0; i < families.size(); ++i)
 			{
 				constexpr VkQueueFlags GRAPHICS_COMPUTE = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
 
@@ -617,19 +619,15 @@ namespace ember::gpu
 		 */
 		[[nodiscard]] bool select_adapter(const DeviceState& backend, const DeviceDef& def, AdapterInfo& out) noexcept
 		{
-			u32 count = 0;
+			const auto adapters = enumerate<VkPhysicalDevice>(
+				[&backend](u32* count, VkPhysicalDevice* data)
+				{ return vkEnumeratePhysicalDevices(backend.instance, count, data); });
 
-			if (vkEnumeratePhysicalDevices(backend.instance, &count, nullptr) != VK_SUCCESS || count == 0)
+			if (adapters.empty())
 			{
 				EMBER_ERROR("vulkan: no physical devices");
 				return false;
 			}
-
-			Vector<VkPhysicalDevice> adapters(&memory::heap(MemoryTag::Graphics));
-			adapters.resize(count);
-
-			if (vkEnumeratePhysicalDevices(backend.instance, &count, adapters.data()) != VK_SUCCESS)
-				return false;
 
 			int best_score = -1;
 
@@ -1024,10 +1022,7 @@ namespace ember::gpu
 
 	void Device::shutdown() noexcept
 	{
-		if (m_state == nullptr)
-			return;
-
-		EMBER_ASSERT(m_state->owner_thread == current_thread_id());
+		EMBER_GPU_GUARD();
 
 		// Partial initialization may not have created a device yet.
 		if (m_state->device != VK_NULL_HANDLE)
@@ -1079,6 +1074,8 @@ namespace ember::gpu
 
 	void Device::destroy_resources() noexcept
 	{
+		EMBER_GPU_GUARD();
+
 		// Destroy swapchains
 		auto& swapchains = m_state->resources.swapchains;
 		for (auto it = swapchains.begin(); it != swapchains.end();)
@@ -1102,10 +1099,7 @@ namespace ember::gpu
 
 	void Device::wait_idle() noexcept
 	{
-		if (m_state == nullptr)
-			return;
-
-		EMBER_ASSERT(m_state->owner_thread == current_thread_id());
+		EMBER_GPU_GUARD();
 		EMBER_PROFILE_SCOPE_C("gpu: wait_idle", PROFILE_COLOR_WAIT);
 
 		vk::note_result(*m_state, vkDeviceWaitIdle(m_state->device));
@@ -1139,10 +1133,7 @@ namespace ember::gpu
 
 	FrameInfo Device::begin_frame() noexcept
 	{
-		if (m_state == nullptr)
-			return {};
-
-		EMBER_ASSERT(m_state->owner_thread == current_thread_id());
+		EMBER_GPU_GUARD({});
 		EMBER_ASSERT(!m_state->frame_open && "begin_frame called twice without end_frame");
 
 		u32 slot	   = static_cast<u32>(m_state->frame_index % m_state->frames_in_flight);
@@ -1178,18 +1169,13 @@ namespace ember::gpu
 
 	void Device::end_frame() noexcept
 	{
-		if (m_state == nullptr)
-			return;
+		EMBER_GPU_GUARD();
+		EMBER_ASSERT(m_state->frame_open && "end_frame without begin_frame");
 
-		DeviceState& backend = *m_state;
+		const u32 slot	= static_cast<u32>(m_state->frame_index % m_state->frames_in_flight);
+		const u64 value = ++m_state->timeline_value;
 
-		EMBER_ASSERT(m_state->owner_thread == current_thread_id());
-		EMBER_ASSERT(backend.frame_open && "end_frame without begin_frame");
-
-		const u32 slot	= static_cast<u32>(backend.frame_index % backend.frames_in_flight);
-		const u64 value = ++backend.timeline_value;
-
-		VkCommandBuffer cmd = backend.slots[slot].commands;
+		VkCommandBuffer cmd = m_state->slots[slot].commands;
 
 		const VkCommandBufferBeginInfo begin_info{
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1199,7 +1185,7 @@ namespace ember::gpu
 
 		// Placeholder visual until CommandList lands: clear every acquired backbuffer with a
 		// slowly cycling hue. Animated on purpose — a static clear can't prove frame pacing.
-		const f32 t = static_cast<f32>(backend.frame_index) * 0.02f;
+		const f32 t = static_cast<f32>(m_state->frame_index) * 0.02f;
 		const VkClearColorValue clear{
 			.float32 = {
 				0.5f + 0.5f * std::sin(t),
@@ -1208,10 +1194,10 @@ namespace ember::gpu
 				1.0f,
 			}};
 
-		for (u32 i = 0; i < backend.pending_present_count; ++i)
+		for (u32 i = 0; i < m_state->pending_present_count; ++i)
 		{
-			const vk::SwapchainData& data = backend.resources.swapchains.get(backend.pending_presents[i].swapchain);
-			const vk::TextureHot& hot	  = backend.resources.textures.get(data.images[data.acquired_image]);
+			const vk::SwapchainData& data = m_state->resources.swapchains.get(m_state->pending_presents[i].swapchain);
+			const vk::TextureHot& hot	  = m_state->resources.textures.get(data.images[data.acquired_image]);
 
 			// Acquired contents are undefined; the acquire-semaphore wait below is scoped to
 			// COLOR_ATTACHMENT_OUTPUT, which is why both barriers pivot on that stage.
@@ -1280,9 +1266,9 @@ namespace ember::gpu
 		u32 wait_count	 = 0;
 		u32 signal_count = 0;
 
-		for (u32 i = 0; i < backend.pending_present_count; ++i)
+		for (u32 i = 0; i < m_state->pending_present_count; ++i)
 		{
-			const vk::SwapchainData& data = backend.resources.swapchains.get(backend.pending_presents[i].swapchain);
+			const vk::SwapchainData& data = m_state->resources.swapchains.get(m_state->pending_presents[i].swapchain);
 
 			waits[wait_count++] = {
 				.sType	   = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
@@ -1299,7 +1285,7 @@ namespace ember::gpu
 
 		signals[signal_count++] = {
 			.sType	   = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-			.semaphore = backend.timeline,
+			.semaphore = m_state->timeline,
 			.value	   = value,
 			.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 		};
@@ -1319,45 +1305,45 @@ namespace ember::gpu
 			.pSignalSemaphoreInfos	  = signals,
 		};
 
-		vk::note_result(backend, vkQueueSubmit2(backend.graphics.handle, 1, &submit_info, VK_NULL_HANDLE));
+		vk::note_result(*m_state, vkQueueSubmit2(m_state->graphics.handle, 1, &submit_info, VK_NULL_HANDLE));
 
 		// Batched present: every swapchain touched this frame in one call, results per entry.
-		if (backend.pending_present_count > 0)
+		if (m_state->pending_present_count > 0)
 		{
 			VkSwapchainKHR swapchains[MAX_SWAPCHAINS];
 			VkSemaphore present_waits[MAX_SWAPCHAINS];
 			u32 image_indices[MAX_SWAPCHAINS];
 			VkResult results[MAX_SWAPCHAINS];
 
-			for (u32 i = 0; i < backend.pending_present_count; ++i)
+			for (u32 i = 0; i < m_state->pending_present_count; ++i)
 			{
-				const vk::SwapchainData& data = backend.resources.swapchains.get(backend.pending_presents[i].swapchain);
+				const vk::SwapchainData& data = m_state->resources.swapchains.get(m_state->pending_presents[i].swapchain);
 
 				swapchains[i]	 = data.swapchain;
 				present_waits[i] = data.present_semaphores[data.acquired_image];
-				image_indices[i] = backend.pending_presents[i].image_index;
+				image_indices[i] = m_state->pending_presents[i].image_index;
 			}
 
 			const VkPresentInfoKHR present_info{
 				.sType				= VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-				.waitSemaphoreCount = backend.pending_present_count,
+				.waitSemaphoreCount = m_state->pending_present_count,
 				.pWaitSemaphores	= present_waits,
-				.swapchainCount		= backend.pending_present_count,
+				.swapchainCount		= m_state->pending_present_count,
 				.pSwapchains		= swapchains,
 				.pImageIndices		= image_indices,
 				.pResults			= results,
 			};
 
-			vk::note_result(backend, vkQueuePresentKHR(backend.graphics.handle, &present_info));
+			vk::note_result(*m_state, vkQueuePresentKHR(m_state->graphics.handle, &present_info));
 
 			// Per-swapchain outcome: OUT_OF_DATE/SUBOPTIMAL here means recreate at next acquire.
-			for (u32 i = 0; i < backend.pending_present_count; ++i)
+			for (u32 i = 0; i < m_state->pending_present_count; ++i)
 				if (results[i] == VK_ERROR_OUT_OF_DATE_KHR || results[i] == VK_SUBOPTIMAL_KHR)
-					backend.resources.swapchains.get(backend.pending_presents[i].swapchain).needs_recreate = true;
+					m_state->resources.swapchains.get(m_state->pending_presents[i].swapchain).needs_recreate = true;
 		}
 
-		backend.slots[slot].submitted = value;
-		backend.frame_open			  = false;
-		++backend.frame_index;
+		m_state->slots[slot].submitted = value;
+		m_state->frame_open			  = false;
+		++m_state->frame_index;
 	}
 }

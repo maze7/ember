@@ -2,6 +2,7 @@
 
 /// Volk must be the first Vulkan include in every backend translation unit: it defines
 /// VK_NO_PROTOTYPES and pulls in <vulkan/vulkan.h>.
+#include "ember/memory/memory.h"
 #include <volk.h>
 
 #include <ember/core/common.h>
@@ -93,7 +94,6 @@ namespace ember::gpu::vk
 
 	/// Sets the debug name for a given vulkan object. Useful for viewing in RenderDoc.
 	void set_name(const DeviceState& backend, VkObjectType type, u64 handle, const char* name) noexcept;
-
 
 	/// Device loss is sticky: every later call no-ops and the app is expected to tear down.
 	void note_result(DeviceState& backend, VkResult result) noexcept;

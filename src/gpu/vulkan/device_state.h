@@ -110,4 +110,9 @@ namespace ember::gpu
 		u32 owner_thread = current_thread_id(); // the thread that constructed the Device
 		std::atomic<bool> lost{false};			// sticky VK_ERROR_DEVICE_LOST
 	};
+
+#define EMBER_GPU_GUARD(...)                                                                                           \
+	if (m_state == nullptr)                                                                                            \
+		return __VA_ARGS__;                                                                                            \
+	EMBER_ASSERT(m_state->owner_thread == current_thread_id())
 }
