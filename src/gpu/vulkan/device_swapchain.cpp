@@ -94,14 +94,14 @@ namespace ember::gpu
 
 		/// The window's pixel size, clamped to surface limits. {0,0} = minimized (suspend).
 		[[nodiscard]] VkExtent2D resolve_extent(
-			const Backend& backend, const vk::SwapchainData& data, const VkSurfaceCapabilitiesKHR& caps) noexcept
+			const Platform& platform, const vk::SwapchainData& data, const VkSurfaceCapabilitiesKHR& caps) noexcept
 		{
 			// 0xFFFFFFFF means "the surface follows the swapchain" (Wayland); the window is
 			// the authority then. Otherwise the surface dictates exactly.
 			if (caps.currentExtent.width != ~0u)
 				return caps.currentExtent;
 
-			const glm::uvec2 pixels = backend.context.platform->window_pixel_size(data.window);
+			const glm::uvec2 pixels = platform.window_pixel_size(data.window);
 
 			return {
 				std::clamp(pixels.x, caps.minImageExtent.width, caps.maxImageExtent.width),
@@ -171,7 +171,7 @@ namespace ember::gpu
 				return Build::Failed;
 			}
 
-			const VkExtent2D extent = resolve_extent(backend, data, surface_caps);
+			const VkExtent2D extent = resolve_extent(*backend.context.platform, data, surface_caps);
 
 			// Minimized: never create a zero-extent swapchain. Any existing one stays; it is
 			// still valid after restore, or the next acquire's OUT_OF_DATE rebuilds it.
