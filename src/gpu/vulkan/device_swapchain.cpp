@@ -328,7 +328,7 @@ namespace ember::gpu
 		// recreate never needs more.
 		const VkSemaphoreCreateInfo semaphore_info{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 
-		for (u32 i = 0; i < m_state->frames_in_flight; ++i)
+		for (u32 i = 0; i < m_state->context.frames_in_flight; ++i)
 			EMBER_VK_CHECK(vkCreateSemaphore(m_state->context.device, &semaphore_info, nullptr, &data.acquire_semaphores[i]));
 
 		return handle;
@@ -340,7 +340,7 @@ namespace ember::gpu
 			return {};
 
 		EMBER_ASSERT(m_state->owner_thread == current_thread_id());
-		EMBER_ASSERT(m_state->frame_open && "acquire outside begin_frame/end_frame");
+		EMBER_ASSERT(m_state->frame.open && "acquire outside begin_frame/end_frame");
 
 		if (!m_state->resources.swapchains.contains(handle))
 		{
@@ -351,7 +351,7 @@ namespace ember::gpu
 		vk::SwapchainData& data = m_state->resources.swapchains.get(handle);
 
 		// Same-frame cache: only the first acquire per frame pays for anything.
-		const u64 frame_token = m_state->frame_index + 1;
+		const u64 frame_token = m_state->frame.index + 1;
 		if (data.acquired_frame == frame_token)
 			return data.images[data.acquired_image];
 
@@ -370,7 +370,7 @@ namespace ember::gpu
 			data.needs_recreate = false;
 		}
 
-		const u32 slot = static_cast<u32>(m_state->frame_index % m_state->frames_in_flight);
+		const u32 slot = static_cast<u32>(m_state->frame.index % m_state->context.frames_in_flight);
 
 		// OUT_OF_DATE signals nothing and leaves the semaphore unsignaled, so retrying with the
 		// same semaphore is safe. Bounded: one recreate attempt, then give up this frame.
@@ -392,8 +392,8 @@ namespace ember::gpu
 				data.acquired_image	 = image_index;
 				data.acquired_frame	 = frame_token;
 
-				EMBER_ASSERT(m_state->pending_present_count < MAX_SWAPCHAINS);
-				m_state->pending_presents[m_state->pending_present_count++] = {
+				EMBER_ASSERT(m_state->frame.pending_present_count < MAX_SWAPCHAINS);
+				m_state->frame.pending_presents[m_state->frame.pending_present_count++] = {
 					.swapchain	 = handle,
 					.image_index = image_index,
 				};
@@ -441,8 +441,8 @@ namespace ember::gpu
 			return;
 
 		// Remove a pending presentation of this swapchain.
-		PendingPresent* pending = m_state->pending_presents.data();
-		u32& count = m_state->pending_present_count;
+		PendingPresent* pending = m_state->frame.pending_presents;
+		u32& count = m_state->frame.pending_present_count;
 
 		for (u32 i = 0; i < count;)
 		{

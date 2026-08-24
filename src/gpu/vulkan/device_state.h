@@ -28,19 +28,21 @@ namespace ember::gpu
 
 	struct Context
 	{
-		VkInstance instance = VK_NULL_HANDLE;
-		VkPhysicalDevice adapter = VK_NULL_HANDLE;
-		VkDevice device = VK_NULL_HANDLE;
-		VmaAllocator allocator = VK_NULL_HANDLE;
+		VkInstance instance				   = VK_NULL_HANDLE;
+		VkPhysicalDevice adapter		   = VK_NULL_HANDLE;
+		VkDevice device					   = VK_NULL_HANDLE;
+		VmaAllocator allocator			   = VK_NULL_HANDLE;
 		VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
 
 		// Device Queues
 		Queue graphics{}; // owns submission; also presents (checked at adapter selection)
-		Queue compute{}; // dedicated async-compute family when the adapter has one, otherwise equals graphics
+		Queue compute{};  // dedicated async-compute family when the adapter has one, otherwise equals graphics
 		Queue transfer{}; // dedicated DMA family when present, otherwise equals graphics
 
 		DeviceCaps caps{};
 		Platform* platform = nullptr;
+
+		u32 frames_in_flight = 0;
 
 		bool debug_utils = false;
 	};
@@ -59,6 +61,19 @@ namespace ember::gpu
 	{
 		SwapchainHandle swapchain{};
 		u32 image_index = 0;
+	};
+
+	/// The frame loop's world: everything on the begin/end_frame clock. Owner thread only.
+	struct FrameState
+	{
+		VkSemaphore timeline = VK_NULL_HANDLE; // frame N signals value N
+		u64 timeline_value	 = 0;			   // last value handed to a submit
+		u64 index			 = 0;			   // slot = index % frames_in_flight
+		bool open = false;
+
+		FrameSlot slots[MAX_FRAMES_IN_FLIGHT]{};
+		PendingPresent pending_presents[MAX_SWAPCHAINS]{};
+		u32 pending_present_count = 0;
 	};
 
 	/**
@@ -82,26 +97,12 @@ namespace ember::gpu
 	struct Backend
 	{
 		Context context;
+		FrameState frame;
 
 		vk::DestroyQueue deferred{};
-		vk::ResourcePools resources;
+		vk::ResourcePools resources{};
 
-		VkPhysicalDeviceProperties properties{};
-		VkPhysicalDeviceMemoryProperties memory_properties{};
-
-
-		VkSemaphore timeline = VK_NULL_HANDLE; // the one CPU/GPU sync primitive: frame N signals N
-		FrameSlot slots[MAX_FRAMES_IN_FLIGHT]{};
-
-		u64 frame_index		 = 0;
-		u32 frames_in_flight = 2;
-		u64 timeline_value	 = 0;
-		bool frame_open		 = false;
-
-		std::array<PendingPresent, MAX_SWAPCHAINS> pending_presents{};
-		u32 pending_present_count = 0;
-
-		Backend() noexcept					   = default;
+		Backend() noexcept				   = default;
 		Backend(const Backend&)			   = delete;
 		Backend& operator=(const Backend&) = delete;
 

@@ -19,7 +19,7 @@ namespace ember::gpu::vk
 			if (dead.handle == 0)
 				return;
 
-			dead.value = backend.timeline_value + 1;
+			dead.value = backend.frame.timeline_value + 1;
 			backend.deferred.entries.push_back(dead);
 		}
 	}
