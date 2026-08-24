@@ -78,7 +78,8 @@ namespace ember::gpu
 		VmaAllocation allocation = VK_NULL_HANDLE;
 		VmaAllocationInfo result{};
 
-		if (auto vr = vmaCreateBuffer(m_state->context.allocator, &buffer_info, &alloc_info, &buffer, &allocation, &result);
+		if (auto vr =
+				vmaCreateBuffer(m_state->context.allocator, &buffer_info, &alloc_info, &buffer, &allocation, &result);
 			vr != VK_SUCCESS)
 		{
 			EMBER_ERROR("gpu: buffer '{}' ({} bytes) failed: {}", def.name, def.size, vk::result_name(vr));
@@ -118,8 +119,8 @@ namespace ember::gpu
 			}
 			else
 			{
-				// TODO: Cal
-				// update_buffer(backend, handle, 0, def.initial_data);
+				// DeviceLocal: staged, TRANSFER_DST is provided to every buffer.
+				vk::staging_upload(*m_state, buffer, 0, def.initial_data);
 			}
 		}
 
@@ -154,5 +155,37 @@ namespace ember::gpu
 			return cold->mapped;
 
 		return nullptr;
+	}
+
+	void Device::update_buffer(BufferHandle handle, u64 offset, Span<const u8> data) noexcept
+	{
+		EMBER_GPU_GUARD();
+
+		if (data.empty())
+			return;
+
+		const vk::BufferHot* hot = m_state->resources.buffers.try_get(handle);
+
+		if (hot == nullptr)
+		{
+			// Unlike destroy (idempotence is a feature there), updating a dead handle is
+			// always a bug upstream: the data was meant for something.
+			EMBER_ASSERT(false && "update_buffer on a stale handle");
+			return;
+		}
+
+		const vk::BufferCold& cold = m_state->resources.buffers.get_cold(handle);
+		EMBER_ASSERT(offset + data.size() <= cold.size);
+
+		if (cold.mapped != nullptr)
+		{
+			// Upload/Readback: straight through the mapping. GPU-side hazards are the
+			// caller's contract (per-frame versioning); the GPU never copies here at all.
+			std::memcpy(static_cast<u8*>(cold.mapped) + offset, data.data(), data.size());
+			(void)vmaFlushAllocation(m_state->context.allocator, cold.allocation, offset, data.size());
+			return;
+		}
+
+		vk::staging_upload(*m_state, hot->handle, offset, data);
 	}
 }

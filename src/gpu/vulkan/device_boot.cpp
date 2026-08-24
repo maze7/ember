@@ -13,8 +13,7 @@ namespace ember::gpu
 	namespace
 	{
 		/// Convenience wrapper for Vulkan's count-then-fetch dance.
-		template <class T, class F>
-		[[nodiscard]] Vector<T> enumerate(F&& fetch) noexcept
+		template <class T, class F> [[nodiscard]] Vector<T> enumerate(F&& fetch) noexcept
 		{
 			Vector<T> out(&memory::heap(MemoryTag::Graphics));
 			u32 count = 0;
@@ -296,9 +295,7 @@ namespace ember::gpu
 					// The layer contributes extensions of its own (VK_EXT_validation_features).
 					append_instance_extensions(VALIDATION_LAYER, extensions);
 
-					EMBER_INFO(
-						"vulkan: validation enabled{}",
-						def.enable_sync_validation ? " (+synchronization)" : "");
+					EMBER_INFO("vulkan: validation enabled{}", def.enable_sync_validation ? " (+synchronization)" : "");
 				}
 				else
 				{
@@ -598,8 +595,7 @@ namespace ember::gpu
 				if ((families[i].queueFlags & GRAPHICS_COMPUTE) != GRAPHICS_COMPUTE)
 					continue;
 
-				if (ctx.platform != nullptr &&
-					!platform::vk::presentation_supported(ctx.instance, handle, i))
+				if (ctx.platform != nullptr && !platform::vk::presentation_supported(ctx.instance, handle, i))
 					continue;
 
 				out.graphics_family = i;
@@ -646,9 +642,9 @@ namespace ember::gpu
 		 */
 		[[nodiscard]] bool select_adapter(const Context& ctx, const DeviceDef& def, AdapterInfo& out) noexcept
 		{
-			const auto adapters = enumerate<VkPhysicalDevice>(
-				[&ctx](u32* count, VkPhysicalDevice* data)
-				{ return vkEnumeratePhysicalDevices(ctx.instance, count, data); });
+			const auto adapters =
+				enumerate<VkPhysicalDevice>([&ctx](u32* count, VkPhysicalDevice* data)
+											{ return vkEnumeratePhysicalDevices(ctx.instance, count, data); });
 
 			if (adapters.empty())
 			{
@@ -876,9 +872,9 @@ namespace ember::gpu
 
 			caps.constant_buffer_offset_alignment = static_cast<u32>(limits.minUniformBufferOffsetAlignment);
 			caps.storage_buffer_offset_alignment  = static_cast<u32>(limits.minStorageBufferOffsetAlignment);
-			caps.max_constant_block_bytes		  = std::min<u32>(limits.maxUniformBufferRange, D3D12_CONSTANT_BLOCK_LIMIT);
-			caps.copy_row_pitch_alignment		  = static_cast<u32>(limits.optimalBufferCopyRowPitchAlignment);
-			caps.copy_offset_alignment			  = static_cast<u32>(limits.optimalBufferCopyOffsetAlignment);
+			caps.max_constant_block_bytes = std::min<u32>(limits.maxUniformBufferRange, D3D12_CONSTANT_BLOCK_LIMIT);
+			caps.copy_row_pitch_alignment = static_cast<u32>(limits.optimalBufferCopyRowPitchAlignment);
+			caps.copy_offset_alignment	  = static_cast<u32>(limits.optimalBufferCopyOffsetAlignment);
 
 			caps.max_texture_2d		   = limits.maxImageDimension2D;
 			caps.max_texture_3d		   = limits.maxImageDimension3D;
@@ -1030,6 +1026,12 @@ namespace ember::gpu
 			if (!create_frame_resources(ctx, frame))
 				return false;
 
+			if (!vk::transient_boot(backend, def.transient_ring_bytes))
+				return false;
+
+			if (!vk::staging_boot(backend, def.staging_ring_bytes))
+						return false;
+
 			EMBER_INFO(
 				"vulkan: {} ({}) | {} | Vulkan {}.{}.{} | {} MB local{}{}",
 				ctx.caps.adapter_name,
@@ -1051,6 +1053,8 @@ namespace ember::gpu
 
 			if (ctx.device != VK_NULL_HANDLE)
 			{
+				vk::staging_destroy(ctx, backend.staging);
+
 				for (FrameSlot& slot : backend.frame.slots)
 					if (slot.pool != VK_NULL_HANDLE)
 						vkDestroyCommandPool(ctx.device, slot.pool, nullptr);

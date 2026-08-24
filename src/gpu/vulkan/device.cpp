@@ -1,6 +1,7 @@
 #include <ember/core/common.h>
 #include <ember/core/profile.h>
 #include <ember/gpu/device.h>
+#include <ember/gpu/transient.h>
 #include <ember/memory/memory.h>
 #include <ember/sync/thread.h>
 #include <gpu/vulkan/backend.h>
@@ -101,7 +102,7 @@ namespace ember::gpu
 		 * One submit: wait every acquire semaphore, run the frame's commands, signal the
 		 * timeline (CPU pacing) and every acquired image's present semaphore (WSI).
 		 */
-		void submit_frame(Backend& backend, VkCommandBuffer cmd, u32 slot, u64 value) noexcept
+		void submit_frame(Backend& backend, VkCommandBuffer upload, VkCommandBuffer cmd, u32 slot, u64 value) noexcept
 		{
 			const FrameState& frame = backend.frame;
 
@@ -134,17 +135,21 @@ namespace ember::gpu
 				.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 			};
 
-			const VkCommandBufferSubmitInfo cmd_info{
-				.sType		   = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-				.commandBuffer = cmd,
-			};
+			VkCommandBufferSubmitInfo cmd_infos[2];
+			u32 cmd_count = 0;
+
+			if (upload != VK_NULL_HANDLE)
+				cmd_infos[cmd_count++] = {
+					.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = upload};
+
+			cmd_infos[cmd_count++] = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cmd};
 
 			const VkSubmitInfo2 submit_info{
 				.sType					  = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
 				.waitSemaphoreInfoCount	  = wait_count,
 				.pWaitSemaphoreInfos	  = waits,
-				.commandBufferInfoCount	  = 1,
-				.pCommandBufferInfos	  = &cmd_info,
+				.commandBufferInfoCount	  = cmd_count,
+				.pCommandBufferInfos	  = cmd_infos,
 				.signalSemaphoreInfoCount = signal_count,
 				.pSignalSemaphoreInfos	  = signals,
 			};
@@ -225,6 +230,21 @@ namespace ember::gpu
 		{
 			(void)vkDeviceWaitIdle(m_state->context.device);
 
+			// Engine-owned buffers leave through the public destroy path, before the sweep,
+			// so the leak report only ever names genuine user leaks.
+			{
+				vk::TransientRing& ring = m_state->transient_ring; // teardown is single-threaded: no lock
+
+				destroy(ring.handle);
+				destroy(ring.active.handle);
+				for (const vk::TransientPage& page : ring.free_pages)
+					destroy(page.handle);
+				for (const vk::TransientPage& page : ring.frame_pages)
+					destroy(page.handle);
+				for (const vk::RetiredPage& retired : ring.retired)
+					destroy(retired.page.handle);
+			}
+
 			destroy_resources();
 			vk::drain_deferred_destroys(m_state->context, m_state->deferred, UINT64_MAX);
 		}
@@ -266,10 +286,37 @@ namespace ember::gpu
 		EMBER_GPU_GUARD();
 		EMBER_PROFILE_SCOPE_C("gpu: wait_idle", PROFILE_COLOR_WAIT);
 
+		// A batch recorded outside the frame loop (loading) would otherwise idle with its
+		// copies unsubmitted, wait_idle is the contract's flush point.
+		if (VkCommandBuffer upload = vk::close_upload(*m_state, m_state->frame.timeline_value + 1);
+			upload != VK_NULL_HANDLE)
+		{
+			const u64 value = ++m_state->frame.timeline_value;
+
+			const VkCommandBufferSubmitInfo cmd_info{
+				.sType		   = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+				.commandBuffer = upload,
+			};
+			const VkSemaphoreSubmitInfo signal{
+				.sType	   = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+				.semaphore = m_state->frame.timeline,
+				.value	   = value,
+				.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+			};
+			const VkSubmitInfo2 submit_info{
+				.sType					  = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+				.commandBufferInfoCount	  = 1,
+				.pCommandBufferInfos	  = &cmd_info,
+				.signalSemaphoreInfoCount = 1,
+				.pSignalSemaphoreInfos	  = &signal,
+			};
+			vk::note_result(
+				*m_state, vkQueueSubmit2(m_state->context.graphics.handle, 1, &submit_info, VK_NULL_HANDLE));
+		}
+
 		vk::note_result(*m_state, vkDeviceWaitIdle(m_state->context.device));
 
-		// Idle means everything signaled: even entries stamped for a submit that never
-		// happened (an open frame at teardown) are safe now.
+		m_state->frame.completed = m_state->frame.timeline_value;
 		vk::drain_deferred_destroys(m_state->context, m_state->deferred, UINT64_MAX);
 	}
 
@@ -279,6 +326,14 @@ namespace ember::gpu
 		// least surprising thing guard omitted user code can observe.
 		static constinit DeviceCaps s_null_caps{};
 		return m_state != nullptr ? m_state->context.caps : s_null_caps;
+	}
+
+	TransientAllocator& Device::transient() noexcept
+	{
+		// The default-state allocator is permanently poisoned, so every allocation reports invalid.
+		// Fine to return for a falsy Device.
+		static constinit TransientAllocator s_null{};
+		return m_state != nullptr ? m_state->transient : s_null;
 	}
 
 	bool Device::device_lost() const noexcept
@@ -326,9 +381,14 @@ namespace ember::gpu
 
 		EMBER_VK_CHECK(vkResetCommandPool(ctx.device, frame.slots[slot].pool, 0));
 
-		// The wait above proved wait_value completed; the graveyard rides the frame pacing
-		// and needs no extra queries.
+		// The wait above proved wait_value complete; record it once and let every consumer
+		// (destroy queue, page recycling, batch acquisition) read the same fact.
+		frame.completed = std::max(frame.completed, wait_value);
+
 		vk::drain_deferred_destroys(ctx, m_state->deferred, wait_value);
+		vk::transient_begin_frame(*m_state, slot);
+		vk::staging_begin_frame(m_state->staging, slot);
+
 		frame.pending_present_count = 0;
 		frame.open					= true;
 
@@ -347,7 +407,10 @@ namespace ember::gpu
 		const u32 slot	= static_cast<u32>(frame.index % ctx.frames_in_flight);
 		const u64 value = ++frame.timeline_value;
 
-		VkCommandBuffer cmd = frame.slots[slot].commands;
+		// Uploads ride ahead of the frame's commands in the same submit; the batch's exit
+		// barrier is what orders them against everything the frame records.
+		VkCommandBuffer upload = vk::close_upload(*m_state, value);
+		VkCommandBuffer cmd	   = frame.slots[slot].commands;
 
 		const VkCommandBufferBeginInfo begin_info{
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -359,7 +422,11 @@ namespace ember::gpu
 
 		EMBER_VK_CHECK(vkEndCommandBuffer(cmd));
 
-		submit_frame(*m_state, cmd, slot, value);
+		// Before the submit: the submit is the publication point, and non-coherent transient
+		// memory must be flushed ahead of it. Also poisons the allocator until next frame.
+		vk::transient_end_frame(*m_state, value);
+
+		submit_frame(*m_state, upload, cmd, slot, value);
 		present_pending(*m_state);
 
 		frame.slots[slot].submitted = value;

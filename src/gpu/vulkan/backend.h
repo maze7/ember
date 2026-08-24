@@ -3,10 +3,13 @@
 #include <ember/core/common.h>
 #include <ember/gpu/common.h>
 #include <ember/gpu/device.h>
+#include <ember/gpu/transient.h>
 #include <ember/sync/thread.h>
 #include <gpu/vulkan/common.h>
 #include <gpu/vulkan/destroy_queue.h>
 #include <gpu/vulkan/resources.h>
+#include <gpu/vulkan/staging.h>
+#include <gpu/vulkan/transient_ring.h>
 
 #include <vk_mem_alloc.h>
 
@@ -75,7 +78,11 @@ namespace ember::gpu
 		VkSemaphore timeline = VK_NULL_HANDLE; // frame N signals value N
 		u64 timeline_value	 = 0;			   // last value handed to a submit
 		u64 index			 = 0;			   // slot = index % frames_in_flight
-		bool open = false;
+		bool open			 = false;
+
+		/// Highest timeline value proven complete (begin_frame waits, wait_idle). Batch and
+		/// page recycling key off this instead of querying the semaphore.
+		u64 completed = 0;
 
 		FrameSlot slots[MAX_FRAMES_IN_FLIGHT]{};
 		PendingPresent pending_presents[MAX_SWAPCHAINS]{};
@@ -116,6 +123,9 @@ namespace ember::gpu
 		// Services.
 		vk::DestroyQueue deferred{};
 		vk::ResourcePools resources{};
+		TransientAllocator transient{};		// fast path; user-facing via Device::transient()
+		vk::TransientRing transient_ring{}; // its memory, overflow pages, telemetry
+		vk::Staging staging{};				// staging ring + upload batches
 
 		/// Bookkeeping
 		u32 owner_thread = current_thread_id(); // the thread that constructed the Device

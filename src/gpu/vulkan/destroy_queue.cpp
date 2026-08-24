@@ -108,5 +108,10 @@ namespace ember::gpu::vk
 			entries.clear();
 			head = 0;
 		}
+		else if (head >= 256) // amortized: survivors span only frames_in_flight frames
+		{
+			entries.erase(entries.begin(), entries.begin() + head);
+			head = 0;
+		}
 	}
 }

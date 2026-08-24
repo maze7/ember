@@ -87,8 +87,11 @@ namespace ember::gpu
 
 			if (aligned + bytes > m_limit) [[unlikely]]
 			{
-				// One-off overflow buffers start at offset 0: trivially element-aligned.
-				const TransientAllocation raw = m_overflow(m_context, static_cast<u32>(bytes), alignof(T));
+				// Overflow pages recycle at arbitrary offsets, so element addressing must be requested, not assumed:
+				// stride alignment keeps first_element() exact.
+				const TransientAllocation raw =
+					m_overflow(m_context, static_cast<u32>(bytes), static_cast<u32>(stride));
+
 				return {
 					static_cast<T*>(raw.cpu),
 					raw.buffer,
@@ -115,11 +118,13 @@ namespace ember::gpu
 			TransientAllocation (*overflow)(void*, u32, u32),
 			void* context) noexcept
 		{
-			m_cpu	   = cpu;
-			m_buffer   = buffer;
-			m_limit	   = limit;
-			m_overflow = overflow;
-			m_context  = context;
+			m_cpu	  = cpu;
+			m_buffer  = buffer;
+			m_limit	  = limit;
+			m_context = context;
+			// nullptr = poison: every allocation reports invalid. end_frameuses this so an out-of-frame allocation
+			// fails loudly instead of scribbling on a retiring slice.
+			m_overflow = overflow != nullptr ? overflow : &null_overflow;
 			m_cursor.store(begin, std::memory_order_relaxed);
 		}
 

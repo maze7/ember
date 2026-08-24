@@ -16,6 +16,8 @@ ember_add_module(Gpu
 		vulkan/device_swapchain.cpp
 		vulkan/vma.cpp
 		vulkan/destroy_queue.cpp
+		vulkan/staging.cpp
+		vulkan/transient_ring.cpp
 	PUBLIC_DEPS
 		Ember::Core
 		Ember::Platform

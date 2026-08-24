@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ember/gpu/transient.h>
 #include <ember/core/common.h>
 #include <ember/gpu/buffer.h>
 #include <ember/gpu/common.h>
@@ -205,6 +206,26 @@ namespace ember::gpu
 		[[nodiscard]] Extent2D swapchain_extent(SwapchainHandle handle) const noexcept;
 
 		[[nodiscard]] void* mapped(BufferHandle handle) noexcept;
+
+		/**
+		 * The per-frame transient allocator. Allocations are valid from begin_frame to the
+		 * retirement of the frame that made them; between frames every allocation reports
+		 * invalid (the allocator is poisoned). Callable from any thread.
+		 * The memory is write-combined: write sequentially, never read.
+		 */
+		[[nodiscard]] TransientAllocator& transient() noexcept;
+
+		/**
+		 * Schedules a copy into `handle` at `offset`.
+		 *
+		 * DeviceLocal: staged through the ring; the copy lands before this frame's GPU work
+		 * (or before the next frame's, when called outside begin/end_frame, wait_idle also
+		 * flushes). Same-frame updates to overlapping ranges of one buffer are unordered.
+		 *
+		 * Upload/Readback: written straight through the persistent mapping; hazards against
+		 * in-flight GPU reads are the caller's to avoid (version per frame, or use transient).
+		 */
+		void update_buffer(BufferHandle handle, u64 offset, Span<const u8> data) noexcept;
 
 		FrameInfo begin_frame() noexcept;
 		// void submit(CommandList& list) noexcept;
