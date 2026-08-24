@@ -125,6 +125,8 @@ namespace ember::gpu
 		bool mesh_shaders	= false;
 		bool sampler_minmax = false; // ReductionMode::Min/Max (Hi-Z)
 		bool ray_tracing	= false; // reserved
+		bool buffer_device_address = false;
+		bool memory_budget = false;
 	};
 
 	struct FrameInfo
@@ -133,7 +135,7 @@ namespace ember::gpu
 		u32 slot		= 0; // frame_index % frames_in_flight
 	};
 
-	struct DeviceState;
+	struct Backend;
 
 	/**
 	 * The GPU device: owns every GPU object, the frame loop and the bindless heap.
@@ -223,7 +225,7 @@ namespace ember::gpu
 		void shutdown() noexcept;
 
 		/// Compile-time polymorphic platform-specific state (Vulkan, DX12, etc.)
-		DeviceState* m_state = nullptr;
+		Backend* m_state = nullptr;
 	};
 
 	namespace detail

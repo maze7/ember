@@ -10,7 +10,7 @@ namespace ember::gpu::vk
 {
 	namespace
 	{
-		void enqueue(DeviceState& backend, DeferredDestroy dead) noexcept
+		void enqueue(Backend& backend, DeferredDestroy dead) noexcept
 		{
 			EMBER_ASSERT(backend.owner_thread == current_thread_id());
 			EMBER_ASSERT(dead.kind != DeferredDestroy::Kind::None);
@@ -24,7 +24,7 @@ namespace ember::gpu::vk
 		}
 	}
 
-	void defer_destroy(DeviceState& backend, VkBuffer buffer, VmaAllocation allocation) noexcept
+	void defer_destroy(Backend& backend, VkBuffer buffer, VmaAllocation allocation) noexcept
 	{
 		enqueue(
 			backend,
@@ -35,34 +35,34 @@ namespace ember::gpu::vk
 			});
 	}
 
-	void defer_destroy(DeviceState& backend, VkImage image, VmaAllocation allocation) noexcept
+	void defer_destroy(Backend& backend, VkImage image, VmaAllocation allocation) noexcept
 	{
 		enqueue(
 			backend,
 			{.handle = reinterpret_cast<u64>(image), .allocation = allocation, .kind = DeferredDestroy::Kind::Image});
 	}
 
-	void defer_destroy(DeviceState& backend, VkImageView view) noexcept
+	void defer_destroy(Backend& backend, VkImageView view) noexcept
 	{
 		enqueue(backend, {.handle = reinterpret_cast<u64>(view), .kind = DeferredDestroy::Kind::ImageView});
 	}
 
-	void defer_destroy(DeviceState& backend, VkSemaphore semaphore) noexcept
+	void defer_destroy(Backend& backend, VkSemaphore semaphore) noexcept
 	{
 		enqueue(backend, {.handle = reinterpret_cast<u64>(semaphore), .kind = DeferredDestroy::Kind::Semaphore});
 	}
 
-	void defer_destroy(DeviceState& backend, VkSwapchainKHR swapchain) noexcept
+	void defer_destroy(Backend& backend, VkSwapchainKHR swapchain) noexcept
 	{
 		enqueue(backend, {.handle = reinterpret_cast<u64>(swapchain), .kind = DeferredDestroy::Kind::Swapchain});
 	}
 
-	void defer_destroy(DeviceState& backend, VkSurfaceKHR surface) noexcept
+	void defer_destroy(Backend& backend, VkSurfaceKHR surface) noexcept
 	{
 		enqueue(backend, {.handle = reinterpret_cast<u64>(surface), .kind = DeferredDestroy::Kind::Surface});
 	}
 
-	void drain_deferred_destroys(DeviceState& backend, u64 completed) noexcept
+	void drain_deferred_destroys(Backend& backend, u64 completed) noexcept
 	{
 		EMBER_ASSERT(backend.owner_thread == current_thread_id());
 
@@ -80,27 +80,27 @@ namespace ember::gpu::vk
 					break;
 
 				case DeferredDestroy::Kind::Buffer:
-					vmaDestroyBuffer(backend.allocator, reinterpret_cast<VkBuffer>(dead.handle), dead.allocation);
+					vmaDestroyBuffer(backend.context.allocator, reinterpret_cast<VkBuffer>(dead.handle), dead.allocation);
 					break;
 
 				case DeferredDestroy::Kind::Image:
-					vmaDestroyImage(backend.allocator, reinterpret_cast<VkImage>(dead.handle), dead.allocation);
+					vmaDestroyImage(backend.context.allocator, reinterpret_cast<VkImage>(dead.handle), dead.allocation);
 					break;
 
 				case DeferredDestroy::Kind::ImageView:
-					vkDestroyImageView(backend.device, reinterpret_cast<VkImageView>(dead.handle), nullptr);
+					vkDestroyImageView(backend.context.device, reinterpret_cast<VkImageView>(dead.handle), nullptr);
 					break;
 
 				case DeferredDestroy::Kind::Semaphore:
-					vkDestroySemaphore(backend.device, reinterpret_cast<VkSemaphore>(dead.handle), nullptr);
+					vkDestroySemaphore(backend.context.device, reinterpret_cast<VkSemaphore>(dead.handle), nullptr);
 					break;
 
 				case DeferredDestroy::Kind::Swapchain:
-					vkDestroySwapchainKHR(backend.device, reinterpret_cast<VkSwapchainKHR>(dead.handle), nullptr);
+					vkDestroySwapchainKHR(backend.context.device, reinterpret_cast<VkSwapchainKHR>(dead.handle), nullptr);
 					break;
 
 				case DeferredDestroy::Kind::Surface:
-					platform::vk::destroy_surface(backend.instance, reinterpret_cast<VkSurfaceKHR>(dead.handle));
+					platform::vk::destroy_surface(backend.context.instance, reinterpret_cast<VkSurfaceKHR>(dead.handle));
 					break;
 			}
 		}

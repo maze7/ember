@@ -26,6 +26,25 @@ namespace ember::gpu
 		u32 family	   = VK_QUEUE_FAMILY_IGNORED;
 	};
 
+	struct Context
+	{
+		VkInstance instance = VK_NULL_HANDLE;
+		VkPhysicalDevice adapter = VK_NULL_HANDLE;
+		VkDevice device = VK_NULL_HANDLE;
+		VmaAllocator allocator = VK_NULL_HANDLE;
+		VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
+
+		// Device Queues
+		Queue graphics{}; // owns submission; also presents (checked at adapter selection)
+		Queue compute{}; // dedicated async-compute family when the adapter has one, otherwise equals graphics
+		Queue transfer{}; // dedicated DMA family when present, otherwise equals graphics
+
+		DeviceCaps caps{};
+		Platform* platform = nullptr;
+
+		bool debug_utils = false;
+	};
+
 	struct FrameSlot
 	{
 		u64 submitted = 0; // timeline value that this slot's last end_frame signalled; 0 = never used.
@@ -60,29 +79,16 @@ namespace ember::gpu
 		return s_debug;
 	}
 
-	struct DeviceState
+	struct Backend
 	{
-		/// Boot state. Written by boot(), constant afterwards.
-		VkInstance instance				   = VK_NULL_HANDLE;
-		VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
-		VkPhysicalDevice adapter		   = VK_NULL_HANDLE;
-		VkDevice device					   = VK_NULL_HANDLE;
-		VmaAllocator allocator			   = VK_NULL_HANDLE;
-		VkPipelineCache pipeline_cache	   = VK_NULL_HANDLE;
-
-		Queue graphics{}; // owns submission; also presents (checked at adapter selection)
-		Queue compute{};  // dedicated async-compute family when the adapter has one, else == graphics
-		Queue transfer{}; // dedicated DMA family when present, else == graphics
+		Context context;
 
 		vk::DestroyQueue deferred{};
+		vk::ResourcePools resources;
 
 		VkPhysicalDeviceProperties properties{};
 		VkPhysicalDeviceMemoryProperties memory_properties{};
-		DeviceCaps caps{};
 
-		Platform* platform = nullptr; // Window-system provider bound at boot; null == headless.
-
-		vk::ResourcePools resources;
 
 		VkSemaphore timeline = VK_NULL_HANDLE; // the one CPU/GPU sync primitive: frame N signals N
 		FrameSlot slots[MAX_FRAMES_IN_FLIGHT]{};
@@ -95,9 +101,9 @@ namespace ember::gpu
 		std::array<PendingPresent, MAX_SWAPCHAINS> pending_presents{};
 		u32 pending_present_count = 0;
 
-		DeviceState() noexcept					   = default;
-		DeviceState(const DeviceState&)			   = delete;
-		DeviceState& operator=(const DeviceState&) = delete;
+		Backend() noexcept					   = default;
+		Backend(const Backend&)			   = delete;
+		Backend& operator=(const Backend&) = delete;
 
 		/// Capabilities granted at boot that only the backend branches on.
 		/// User-facing ones live in DeviceCaps.

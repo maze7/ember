@@ -4,9 +4,9 @@
 #include <ember/core/common.h>
 #include <ember/core/profile.h>
 #include <ember/gpu/device.h>
+#include <gpu/vulkan/common.h>
 #include <gpu/vulkan/device_state.h>
 #include <gpu/vulkan/resources.h>
-#include <gpu/vulkan/common.h>
 #include <vulkan/vulkan_core.h>
 
 namespace ember::gpu
@@ -18,8 +18,7 @@ namespace ember::gpu
 		constinit std::atomic<bool> s_device_claimed{false};
 
 		/// Convenience wrapper for Vulkan's count-then-fetch dance.
-		template <class T, class F>
-		[[nodiscard]] Vector<T> enumerate(F&& fetch) noexcept
+		template <class T, class F> [[nodiscard]] Vector<T> enumerate(F&& fetch) noexcept
 		{
 			Vector<T> out(&memory::heap(MemoryTag::Graphics));
 			u32 count = 0;
@@ -144,6 +143,9 @@ namespace ember::gpu
 			EMBER_FEATURE(Features12, shaderStorageBufferArrayNonUniformIndexing),
 			EMBER_FEATURE(Features12, shaderStorageImageArrayNonUniformIndexing),
 			EMBER_FEATURE(Features12, scalarBlockLayout),
+			/// GPU-driven rendering pulls vertices and draw records through device addresses;
+			/// D3D12 mandattes GPUVAs, so bufferDeviceAddress is required.
+			EMBER_FEATURE(Features12, bufferDeviceAddress),
 		};
 
 		constexpr FeatureRef<Features13> REQUIRED_13[] = {
@@ -244,11 +246,11 @@ namespace ember::gpu
 		constexpr const char* VALIDATION_LAYER = "VK_LAYER_KHRONOS_validation";
 
 		/// Loader -> layers/extensions -> instance -> volk instance table -> debug messenger.
-		[[nodiscard]] bool create_instance(DeviceState& state, const DeviceDef& def) noexcept
+		[[nodiscard]] bool create_instance(Context& ctx, const DeviceDef& def) noexcept
 		{
 			/// Loader. With a Platform*, SDL owns the Vulkan library so our calls and its
 			/// surface creation share one loader instance; headless boots dlopen it via volk.
-			if (state.platform != nullptr)
+			if (ctx.platform != nullptr)
 			{
 				const auto proc = platform::vk::get_instance_proc_addr();
 
@@ -289,7 +291,6 @@ namespace ember::gpu
 				if (has_layer(layers, VALIDATION_LAYER))
 				{
 					enabled_layers.push_back(VALIDATION_LAYER);
-					state.validation = true;
 
 					// The layer contributes extensions of its own (VK_EXT_validation_features).
 					append_instance_extensions(VALIDATION_LAYER, extensions);
@@ -305,7 +306,7 @@ namespace ember::gpu
 			if (has_extension(extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME))
 			{
 				enabled_extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-				state.debug_utils = true;
+				ctx.debug_utils = true;
 			}
 
 			const Span<const char* const> wsi = platform::vk::instance_extensions();
@@ -342,7 +343,7 @@ namespace ember::gpu
 				.pUserData		 = &debug_state(),
 			};
 
-			if (state.debug_utils)
+			if (ctx.debug_utils)
 			{
 				messenger_info.pNext = next;
 				next				 = &messenger_info;
@@ -357,7 +358,7 @@ namespace ember::gpu
 				.pEnabledValidationFeatures	   = sync_validation,
 			};
 
-			if (state.validation && def.enable_sync_validation)
+			if (def.enable_sync_validation)
 			{
 				if (has_extension(extensions, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME))
 				{
@@ -392,26 +393,26 @@ namespace ember::gpu
 				.ppEnabledExtensionNames = enabled_extensions.data(),
 			};
 
-			if (auto result = vkCreateInstance(&info, nullptr, &state.instance); result != VK_SUCCESS)
+			if (auto result = vkCreateInstance(&info, nullptr, &ctx.instance); result != VK_SUCCESS)
 			{
 				EMBER_ERROR("vulkan: vkCreateInstance failed: {}", vk::result_name(result));
-				state.instance = VK_NULL_HANDLE;
+				ctx.instance = VK_NULL_HANDLE;
 				return false;
 			}
 
 			// instance-level entry points only; device ones load per device in create_device,
 			// skipping the loader's runtime dispatch trampoline entirely.
-			volkLoadInstanceOnly(state.instance);
+			volkLoadInstanceOnly(ctx.instance);
 
-			if (state.debug_utils)
+			if (ctx.debug_utils)
 			{
 				messenger_info.pNext = nullptr;
 
-				if (vkCreateDebugUtilsMessengerEXT(state.instance, &messenger_info, nullptr, &state.messenger) !=
+				if (vkCreateDebugUtilsMessengerEXT(ctx.instance, &messenger_info, nullptr, &ctx.messenger) !=
 					VK_SUCCESS)
 				{
 					EMBER_WARN("vulkan: debug messenger creation failed; continuing without it");
-					state.messenger = VK_NULL_HANDLE;
+					ctx.messenger = VK_NULL_HANDLE;
 				}
 			}
 
@@ -423,13 +424,18 @@ namespace ember::gpu
 		{
 			VkPhysicalDevice handle = VK_NULL_HANDLE;
 			VkPhysicalDeviceProperties properties{};
+			VkPhysicalDeviceMemoryProperties memory_properties{};
 
 			u32 graphics_family = VK_QUEUE_FAMILY_IGNORED;
 			u32 compute_family	= VK_QUEUE_FAMILY_IGNORED; // dedicated (no graphics); optional
 			u32 transfer_family = VK_QUEUE_FAMILY_IGNORED; // dedicated (no graphics/compute); optional
 
-			bool mesh_shader											   = false;
-			bool memory_budget											   = false;
+			bool mesh_shader	= false;
+			bool memory_budget	= false;
+			bool wireframe		= false; // fillModeNonSolid
+			bool indirect_count = false; // vulkan12.drawIndirectCount
+			bool sampler_minmax = false; // vulkan12.samplerFilterMinmax
+
 			u32 subgroup_size											   = 0;
 			char driver[VK_MAX_DRIVER_NAME_SIZE + VK_MAX_DRIVER_INFO_SIZE] = {};
 		};
@@ -507,10 +513,11 @@ namespace ember::gpu
 		}
 
 		/// Rejects adapters that cannot run ember's contract. Fills `out` for the ones that can.
-		[[nodiscard]] bool query_adapter(const DeviceState& state, VkPhysicalDevice handle, AdapterInfo& out) noexcept
+		[[nodiscard]] bool query_adapter(const Backend& state, VkPhysicalDevice handle, AdapterInfo& out) noexcept
 		{
 			out.handle = handle;
 			vkGetPhysicalDeviceProperties(handle, &out.properties);
+			vkGetPhysicalDeviceMemoryProperties(handle, &out.memory_properties);
 
 			const char* name = out.properties.deviceName;
 
@@ -528,7 +535,7 @@ namespace ember::gpu
 				[handle](u32* count, VkExtensionProperties* data)
 				{ return vkEnumerateDeviceExtensionProperties(handle, nullptr, count, data); });
 
-			if (state.platform != nullptr && !has_extension(extensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
+			if (state.context.platform != nullptr && !has_extension(extensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
 			{
 				EMBER_INFO("vulkan: skipping {}: no {}", name, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 				return false;
@@ -572,7 +579,8 @@ namespace ember::gpu
 				if ((families[i].queueFlags & GRAPHICS_COMPUTE) != GRAPHICS_COMPUTE)
 					continue;
 
-				if (state.platform != nullptr && !platform::vk::presentation_supported(state.instance, handle, i))
+				if (state.context.platform != nullptr &&
+					!platform::vk::presentation_supported(state.context.instance, handle, i))
 					continue;
 
 				out.graphics_family = i;
@@ -584,7 +592,7 @@ namespace ember::gpu
 				EMBER_INFO(
 					"vulkan: skipping {}: no graphics+compute{} queue family",
 					name,
-					state.platform != nullptr ? "+present" : "");
+					state.context.platform != nullptr ? "+present" : "");
 				return false;
 			}
 
@@ -617,11 +625,11 @@ namespace ember::gpu
 		 * Filter-then-score: query_adapter rejects anything that cannot run the contract, then
 		 * the best-scoring survivor wins. Strictly-greater keeps enumeration order on ties.
 		 */
-		[[nodiscard]] bool select_adapter(const DeviceState& backend, const DeviceDef& def, AdapterInfo& out) noexcept
+		[[nodiscard]] bool select_adapter(const Backend& backend, const DeviceDef& def, AdapterInfo& out) noexcept
 		{
 			const auto adapters = enumerate<VkPhysicalDevice>(
 				[&backend](u32* count, VkPhysicalDevice* data)
-				{ return vkEnumeratePhysicalDevices(backend.instance, count, data); });
+				{ return vkEnumeratePhysicalDevices(backend.context.instance, count, data); });
 
 			if (adapters.empty())
 			{
@@ -663,7 +671,7 @@ namespace ember::gpu
 		 * GPU time. One queue per distinct family; dedicated compute/transfer families are
 		 * created now so async work needs no boot changes later.
 		 */
-		[[nodiscard]] bool create_device(DeviceState& state, const AdapterInfo& adapter) noexcept
+		[[nodiscard]] bool create_device(Context& ctx, const AdapterInfo& adapter) noexcept
 		{
 			const f32 priority = 1.0f;
 			VkDeviceQueueCreateInfo queue_infos[3]{};
@@ -706,31 +714,31 @@ namespace ember::gpu
 			if (available.vulkan12.drawIndirectCount == VK_TRUE)
 			{
 				enabled.vulkan12.drawIndirectCount = VK_TRUE;
-				state.caps.indirect_count		   = true;
+				ctx.caps.indirect_count			   = true;
 			}
 
 			if (available.vulkan12.samplerFilterMinmax == VK_TRUE)
 			{
 				enabled.vulkan12.samplerFilterMinmax = VK_TRUE;
-				state.caps.sampler_minmax			 = true;
+				ctx.caps.sampler_minmax				 = true;
 			}
 
 			if (available.vulkan12.bufferDeviceAddress == VK_TRUE)
 			{
 				enabled.vulkan12.bufferDeviceAddress = VK_TRUE;
-				state.buffer_device_address			 = true;
+				ctx.caps.buffer_device_address		 = true;
 			}
 
 			if (available.features2.features.fillModeNonSolid == VK_TRUE)
 			{
 				enabled.features2.features.fillModeNonSolid = VK_TRUE;
-				state.caps.wireframe						= true;
+				ctx.caps.wireframe							= true;
 			}
 
 			const char* extensions[3];
 			u32 extension_count = 0;
 
-			if (state.platform != nullptr)
+			if (ctx.platform != nullptr)
 				extensions[extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 
 			// Extension-gated features: the extension string and its feature structs travel
@@ -740,13 +748,12 @@ namespace ember::gpu
 				extensions[extension_count++]  = VK_EXT_MESH_SHADER_EXTENSION_NAME;
 				enabled.mesh_shader.taskShader = VK_TRUE;
 				enabled.mesh_shader.meshShader = VK_TRUE;
-				state.caps.mesh_shaders		   = true;
+				ctx.caps.mesh_shaders		   = true;
 			}
 
 			if (adapter.memory_budget)
 			{
 				extensions[extension_count++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
-				state.memory_budget			  = true;
 			}
 
 			VkDeviceCreateInfo info{
@@ -758,42 +765,42 @@ namespace ember::gpu
 				.ppEnabledExtensionNames = extensions,
 			};
 
-			if (auto result = vkCreateDevice(adapter.handle, &info, nullptr, &state.device); result != VK_SUCCESS)
+			if (auto result = vkCreateDevice(adapter.handle, &info, nullptr, &ctx.device); result != VK_SUCCESS)
 			{
 				EMBER_ERROR("vulkan: vkCreateDevice failed: {}", vk::result_name(result));
-				state.device = VK_NULL_HANDLE;
+				ctx.device = VK_NULL_HANDLE;
 				return false;
 			}
 
 			// Direct device-level entry points: no per-call dispatch through the loader.
-			volkLoadDevice(state.device);
+			volkLoadDevice(ctx.device);
 
 			const auto fetch_queue = [&](u32 family, Queue& queue)
 			{
 				queue.family = family;
-				vkGetDeviceQueue(state.device, family, 0, &queue.handle);
+				vkGetDeviceQueue(ctx.device, family, 0, &queue.handle);
 			};
 
-			fetch_queue(adapter.graphics_family, state.graphics);
+			fetch_queue(adapter.graphics_family, ctx.graphics);
 
 			if (adapter.compute_family != VK_QUEUE_FAMILY_IGNORED)
-				fetch_queue(adapter.compute_family, state.compute);
+				fetch_queue(adapter.compute_family, ctx.compute);
 			else
-				state.compute = state.graphics;
+				ctx.compute = ctx.graphics;
 
 			if (adapter.transfer_family != VK_QUEUE_FAMILY_IGNORED)
-				fetch_queue(adapter.transfer_family, state.transfer);
+				fetch_queue(adapter.transfer_family, ctx.transfer);
 			else
-				state.transfer = state.graphics;
+				ctx.transfer = ctx.graphics;
 
-			vk::set_name(state, VK_OBJECT_TYPE_DEVICE, (u64)state.device, "ember.device");
-			vk::set_name(state, VK_OBJECT_TYPE_QUEUE, (u64)state.graphics.handle, "ember.queue.graphics");
+			vk::set_name(ctx, VK_OBJECT_TYPE_DEVICE, (u64)ctx.device, "ember.device");
+			vk::set_name(ctx, VK_OBJECT_TYPE_QUEUE, (u64)ctx.graphics.handle, "ember.queue.graphics");
 
 			return true;
 		}
 
 		/// VMA fetches every entry point through volk's two loaders; nothing links libvulkan.
-		[[nodiscard]] bool create_allocator(DeviceState& state) noexcept
+		[[nodiscard]] bool create_allocator(Context& ctx) noexcept
 		{
 			VmaVulkanFunctions functions{};
 			functions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
@@ -801,22 +808,22 @@ namespace ember::gpu
 
 			// Assignment, not designated init: VMA's member order is not stable across versions.
 			VmaAllocatorCreateInfo info{};
-			info.physicalDevice	  = state.adapter;
-			info.device			  = state.device;
-			info.instance		  = state.instance;
+			info.physicalDevice	  = ctx.adapter;
+			info.device			  = ctx.device;
+			info.instance		  = ctx.instance;
 			info.pVulkanFunctions = &functions;
 			info.vulkanApiVersion = vk::API_VERSION;
 
-			if (state.buffer_device_address)
+			if (ctx.caps.buffer_device_address)
 				info.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 
-			if (state.memory_budget)
+			if (ctx.caps.memory_budget)
 				info.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
 
-			if (const VkResult result = vmaCreateAllocator(&info, &state.allocator); result != VK_SUCCESS)
+			if (const VkResult result = vmaCreateAllocator(&info, &ctx.allocator); result != VK_SUCCESS)
 			{
 				EMBER_ERROR("vulkan: vmaCreateAllocator failed: {}", vk::result_name(result));
-				state.allocator = VK_NULL_HANDLE;
+				ctx.allocator = VK_NULL_HANDLE;
 				return false;
 			}
 
@@ -824,34 +831,35 @@ namespace ember::gpu
 		}
 
 		/**
-		 * Everything user code and the backend consult at runtime, derived once. Optional-feature
-		 * caps (wireframe, indirect_count, sampler_minmax, mesh_shaders) were already set while
-		 * enabling them in create_device.
+		 * Everything user code and the backend consult at runtime, derived once from what
+		 * adapter selection learned. Sole writer of DeviceCaps — a pure AdapterInfo ->
+		 * DeviceCaps transform: no device, no handles, no Vulkan calls.
 		 */
-		void fill_caps(DeviceState& state, const AdapterInfo& adapter) noexcept
+		void fill_caps(DeviceCaps& caps, const AdapterInfo& adapter) noexcept
 		{
-			DeviceCaps& caps					 = state.caps;
-			const VkPhysicalDeviceLimits& limits = state.properties.limits;
+			const VkPhysicalDeviceLimits& limits = adapter.properties.limits;
 
 			std::snprintf(
 				caps.adapter_name,
 				sizeof(caps.adapter_name),
 				"%.*s",
 				static_cast<int>(sizeof(caps.adapter_name) - 1),
-				state.properties.deviceName);
-			caps.vendor_id	  = state.properties.vendorID;
-			caps.device_id	  = state.properties.deviceID;
-			caps.api_version  = state.properties.apiVersion;
-			caps.adapter_kind = to_adapter_kind(state.properties.deviceType);
+				adapter.properties.deviceName);
+			caps.vendor_id	  = adapter.properties.vendorID;
+			caps.device_id	  = adapter.properties.deviceID;
+			caps.api_version  = adapter.properties.apiVersion;
+			caps.adapter_kind = to_adapter_kind(adapter.properties.deviceType);
 
 			// Memory: total device-local, and whether a large DEVICE_LOCAL|HOST_VISIBLE type
-			// exists. A 256 MB heap is the pre-ReBAR BAR window; anything larger is ReBAR/SAM or
-			// unified memory, which lets the transient ring live in VRAM.
-			const VkPhysicalDeviceMemoryProperties& mem = state.memory_properties;
+			// exists. A 256 MB heap is the pre-ReBAR BAR window; anything larger is ReBAR/SAM
+			// or unified memory, which lets the transient ring live in VRAM.
+			const VkPhysicalDeviceMemoryProperties& mem = adapter.memory_properties;
 
+			u64 device_local_bytes = 0;
 			for (u32 i = 0; i < mem.memoryHeapCount; ++i)
 				if ((mem.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0)
-					caps.device_local_bytes += mem.memoryHeaps[i].size;
+					device_local_bytes += mem.memoryHeaps[i].size;
+			caps.device_local_bytes = device_local_bytes;
 
 			for (u32 i = 0; i < mem.memoryTypeCount; ++i)
 			{
@@ -865,9 +873,13 @@ namespace ember::gpu
 					caps.host_visible_device_local = true;
 			}
 
+			// 64 KB is D3D12's constant-buffer-view size limit; clamping now keeps constant
+			// blocks portable to the DX12 backend unchanged.
+			constexpr u32 D3D12_CONSTANT_BLOCK_LIMIT = 64u * 1024u;
+
 			caps.constant_buffer_offset_alignment = static_cast<u32>(limits.minUniformBufferOffsetAlignment);
 			caps.storage_buffer_offset_alignment  = static_cast<u32>(limits.minStorageBufferOffsetAlignment);
-			caps.max_constant_block_bytes		  = std::min<u32>(limits.maxUniformBufferRange, 64u * 1024u);
+			caps.max_constant_block_bytes		  = std::min<u32>(limits.maxUniformBufferRange, D3D12_CONSTANT_BLOCK_LIMIT);
 			caps.copy_row_pitch_alignment		  = static_cast<u32>(limits.optimalBufferCopyRowPitchAlignment);
 			caps.copy_offset_alignment			  = static_cast<u32>(limits.optimalBufferCopyOffsetAlignment);
 
@@ -881,6 +893,13 @@ namespace ember::gpu
 			caps.timestamps			 = limits.timestampComputeAndGraphics == VK_TRUE && limits.timestampPeriod > 0.0f;
 			caps.timestamp_period_ns = limits.timestampPeriod;
 
+			// Optional features: availability recorded by query_adapter, enabled by
+			// create_device, reported here. One query, no drift.
+			caps.wireframe		= adapter.wireframe;
+			caps.indirect_count = adapter.indirect_count;
+			caps.sampler_minmax = adapter.sampler_minmax;
+			caps.mesh_shaders	= adapter.mesh_shader;
+
 			caps.ray_tracing = false; // reserved
 
 			// Contract sanity: guaranteed by spec minimums, asserted so a broken driver is loud.
@@ -888,7 +907,7 @@ namespace ember::gpu
 			EMBER_ASSERT(limits.maxBoundDescriptorSets >= 2);
 		}
 
-		[[nodiscard]] bool create_frame_resources(DeviceState& state) noexcept
+		[[nodiscard]] bool create_frame_resources(Backend& backend) noexcept
 		{
 			VkSemaphoreTypeCreateInfo type_info{
 				.sType		   = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
@@ -902,7 +921,7 @@ namespace ember::gpu
 			};
 
 			VkSemaphore timeline = VK_NULL_HANDLE;
-			VkResult result		 = vkCreateSemaphore(state.device, &semaphore_info, nullptr, &timeline);
+			VkResult result		 = vkCreateSemaphore(backend.context.device, &semaphore_info, nullptr, &timeline);
 
 			if (result != VK_SUCCESS)
 			{
@@ -910,19 +929,20 @@ namespace ember::gpu
 				return false;
 			}
 
-			state.timeline = timeline;
-			vk::set_name(state, VK_OBJECT_TYPE_SEMAPHORE, reinterpret_cast<u64>(timeline), "ember.frame_timeline");
+			backend.timeline = timeline;
+			vk::set_name(
+				backend.context, VK_OBJECT_TYPE_SEMAPHORE, reinterpret_cast<u64>(timeline), "ember.frame_timeline");
 
-			for (u32 i = 0; i < state.frames_in_flight; ++i)
+			for (u32 i = 0; i < backend.frames_in_flight; ++i)
 			{
-				FrameSlot& slot = state.slots[i];
+				FrameSlot& slot = backend.slots[i];
 				VkCommandPoolCreateInfo pool_info{
 					.sType			  = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-					.queueFamilyIndex = state.graphics.family,
+					.queueFamilyIndex = backend.context.graphics.family,
 				};
 
 				VkCommandPool pool = VK_NULL_HANDLE;
-				result			   = vkCreateCommandPool(state.device, &pool_info, nullptr, &pool);
+				result			   = vkCreateCommandPool(backend.context.device, &pool_info, nullptr, &pool);
 
 				if (result != VK_SUCCESS)
 				{
@@ -940,7 +960,7 @@ namespace ember::gpu
 				};
 
 				VkCommandBuffer commands = VK_NULL_HANDLE;
-				result					 = vkAllocateCommandBuffers(state.device, &allocation_info, &commands);
+				result = vkAllocateCommandBuffers(backend.context.device, &allocation_info, &commands);
 				if (result != VK_SUCCESS)
 				{
 					EMBER_ERROR("vulkan: frame command-buffer allocation failed: {}", vk::result_name(result));
@@ -965,19 +985,19 @@ namespace ember::gpu
 			return;
 		}
 
-		m_state		= memory::new_object<DeviceState>(MemoryTag::Graphics);
-		m_state->platform			= def.platform;
+		m_state					  = memory::new_object<Backend>(MemoryTag::Graphics);
+		m_state->context.platform = def.platform;
 		m_state->frames_in_flight = def.frames_in_flight;
 		m_state->resources.reserve(def.limits);
 
 		// Create Vulkan instance (loader, layers, WSI extensions, debug messenger)
-		if (!create_instance(*m_state, def))
+		if (!create_instance(m_state->context, def))
 		{
 			shutdown();
 			return;
 		}
 
-		// Adapter. Filter on require dfeature set, then score by preference.
+		// Adapter. Filter on required feature set, then score by preference.
 		AdapterInfo adapter{};
 		if (!select_adapter(*m_state, def, adapter))
 		{
@@ -985,18 +1005,18 @@ namespace ember::gpu
 			return;
 		}
 
-		m_state->adapter	  = adapter.handle;
-		m_state->properties = adapter.properties;
-		vkGetPhysicalDeviceMemoryProperties(m_state->adapter, &m_state->memory_properties);
+		m_state->context.adapter = adapter.handle;
+		m_state->properties		 = adapter.properties;
+		vkGetPhysicalDeviceMemoryProperties(m_state->context.adapter, &m_state->memory_properties);
 
 		// Logical device, queues, allocator
-		if (!create_device(*m_state, adapter) || !create_allocator(*m_state))
+		if (!create_device(m_state->context, adapter) || !create_allocator(m_state->context))
 		{
 			shutdown();
 			return;
 		}
 
-		fill_caps(*m_state, adapter);
+		fill_caps(m_state->context.caps, adapter);
 
 		if (!create_frame_resources(*m_state))
 		{
@@ -1006,15 +1026,15 @@ namespace ember::gpu
 
 		EMBER_INFO(
 			"vulkan: {} ({}) | {} | Vulkan {}.{}.{} | {} MB local{}{} | validation {}",
-			m_state->caps.adapter_name,
-			enum_names<AdapterKind>()[(u32)m_state->caps.adapter_kind],
+			m_state->context.caps.adapter_name,
+			enum_names<AdapterKind>()[static_cast<u32>(m_state->context.caps.adapter_kind)],
 			adapter.driver,
-			VK_API_VERSION_MAJOR(m_state->caps.api_version),
-			VK_API_VERSION_MINOR(m_state->caps.api_version),
-			VK_API_VERSION_PATCH(m_state->caps.api_version),
-			m_state->caps.device_local_bytes / (1024 * 1024),
-			m_state->caps.host_visible_device_local ? " (ReBAR)" : "",
-			m_state->caps.mesh_shaders ? " | mesh shaders" : "",
+			VK_API_VERSION_MAJOR(m_state->context.caps.api_version),
+			VK_API_VERSION_MINOR(m_state->context.caps.api_version),
+			VK_API_VERSION_PATCH(m_state->context.caps.api_version),
+			m_state->context.caps.device_local_bytes / (1024 * 1024),
+			m_state->context.caps.host_visible_device_local ? " (ReBAR)" : "",
+			m_state->context.caps.mesh_shaders ? " | mesh shaders" : "",
 			m_state->validation ? "on" : "off");
 	}
 
@@ -1025,47 +1045,44 @@ namespace ember::gpu
 		EMBER_GPU_GUARD();
 
 		// Partial initialization may not have created a device yet.
-		if (m_state->device != VK_NULL_HANDLE)
-			(void)vkDeviceWaitIdle(m_state->device);
+		if (m_state->context.device != VK_NULL_HANDLE)
+			(void)vkDeviceWaitIdle(m_state->context.device);
 
 		// Destroy surviving user resources while m_state is still published.
-		if (m_state->device != VK_NULL_HANDLE)
+		if (m_state->context.device != VK_NULL_HANDLE)
 		{
 			destroy_resources();
 			vk::drain_deferred_destroys(*m_state, UINT64_MAX);
 		}
 
 		// Destroy vulkan device & all resources that depend on it
-		DeviceState* dead = std::exchange(m_state, nullptr);
-		if (dead->device != VK_NULL_HANDLE)
+		Backend* dead = std::exchange(m_state, nullptr);
+		if (dead->context.device != VK_NULL_HANDLE)
 		{
 			for (FrameSlot& slot : dead->slots)
 				if (slot.pool != VK_NULL_HANDLE)
-					vkDestroyCommandPool(dead->device, slot.pool, nullptr);
+					vkDestroyCommandPool(dead->context.device, slot.pool, nullptr);
 
 			if (dead->timeline != VK_NULL_HANDLE)
-				vkDestroySemaphore(dead->device, dead->timeline, nullptr);
+				vkDestroySemaphore(dead->context.device, dead->timeline, nullptr);
 
-			if (dead->pipeline_cache != VK_NULL_HANDLE)
-				vkDestroyPipelineCache(dead->device, dead->pipeline_cache, nullptr);
+			if (dead->context.allocator != VK_NULL_HANDLE)
+				vmaDestroyAllocator(dead->context.allocator);
 
-			if (dead->allocator != VK_NULL_HANDLE)
-				vmaDestroyAllocator(dead->allocator);
-
-			vkDestroyDevice(dead->device, nullptr);
+			vkDestroyDevice(dead->context.device, nullptr);
 		}
 
 		// Destroy debug messenger
-		if (dead->messenger != VK_NULL_HANDLE)
-			vkDestroyDebugUtilsMessengerEXT(dead->instance, dead->messenger, nullptr);
+		if (dead->context.messenger != VK_NULL_HANDLE)
+			vkDestroyDebugUtilsMessengerEXT(dead->context.instance, dead->context.messenger, nullptr);
 
 		// Destroy vulkan instance
-		if (dead->instance != VK_NULL_HANDLE)
-			vkDestroyInstance(dead->instance, nullptr);
+		if (dead->context.instance != VK_NULL_HANDLE)
+			vkDestroyInstance(dead->context.instance, nullptr);
 
 		volkFinalize();
 
-		if (dead->platform != nullptr)
+		if (dead->context.platform != nullptr)
 			platform::vk::release_loader();
 
 		memory::delete_object(MemoryTag::Graphics, dead);
@@ -1102,7 +1119,7 @@ namespace ember::gpu
 		EMBER_GPU_GUARD();
 		EMBER_PROFILE_SCOPE_C("gpu: wait_idle", PROFILE_COLOR_WAIT);
 
-		vk::note_result(*m_state, vkDeviceWaitIdle(m_state->device));
+		vk::note_result(*m_state, vkDeviceWaitIdle(m_state->context.device));
 
 		// Idle means everything signaled: even entries stamped for a submit that never
 		// happened (an open frame at teardown) are safe now.
@@ -1114,7 +1131,7 @@ namespace ember::gpu
 		// A falsy Device still answers caps(): all-zero caps read as "nothing supported", the
 		// least surprising thing guard omitted user code can observe.
 		static constinit DeviceCaps s_null_caps{};
-		return m_state != nullptr ? m_state->caps : s_null_caps;
+		return m_state != nullptr ? m_state->context.caps : s_null_caps;
 	}
 
 	bool Device::device_lost() const noexcept
@@ -1153,10 +1170,10 @@ namespace ember::gpu
 				.pValues		= &wait_value,
 			};
 
-			vk::note_result(*m_state, vkWaitSemaphores(m_state->device, &wait_info, UINT64_MAX));
+			vk::note_result(*m_state, vkWaitSemaphores(m_state->context.device, &wait_info, UINT64_MAX));
 		}
 
-		EMBER_VK_CHECK(vkResetCommandPool(m_state->device, m_state->slots[slot].pool, 0));
+		EMBER_VK_CHECK(vkResetCommandPool(m_state->context.device, m_state->slots[slot].pool, 0));
 
 		// The wait above proved wait_value completed; the graveyard rides the frame pacing
 		// and needs no extra queries.
@@ -1305,7 +1322,7 @@ namespace ember::gpu
 			.pSignalSemaphoreInfos	  = signals,
 		};
 
-		vk::note_result(*m_state, vkQueueSubmit2(m_state->graphics.handle, 1, &submit_info, VK_NULL_HANDLE));
+		vk::note_result(*m_state, vkQueueSubmit2(m_state->context.graphics.handle, 1, &submit_info, VK_NULL_HANDLE));
 
 		// Batched present: every swapchain touched this frame in one call, results per entry.
 		if (m_state->pending_present_count > 0)
@@ -1317,7 +1334,8 @@ namespace ember::gpu
 
 			for (u32 i = 0; i < m_state->pending_present_count; ++i)
 			{
-				const vk::SwapchainData& data = m_state->resources.swapchains.get(m_state->pending_presents[i].swapchain);
+				const vk::SwapchainData& data =
+					m_state->resources.swapchains.get(m_state->pending_presents[i].swapchain);
 
 				swapchains[i]	 = data.swapchain;
 				present_waits[i] = data.present_semaphores[data.acquired_image];
@@ -1334,7 +1352,7 @@ namespace ember::gpu
 				.pResults			= results,
 			};
 
-			vk::note_result(*m_state, vkQueuePresentKHR(m_state->graphics.handle, &present_info));
+			vk::note_result(*m_state, vkQueuePresentKHR(m_state->context.graphics.handle, &present_info));
 
 			// Per-swapchain outcome: OUT_OF_DATE/SUBOPTIMAL here means recreate at next acquire.
 			for (u32 i = 0; i < m_state->pending_present_count; ++i)
@@ -1343,7 +1361,7 @@ namespace ember::gpu
 		}
 
 		m_state->slots[slot].submitted = value;
-		m_state->frame_open			  = false;
+		m_state->frame_open			   = false;
 		++m_state->frame_index;
 	}
 }

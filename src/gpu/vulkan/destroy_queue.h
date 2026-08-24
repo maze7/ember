@@ -9,7 +9,7 @@
 
 namespace ember::gpu
 {
-	struct DeviceState;
+	struct Backend;
 }
 
 namespace ember::gpu::vk
@@ -57,15 +57,15 @@ namespace ember::gpu::vk
 	 * retired. The overloads bind kind and handle at compile time and stamp the retire
 	 * value internally. Call sites carry no lifetime decisions. Null-tolerant.
 	 */
-	void defer_destroy(DeviceState& backend, VkBuffer buffer, VmaAllocation allocation) noexcept;
-	void defer_destroy(DeviceState& backend, VkImage image, VmaAllocation allocation) noexcept;
-	void defer_destroy(DeviceState& backend, VkImageView view) noexcept;
-	void defer_destroy(DeviceState& backend, VkSemaphore semaphore) noexcept;
-	void defer_destroy(DeviceState& backend, VkSwapchainKHR swapchain) noexcept;
-	void defer_destroy(DeviceState& backend, VkSurfaceKHR surface) noexcept;
+	void defer_destroy(Backend& backend, VkBuffer buffer, VmaAllocation allocation) noexcept;
+	void defer_destroy(Backend& backend, VkImage image, VmaAllocation allocation) noexcept;
+	void defer_destroy(Backend& backend, VkImageView view) noexcept;
+	void defer_destroy(Backend& backend, VkSemaphore semaphore) noexcept;
+	void defer_destroy(Backend& backend, VkSwapchainKHR swapchain) noexcept;
+	void defer_destroy(Backend& backend, VkSurfaceKHR surface) noexcept;
 
 	/**
 	 * Destroys all entries whose value has provably completed.
 	 */
-	void drain_deferred_destroys(DeviceState& backend, u64 completed) noexcept;
+	void drain_deferred_destroys(Backend& backend, u64 completed) noexcept;
 }

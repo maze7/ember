@@ -3,9 +3,9 @@
 
 namespace ember::gpu::vk
 {
-	void set_name(const DeviceState& backend, VkObjectType type, u64 handle, const char* name) noexcept
+	void set_name(const Context& ctx, VkObjectType type, u64 handle, const char* name) noexcept
 	{
-		if (backend.device == VK_NULL_HANDLE || name == nullptr)
+		if (ctx.device == VK_NULL_HANDLE || name == nullptr)
 			return;
 
 		VkDebugUtilsObjectNameInfoEXT info{
@@ -16,10 +16,10 @@ namespace ember::gpu::vk
 			.pObjectName  = name,
 		};
 
-		(void)vkSetDebugUtilsObjectNameEXT(backend.device, &info);
+		(void)vkSetDebugUtilsObjectNameEXT(ctx.device, &info);
 	}
 
-	void note_result(DeviceState& backend, VkResult result) noexcept
+	void note_result(Backend& backend, VkResult result) noexcept
 	{
 		if (result == VK_ERROR_DEVICE_LOST) [[unlikely]]
 		{

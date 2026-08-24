@@ -14,7 +14,8 @@
 // Forward declaration
 namespace ember::gpu
 {
-	struct DeviceState;
+	struct Backend;
+	struct Context;
 }
 
 namespace ember::gpu::vk
@@ -93,10 +94,10 @@ namespace ember::gpu::vk
 	}
 
 	/// Sets the debug name for a given vulkan object. Useful for viewing in RenderDoc.
-	void set_name(const DeviceState& backend, VkObjectType type, u64 handle, const char* name) noexcept;
+	void set_name(const Context& ctx, VkObjectType type, u64 handle, const char* name) noexcept;
 
 	/// Device loss is sticky: every later call no-ops and the app is expected to tear down.
-	void note_result(DeviceState& backend, VkResult result) noexcept;
+	void note_result(Backend& backend, VkResult result) noexcept;
 }
 
 /**

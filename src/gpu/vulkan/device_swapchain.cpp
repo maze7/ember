@@ -75,20 +75,6 @@ namespace ember::gpu
 			return VK_PRESENT_MODE_FIFO_KHR;
 		}
 
-		/// Log-friendly name for the modes this layer can select.
-		[[nodiscard]] const char* present_mode_name(VkPresentModeKHR mode) noexcept
-		{
-			switch (mode)
-			{
-				case VK_PRESENT_MODE_MAILBOX_KHR:
-					return "mailbox";
-				case VK_PRESENT_MODE_IMMEDIATE_KHR:
-					return "immediate";
-				default:
-					return "vsync";
-			}
-		}
-
 		/// Wayland compositors may only offer PRE_MULTIPLIED; never hardcode OPAQUE.
 		[[nodiscard]] VkCompositeAlphaFlagBitsKHR choose_composite_alpha(const VkSurfaceCapabilitiesKHR& caps) noexcept
 		{
@@ -108,14 +94,14 @@ namespace ember::gpu
 
 		/// The window's pixel size, clamped to surface limits. {0,0} = minimized (suspend).
 		[[nodiscard]] VkExtent2D resolve_extent(
-			const DeviceState& backend, const vk::SwapchainData& data, const VkSurfaceCapabilitiesKHR& caps) noexcept
+			const Backend& backend, const vk::SwapchainData& data, const VkSurfaceCapabilitiesKHR& caps) noexcept
 		{
 			// 0xFFFFFFFF means "the surface follows the swapchain" (Wayland); the window is
 			// the authority then. Otherwise the surface dictates exactly.
 			if (caps.currentExtent.width != ~0u)
 				return caps.currentExtent;
 
-			const glm::uvec2 pixels = backend.platform->window_pixel_size(data.window);
+			const glm::uvec2 pixels = backend.context.platform->window_pixel_size(data.window);
 
 			return {
 				std::clamp(pixels.x, caps.minImageExtent.width, caps.maxImageExtent.width),
@@ -128,7 +114,7 @@ namespace ember::gpu
 		 * the native views and present semaphores die through the destroy queue when the frames
 		 * that could touch them retire. The swapchain object itself is the caller's to defer.
 		 */
-		void retire_backbuffers(DeviceState& backend, vk::SwapchainData& data) noexcept
+		void retire_backbuffers(Backend& backend, vk::SwapchainData& data) noexcept
 		{
 			for (u32 i = 0; i < data.image_count; ++i)
 			{
@@ -145,7 +131,7 @@ namespace ember::gpu
 			data.image_count = 0;
 		}
 
-		void destroy_swapchain_data(DeviceState& state, vk::SwapchainData& data) noexcept
+		void destroy_swapchain_data(Backend& state, vk::SwapchainData& data) noexcept
 		{
 			retire_backbuffers(state, data);
 
@@ -174,12 +160,12 @@ namespace ember::gpu
 		 * passed as oldSwapchain so the driver can recycle buffers across resizes; its retired
 		 * objects then age out through the destroy queue.
 		 */
-		[[nodiscard]] Build build(DeviceState& backend, vk::SwapchainData& data) noexcept
+		[[nodiscard]] Build build(Backend& backend, vk::SwapchainData& data) noexcept
 		{
 			EMBER_PROFILE_FUNCTION_C(PROFILE_COLOR_RENDER);
 
 			VkSurfaceCapabilitiesKHR surface_caps{};
-			if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(backend.adapter, data.surface, &surface_caps) != VK_SUCCESS)
+			if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(backend.context.adapter, data.surface, &surface_caps) != VK_SUCCESS)
 			{
 				EMBER_ERROR("vulkan: surface capability query failed");
 				return Build::Failed;
@@ -198,8 +184,8 @@ namespace ember::gpu
 			if (surface_caps.maxImageCount != 0)
 				image_count = std::min(image_count, surface_caps.maxImageCount);
 
-			data.surface_format = choose_surface_format(backend.adapter, data.surface);
-			data.present_mode	= choose_present_mode(backend.adapter, data.surface, data.requested_mode);
+			data.surface_format = choose_surface_format(backend.context.adapter, data.surface);
+			data.present_mode	= choose_present_mode(backend.context.adapter, data.surface, data.requested_mode);
 
 			// TRANSFER_SRC when offered: screenshots/readback later, free to request now.
 			VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
@@ -226,7 +212,7 @@ namespace ember::gpu
 			};
 
 			VkSwapchainKHR swapchain = VK_NULL_HANDLE;
-			if (const VkResult result = vkCreateSwapchainKHR(backend.device, &info, nullptr, &swapchain);
+			if (const VkResult result = vkCreateSwapchainKHR(backend.context.device, &info, nullptr, &swapchain);
 				result != VK_SUCCESS)
 			{
 				EMBER_ERROR("vulkan: vkCreateSwapchainKHR failed: {}", vk::result_name(result));
@@ -246,7 +232,7 @@ namespace ember::gpu
 			// Wrap the backbuffers as externally-owned texture pool entries.
 			VkImage images[MAX_SWAPCHAIN_IMAGES];
 			u32 count = 0;
-			EMBER_VK_CHECK(vkGetSwapchainImagesKHR(backend.device, data.swapchain, &count, nullptr));
+			EMBER_VK_CHECK(vkGetSwapchainImagesKHR(backend.context.device, data.swapchain, &count, nullptr));
 
 			// acquire() indexes per-image state (present semaphores, backbuffer handles) by the driver's
 			// image index, which ranges over the full image array. A swapchain we cannot track in full is
@@ -254,12 +240,12 @@ namespace ember::gpu
 			if (count > MAX_SWAPCHAIN_IMAGES)
 			{
 				EMBER_ERROR("vulkan: swapchain has {} images, ember supports {}", count, MAX_SWAPCHAIN_IMAGES);
-				vkDestroySwapchainKHR(backend.device, data.swapchain, nullptr);
+				vkDestroySwapchainKHR(backend.context.device, data.swapchain, nullptr);
 				data.swapchain = VK_NULL_HANDLE; // consistent "no swapchain"; next acquire retries a full build
 				return Build::Failed;
 			}
 
-			EMBER_VK_CHECK(vkGetSwapchainImagesKHR(backend.device, data.swapchain, &count, images));
+			EMBER_VK_CHECK(vkGetSwapchainImagesKHR(backend.context.device, data.swapchain, &count, images));
 
 			const VkSemaphoreCreateInfo semaphore_info{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 
@@ -274,9 +260,9 @@ namespace ember::gpu
 				};
 
 				VkImageView view = VK_NULL_HANDLE;
-				EMBER_VK_CHECK(vkCreateImageView(backend.device, &view_info, nullptr, &view));
+				EMBER_VK_CHECK(vkCreateImageView(backend.context.device, &view_info, nullptr, &view));
 				EMBER_VK_CHECK(
-					vkCreateSemaphore(backend.device, &semaphore_info, nullptr, &data.present_semaphores[i]));
+					vkCreateSemaphore(backend.context.device, &semaphore_info, nullptr, &data.present_semaphores[i]));
 
 				data.images[i] = backend.resources.textures.insert(
 					vk::TextureHot{.image = images[i], .sampled_view = view},
@@ -286,18 +272,10 @@ namespace ember::gpu
 						.owns_image = false, // the swapchain owns these; destroy() must skip them
 					});
 
-				vk::set_name(backend, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<u64>(images[i]), "ember.backbuffer");
+				vk::set_name(backend.context, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<u64>(images[i]), "ember.backbuffer");
 			}
 
 			data.image_count = count;
-
-			EMBER_INFO(
-				"vulkan: swapchain {}x{} x{} images | {}",
-				extent.width,
-				extent.height,
-				count,
-				present_mode_name(data.present_mode));
-
 			return Build::Ok;
 		}
 	}
@@ -308,7 +286,7 @@ namespace ember::gpu
 			return {};
 
 		EMBER_ASSERT(m_state->owner_thread == current_thread_id());
-		if (m_state->platform == nullptr)
+		if (m_state->context.platform == nullptr)
 		{
 			EMBER_ERROR("gpu: cannot create a swapchain on a headless device");
 			return {};
@@ -329,7 +307,7 @@ namespace ember::gpu
 		data.preferred_image_count = def.image_count;
 
 		// Surface first: it outlives every swapchain generation for this window.
-		data.surface = platform::vk::create_surface(m_state->platform->native_window(def.window), m_state->instance);
+		data.surface = platform::vk::create_surface(m_state->context.platform->native_window(def.window), m_state->context.instance);
 
 		if (data.surface == VK_NULL_HANDLE)
 		{
@@ -351,7 +329,7 @@ namespace ember::gpu
 		const VkSemaphoreCreateInfo semaphore_info{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
 
 		for (u32 i = 0; i < m_state->frames_in_flight; ++i)
-			EMBER_VK_CHECK(vkCreateSemaphore(m_state->device, &semaphore_info, nullptr, &data.acquire_semaphores[i]));
+			EMBER_VK_CHECK(vkCreateSemaphore(m_state->context.device, &semaphore_info, nullptr, &data.acquire_semaphores[i]));
 
 		return handle;
 	}
@@ -378,7 +356,7 @@ namespace ember::gpu
 			return data.images[data.acquired_image];
 
 		// Minimized: report suspended without touching the swapchain; it revives on restore.
-		const glm::uvec2 pixels = m_state->platform->window_pixel_size(data.window);
+		const glm::uvec2 pixels = m_state->context.platform->window_pixel_size(data.window);
 		if (pixels.x == 0 || pixels.y == 0)
 			return {};
 
@@ -400,7 +378,7 @@ namespace ember::gpu
 		{
 			u32 image_index		  = vk::NO_IMAGE;
 			const VkResult result = vkAcquireNextImageKHR(
-				m_state->device,
+				m_state->context.device,
 				data.swapchain,
 				UINT64_MAX,
 				data.acquire_semaphores[slot],

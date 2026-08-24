@@ -83,7 +83,7 @@ namespace ember::gpu
 		VmaAllocation allocation = VK_NULL_HANDLE;
 		VmaAllocationInfo result{};
 
-		if (auto vr = vmaCreateBuffer(m_state->allocator, &buffer_info, &alloc_info, &buffer, &allocation, &result);
+		if (auto vr = vmaCreateBuffer(m_state->context.allocator, &buffer_info, &alloc_info, &buffer, &allocation, &result);
 			vr != VK_SUCCESS)
 		{
 			EMBER_ERROR("gpu: buffer '{}' ({} bytes) failed: {}", def.name, def.size, vk::result_name(vr));
@@ -98,7 +98,7 @@ namespace ember::gpu
 				.buffer = buffer,
 			};
 
-			address = vkGetBufferDeviceAddress(m_state->device, &address_info);
+			address = vkGetBufferDeviceAddress(m_state->context.device, &address_info);
 		}
 
 		BufferHandle handle = m_state->resources.buffers.insert(
@@ -108,11 +108,11 @@ namespace ember::gpu
 		if (handle.is_null())
 		{
 			EMBER_ERROR("gpu: buffer pool exhausted ({})", def.name);
-			vmaDestroyBuffer(m_state->allocator, buffer, allocation);
+			vmaDestroyBuffer(m_state->context.allocator, buffer, allocation);
 			return {};
 		}
 
-		vk::set_name(*m_state, VK_OBJECT_TYPE_BUFFER, reinterpret_cast<u64>(buffer), def.name);
+		vk::set_name(m_state->context, VK_OBJECT_TYPE_BUFFER, reinterpret_cast<u64>(buffer), def.name);
 
 		if (!def.initial_data.empty())
 		{
@@ -123,7 +123,7 @@ namespace ember::gpu
 				// Mapped memory: write it directly, flush for non-coherent heaps
 				// (a no-op on coherent ones, i.e. all desktop in practice).
 				memcpy(result.pMappedData, def.initial_data.data(), def.initial_data.size());
-				(void)vmaFlushAllocation(m_state->allocator, allocation, 0, def.initial_data.size());
+				(void)vmaFlushAllocation(m_state->context.allocator, allocation, 0, def.initial_data.size());
 			}
 			else
 			{
