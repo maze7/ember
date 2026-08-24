@@ -907,7 +907,7 @@ namespace ember::gpu
 			EMBER_ASSERT(limits.maxBoundDescriptorSets >= 2);
 		}
 
-		[[nodiscard]] bool create_frame_resources(Backend& backend) noexcept
+		[[nodiscard]] bool create_frame_resources(const Context& ctx, FrameState& frame) noexcept
 		{
 			VkSemaphoreTypeCreateInfo type_info{
 				.sType		   = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
@@ -921,7 +921,7 @@ namespace ember::gpu
 			};
 
 			VkSemaphore timeline = VK_NULL_HANDLE;
-			VkResult result		 = vkCreateSemaphore(backend.context.device, &semaphore_info, nullptr, &timeline);
+			VkResult result		 = vkCreateSemaphore(ctx.device, &semaphore_info, nullptr, &timeline);
 
 			if (result != VK_SUCCESS)
 			{
@@ -929,20 +929,20 @@ namespace ember::gpu
 				return false;
 			}
 
-			backend.frame.timeline = timeline;
+			frame.timeline = timeline;
 			vk::set_name(
-				backend.context, VK_OBJECT_TYPE_SEMAPHORE, reinterpret_cast<u64>(timeline), "ember.frame_timeline");
+				ctx, VK_OBJECT_TYPE_SEMAPHORE, reinterpret_cast<u64>(timeline), "ember.frame_timeline");
 
-			for (u32 i = 0; i < backend.context.frames_in_flight; ++i)
+			for (u32 i = 0; i < ctx.frames_in_flight; ++i)
 			{
-				FrameSlot& slot = backend.frame.slots[i];
+				FrameSlot& slot = frame.slots[i];
 				VkCommandPoolCreateInfo pool_info{
 					.sType			  = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-					.queueFamilyIndex = backend.context.graphics.family,
+					.queueFamilyIndex = ctx.graphics.family,
 				};
 
 				VkCommandPool pool = VK_NULL_HANDLE;
-				result			   = vkCreateCommandPool(backend.context.device, &pool_info, nullptr, &pool);
+				result			   = vkCreateCommandPool(ctx.device, &pool_info, nullptr, &pool);
 
 				if (result != VK_SUCCESS)
 				{
@@ -960,7 +960,7 @@ namespace ember::gpu
 				};
 
 				VkCommandBuffer commands = VK_NULL_HANDLE;
-				result = vkAllocateCommandBuffers(backend.context.device, &allocation_info, &commands);
+				result = vkAllocateCommandBuffers(ctx.device, &allocation_info, &commands);
 				if (result != VK_SUCCESS)
 				{
 					EMBER_ERROR("vulkan: frame command-buffer allocation failed: {}", vk::result_name(result));
@@ -1016,7 +1016,7 @@ namespace ember::gpu
 
 		fill_caps(m_state->context.caps, adapter);
 
-		if (!create_frame_resources(*m_state))
+		if (!create_frame_resources(m_state->context, m_state->frame))
 		{
 			shutdown();
 			return;
