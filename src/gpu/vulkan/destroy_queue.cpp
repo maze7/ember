@@ -62,12 +62,10 @@ namespace ember::gpu::vk
 		enqueue(backend, {.handle = reinterpret_cast<u64>(surface), .kind = DeferredDestroy::Kind::Surface});
 	}
 
-	void drain_deferred_destroys(Backend& backend, u64 completed) noexcept
+	void drain_deferred_destroys(const Context& ctx, vk::DestroyQueue& queue, u64 completed) noexcept
 	{
-		EMBER_ASSERT(backend.owner_thread == current_thread_id());
-
-		Vector<DeferredDestroy>& entries = backend.deferred.entries;
-		u32& head						 = backend.deferred.head;
+		Vector<DeferredDestroy>& entries = queue.entries;
+		u32& head						 = queue.head;
 
 		while (head < entries.size() && entries[head].value <= completed)
 		{
@@ -80,27 +78,27 @@ namespace ember::gpu::vk
 					break;
 
 				case DeferredDestroy::Kind::Buffer:
-					vmaDestroyBuffer(backend.context.allocator, reinterpret_cast<VkBuffer>(dead.handle), dead.allocation);
+					vmaDestroyBuffer(ctx.allocator, reinterpret_cast<VkBuffer>(dead.handle), dead.allocation);
 					break;
 
 				case DeferredDestroy::Kind::Image:
-					vmaDestroyImage(backend.context.allocator, reinterpret_cast<VkImage>(dead.handle), dead.allocation);
+					vmaDestroyImage(ctx.allocator, reinterpret_cast<VkImage>(dead.handle), dead.allocation);
 					break;
 
 				case DeferredDestroy::Kind::ImageView:
-					vkDestroyImageView(backend.context.device, reinterpret_cast<VkImageView>(dead.handle), nullptr);
+					vkDestroyImageView(ctx.device, reinterpret_cast<VkImageView>(dead.handle), nullptr);
 					break;
 
 				case DeferredDestroy::Kind::Semaphore:
-					vkDestroySemaphore(backend.context.device, reinterpret_cast<VkSemaphore>(dead.handle), nullptr);
+					vkDestroySemaphore(ctx.device, reinterpret_cast<VkSemaphore>(dead.handle), nullptr);
 					break;
 
 				case DeferredDestroy::Kind::Swapchain:
-					vkDestroySwapchainKHR(backend.context.device, reinterpret_cast<VkSwapchainKHR>(dead.handle), nullptr);
+					vkDestroySwapchainKHR(ctx.device, reinterpret_cast<VkSwapchainKHR>(dead.handle), nullptr);
 					break;
 
 				case DeferredDestroy::Kind::Surface:
-					platform::vk::destroy_surface(backend.context.instance, reinterpret_cast<VkSurfaceKHR>(dead.handle));
+					platform::vk::destroy_surface(ctx.instance, reinterpret_cast<VkSurfaceKHR>(dead.handle));
 					break;
 			}
 		}

@@ -1050,7 +1050,7 @@ namespace ember::gpu
 		if (m_state->context.device != VK_NULL_HANDLE)
 		{
 			destroy_resources();
-			vk::drain_deferred_destroys(*m_state, UINT64_MAX);
+			vk::drain_deferred_destroys(m_state->context, m_state->deferred, UINT64_MAX);
 		}
 
 		// Destroy vulkan device & all resources that depend on it
@@ -1121,7 +1121,7 @@ namespace ember::gpu
 
 		// Idle means everything signaled: even entries stamped for a submit that never
 		// happened (an open frame at teardown) are safe now.
-		vk::drain_deferred_destroys(*m_state, UINT64_MAX);
+		vk::drain_deferred_destroys(m_state->context, m_state->deferred, UINT64_MAX);
 	}
 
 	const DeviceCaps& Device::caps() const noexcept
@@ -1175,7 +1175,7 @@ namespace ember::gpu
 
 		// The wait above proved wait_value completed; the graveyard rides the frame pacing
 		// and needs no extra queries.
-		vk::drain_deferred_destroys(*m_state, wait_value);
+		vk::drain_deferred_destroys(m_state->context, m_state->deferred, wait_value);
 		m_state->frame.pending_present_count = 0;
 		m_state->frame.open = true;
 

@@ -67,5 +67,5 @@ namespace ember::gpu::vk
 	/**
 	 * Destroys all entries whose value has provably completed.
 	 */
-	void drain_deferred_destroys(Backend& backend, u64 completed) noexcept;
+	void drain_deferred_destroys(const Context& ctx, vk::DestroyQueue& queue, u64 completed) noexcept;
 }
