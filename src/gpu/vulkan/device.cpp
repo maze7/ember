@@ -513,7 +513,7 @@ namespace ember::gpu
 		}
 
 		/// Rejects adapters that cannot run ember's contract. Fills `out` for the ones that can.
-		[[nodiscard]] bool query_adapter(const Backend& state, VkPhysicalDevice handle, AdapterInfo& out) noexcept
+		[[nodiscard]] bool query_adapter(const Context& ctx, VkPhysicalDevice handle, AdapterInfo& out) noexcept
 		{
 			out.handle = handle;
 			vkGetPhysicalDeviceProperties(handle, &out.properties);
@@ -535,7 +535,7 @@ namespace ember::gpu
 				[handle](u32* count, VkExtensionProperties* data)
 				{ return vkEnumerateDeviceExtensionProperties(handle, nullptr, count, data); });
 
-			if (state.context.platform != nullptr && !has_extension(extensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
+			if (ctx.platform != nullptr && !has_extension(extensions, VK_KHR_SWAPCHAIN_EXTENSION_NAME))
 			{
 				EMBER_INFO("vulkan: skipping {}: no {}", name, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
 				return false;
@@ -579,8 +579,8 @@ namespace ember::gpu
 				if ((families[i].queueFlags & GRAPHICS_COMPUTE) != GRAPHICS_COMPUTE)
 					continue;
 
-				if (state.context.platform != nullptr &&
-					!platform::vk::presentation_supported(state.context.instance, handle, i))
+				if (ctx.platform != nullptr &&
+					!platform::vk::presentation_supported(ctx.instance, handle, i))
 					continue;
 
 				out.graphics_family = i;
@@ -592,7 +592,7 @@ namespace ember::gpu
 				EMBER_INFO(
 					"vulkan: skipping {}: no graphics+compute{} queue family",
 					name,
-					state.context.platform != nullptr ? "+present" : "");
+					ctx.platform != nullptr ? "+present" : "");
 				return false;
 			}
 
@@ -625,11 +625,11 @@ namespace ember::gpu
 		 * Filter-then-score: query_adapter rejects anything that cannot run the contract, then
 		 * the best-scoring survivor wins. Strictly-greater keeps enumeration order on ties.
 		 */
-		[[nodiscard]] bool select_adapter(const Backend& backend, const DeviceDef& def, AdapterInfo& out) noexcept
+		[[nodiscard]] bool select_adapter(const Context& ctx, const DeviceDef& def, AdapterInfo& out) noexcept
 		{
 			const auto adapters = enumerate<VkPhysicalDevice>(
-				[&backend](u32* count, VkPhysicalDevice* data)
-				{ return vkEnumeratePhysicalDevices(backend.context.instance, count, data); });
+				[&ctx](u32* count, VkPhysicalDevice* data)
+				{ return vkEnumeratePhysicalDevices(ctx.instance, count, data); });
 
 			if (adapters.empty())
 			{
@@ -643,7 +643,7 @@ namespace ember::gpu
 			{
 				AdapterInfo candidate{};
 
-				if (!query_adapter(backend, handle, candidate))
+				if (!query_adapter(ctx, handle, candidate))
 					continue;
 
 				const int score = adapter_score(to_adapter_kind(candidate.properties.deviceType), def.adapter);
@@ -999,7 +999,7 @@ namespace ember::gpu
 
 		// Adapter. Filter on required feature set, then score by preference.
 		AdapterInfo adapter{};
-		if (!select_adapter(*m_state, def, adapter))
+		if (!select_adapter(m_state->context, def, adapter))
 		{
 			shutdown();
 			return;
