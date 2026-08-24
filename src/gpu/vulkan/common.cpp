@@ -1,11 +1,13 @@
 #include <gpu/vulkan/common.h>
-#include <gpu/vulkan/device_state.h>
+#include <gpu/vulkan/backend.h>
 
 namespace ember::gpu::vk
 {
 	void set_name(const Context& ctx, VkObjectType type, u64 handle, const char* name) noexcept
 	{
-		if (ctx.device == VK_NULL_HANDLE || name == nullptr)
+		// Without the extension, volk may hold a loader trampoline that dispatches into
+		// a driver table that never implemented it.
+		if (ctx.device == VK_NULL_HANDLE || !ctx.debug_utils || name == nullptr)
 			return;
 
 		VkDebugUtilsObjectNameInfoEXT info{

@@ -2,9 +2,7 @@
 #include <platform/vulkan/wsi.h>
 
 #include <ember/sync/thread.h>
-#include <gpu/vulkan/device_state.h>
-
-#include <vulkan/vulkan_core.h>
+#include <gpu/vulkan/backend.h>
 
 namespace ember::gpu::vk
 {

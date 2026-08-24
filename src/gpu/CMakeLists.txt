@@ -11,6 +11,7 @@ ember_add_module(Gpu
 	SOURCES
 		vulkan/common.cpp
 		vulkan/device.cpp
+		vulkan/device_boot.cpp
 		vulkan/device_buffer.cpp
 		vulkan/device_swapchain.cpp
 		vulkan/vma.cpp

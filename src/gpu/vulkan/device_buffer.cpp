@@ -1,9 +1,8 @@
-#include "ember/gpu/common.h"
 #include <ember/gpu/buffer.h>
-#include <gpu/vulkan/device_state.h>
+#include <ember/gpu/common.h>
+#include <gpu/vulkan/backend.h>
 
 #include <cstring>
-#include <vulkan/vulkan_core.h>
 
 namespace ember::gpu
 {
@@ -38,10 +37,7 @@ namespace ember::gpu
 
 	BufferHandle Device::create_buffer(const BufferDef& def) noexcept
 	{
-		if (m_state == nullptr)
-			return {};
-
-		EMBER_ASSERT(m_state->owner_thread == current_thread_id());
+		EMBER_GPU_GUARD({});
 
 		if (def.size == 0)
 		{
@@ -56,10 +52,9 @@ namespace ember::gpu
 			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 		};
 
-		// Free while the feature is present, and it is what makes GPU-driven vertex pulling
-		// and draw-record buffers possible.
-		if (m_state->buffer_device_address)
-			buffer_info.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+		// bufferDeviceAddress is in REQUIRED_12 (GPU-driven vertex pulling and
+		// draw-record buffers), so every buffer gets an address unconditionally.
+		buffer_info.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 
 		VmaAllocationCreateInfo alloc_info{};
 		alloc_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
@@ -90,16 +85,12 @@ namespace ember::gpu
 			return {};
 		}
 
-		VkDeviceAddress address = 0;
-		if (m_state->buffer_device_address)
-		{
-			VkBufferDeviceAddressInfo address_info{
-				.sType	= VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-				.buffer = buffer,
-			};
+		const VkBufferDeviceAddressInfo address_info{
+			.sType	= VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
+			.buffer = buffer,
+		};
 
-			address = vkGetBufferDeviceAddress(m_state->context.device, &address_info);
-		}
+		const VkDeviceAddress address = vkGetBufferDeviceAddress(m_state->context.device, &address_info);
 
 		BufferHandle handle = m_state->resources.buffers.insert(
 			vk::BufferHot{.handle = buffer, .address = address},
@@ -137,10 +128,7 @@ namespace ember::gpu
 
 	void Device::destroy(BufferHandle handle) noexcept
 	{
-		if (m_state == nullptr)
-			return;
-
-		EMBER_ASSERT(m_state->owner_thread == current_thread_id());
+		EMBER_GPU_GUARD();
 
 		vk::BufferHot* hot = m_state->resources.buffers.try_get(handle);
 		if (hot == nullptr)

@@ -125,8 +125,6 @@ namespace ember::gpu
 		bool mesh_shaders	= false;
 		bool sampler_minmax = false; // ReductionMode::Min/Max (Hi-Z)
 		bool ray_tracing	= false; // reserved
-		bool buffer_device_address = false;
-		bool memory_budget = false;
 	};
 
 	struct FrameInfo

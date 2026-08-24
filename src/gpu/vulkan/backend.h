@@ -9,7 +9,6 @@
 #include <gpu/vulkan/resources.h>
 
 #include <vk_mem_alloc.h>
-#include <vulkan/vulkan_core.h>
 
 #include <atomic>
 
@@ -26,6 +25,13 @@ namespace ember::gpu
 		u32 family	   = VK_QUEUE_FAMILY_IGNORED;
 	};
 
+	/**
+	 * Everything created exactly once at boot and read-only afterwards.
+	 *
+	 * Only device_boot.cpp writes these fields; everywhere else reads them. A field
+	 * earns its place here with a post-boot reader or a destroy obligation; boot-only
+	 * facts live in AdapterInfo or locals inside device_boot.cpp.
+	 */
 	struct Context
 	{
 		VkInstance instance				   = VK_NULL_HANDLE;
@@ -42,9 +48,9 @@ namespace ember::gpu
 		DeviceCaps caps{};
 		Platform* platform = nullptr;
 
-		u32 frames_in_flight = 0;
+		u32 frames_in_flight = 0; // clamped to [1, MAX_FRAMES_IN_FLIGHT] by boot()
 
-		bool debug_utils = false;
+		bool debug_utils = false; // set_name / pass labels are callable (extension enabled)
 	};
 
 	struct FrameSlot
@@ -94,29 +100,42 @@ namespace ember::gpu
 		return s_debug;
 	}
 
+	/**
+	 * The compiled-in backend's entire state — what Device::m_state points at.
+	 * Three zones, three mutation clocks:
+	 *
+	 *   context  — written by boot, read-only afterwards
+	 *   frame    — written by the frame loop (begin/end_frame, acquire)
+	 *   services — written by user calls (create/destroy), drained by the frame loop
+	 */
 	struct Backend
 	{
 		Context context;
 		FrameState frame;
 
+		// Services.
 		vk::DestroyQueue deferred{};
 		vk::ResourcePools resources{};
-
-		Backend() noexcept				   = default;
-		Backend(const Backend&)			   = delete;
-		Backend& operator=(const Backend&) = delete;
-
-		/// Capabilities granted at boot that only the backend branches on.
-		/// User-facing ones live in DeviceCaps.
-		bool validation			   = false; // VK_LAYER_KHRONOS_validation actually enabled
-		bool debug_utils		   = false; // object names + command labels available
-		bool buffer_device_address = false; // enables VMA's BDA flag.
-		bool memory_budget		   = false; // VK_EXT_memory_budget for VMA heap stats
 
 		/// Bookkeeping
 		u32 owner_thread = current_thread_id(); // the thread that constructed the Device
 		std::atomic<bool> lost{false};			// sticky VK_ERROR_DEVICE_LOST
+
+		Backend() noexcept				   = default;
+		Backend(const Backend&)			   = delete;
+		Backend& operator=(const Backend&) = delete;
 	};
+
+	namespace vk
+	{
+		/// Boot orchestrator (device_boot.cpp): fills context and frame; false on failure.
+		/// Partial progress is legal: destroy_boot_state tears down whatever exists.
+		[[nodiscard]] bool boot(Backend& backend, const DeviceDef& def) noexcept;
+
+		/// Reverse of boot, tolerant of partial boots. Resource pools must already be
+		/// drained and the GPU idle. Leaves the Backend allocation itself alive.
+		void destroy_boot_state(Backend& backend) noexcept;
+	}
 
 #define EMBER_GPU_GUARD(...)                                                                                           \
 	if (m_state == nullptr)                                                                                            \
