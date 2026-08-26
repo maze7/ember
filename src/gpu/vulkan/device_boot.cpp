@@ -13,6 +13,191 @@ namespace ember::gpu
 {
 	namespace
 	{
+		/**
+		 * The Vulkan feature pNext chain as a value type.
+		 *
+		 * Wires the core and extension feature structs into their pNext chain at construction.
+		 * The chain is self-referential, so copying or moving a wired set would dangle it.
+		 *
+		 * check_required() and enable_required() walk the same REQUIRED_* tables, so what adapter
+		 * selection verifies and what device creation enable can never drift. Optional feature bits
+		 * are the caller's policy.
+		 */
+		class FeatureChain
+		{
+		public:
+			/**
+			 * Extension structs join the chain only when the adapter offers the extension.
+			 * A chained feature struct without its extension enabled is a validation error at
+			 * device creation.
+			 */
+			FeatureChain() noexcept
+			{
+				auto* tail = reinterpret_cast<VkBaseOutStructure*>(&m_features2);
+
+				tail = append(tail, &m_vulkan11);
+				tail = append(tail, &m_vulkan12);
+				tail = append(tail, &m_vulkan13);
+			}
+
+			/** A wired chain points into itself; a copy would point into the original. */
+			FeatureChain(const FeatureChain&)			 = delete;
+			FeatureChain& operator=(const FeatureChain&) = delete;
+
+			/** Fills every chained struct from the adapter in one call. */
+			void query(VkPhysicalDevice adapter) noexcept { vkGetPhysicalDeviceFeatures2(adapter, &m_features2); }
+
+			/**
+			 * True when the adapter has every required feature; logs each gap by name so an under-spec adapter
+			 * reports its complete list in one boot.
+			 */
+			[[nodiscard]] bool check_required(const char* adapter_name) const noexcept
+			{
+				bool ok	 = true;
+				ok		&= check(m_features2.features, REQUIRED_10, adapter_name);
+				ok		&= check(m_vulkan11, REQUIRED_11, adapter_name);
+				ok		&= check(m_vulkan12, REQUIRED_12, adapter_name);
+				ok		&= check(m_vulkan13, REQUIRED_13, adapter_name);
+				return ok;
+			}
+
+			/** Sets every required bit. The same tables check_required() reads. */
+			void enable_required() noexcept
+			{
+				enable(m_features2.features, REQUIRED_10);
+				enable(m_vulkan11, REQUIRED_11);
+				enable(m_vulkan12, REQUIRED_12);
+				enable(m_vulkan13, REQUIRED_13);
+			}
+
+			[[nodiscard]] const VkPhysicalDeviceFeatures2* head() const noexcept { return &m_features2; }
+
+			// Feature bits, named after their REQUIRED_* tables. Mutable on purpose.
+			[[nodiscard]] VkPhysicalDeviceFeatures& features10() noexcept { return m_features2.features; }
+			[[nodiscard]] VkPhysicalDeviceVulkan11Features& vulkan11() noexcept { return m_vulkan11; }
+			[[nodiscard]] VkPhysicalDeviceVulkan12Features& vulkan12() noexcept { return m_vulkan12; }
+			[[nodiscard]] VkPhysicalDeviceVulkan13Features& vulkan13() noexcept { return m_vulkan13; }
+
+			[[nodiscard]] const VkPhysicalDeviceFeatures& features10() const noexcept { return m_features2.features; }
+			[[nodiscard]] const VkPhysicalDeviceVulkan11Features& vulkan11() const noexcept { return m_vulkan11; }
+			[[nodiscard]] const VkPhysicalDeviceVulkan12Features& vulkan12() const noexcept { return m_vulkan12; }
+			[[nodiscard]] const VkPhysicalDeviceVulkan13Features& vulkan13() const noexcept { return m_vulkan13; }
+
+		private:
+			/// One required feature: a typed pointer-to-member plus its name for diagnostics.
+			template <typename S> struct FeatureRef
+			{
+				VkBool32 S::* flag;
+				const char* name;
+			};
+
+			using Features10 = VkPhysicalDeviceFeatures;
+			using Features11 = VkPhysicalDeviceVulkan11Features;
+			using Features12 = VkPhysicalDeviceVulkan12Features;
+			using Features13 = VkPhysicalDeviceVulkan13Features;
+
+			// Stringizes each member exactly once
+#define EMBER_FEATURE(S, m)                                                                                            \
+	FeatureRef<S> { &S::m, #m }
+
+			/**
+			 * The required feature set, one table per chain struct. An adapter missing any entry
+			 * is rejected by name. The same tables drive enabling at device creation, so the check
+			 * and the enable can never drift. Grouping comments say *why* each feature is required.
+			 */
+			static constexpr FeatureRef<Features10> REQUIRED_10[] = {
+				// Roadmap 2022 feature set
+				EMBER_FEATURE(Features10, samplerAnisotropy),
+				EMBER_FEATURE(Features10, depthClamp),
+				EMBER_FEATURE(Features10, depthBiasClamp),
+				EMBER_FEATURE(Features10, independentBlend),
+				EMBER_FEATURE(Features10, imageCubeArray),
+				EMBER_FEATURE(Features10, fragmentStoresAndAtomics),
+				EMBER_FEATURE(Features10, fullDrawIndexUint32),
+				EMBER_FEATURE(Features10, drawIndirectFirstInstance),
+				EMBER_FEATURE(Features10, shaderStorageImageExtendedFormats),
+				// Desktop-universal, required by ember
+				EMBER_FEATURE(Features10, multiDrawIndirect),
+				EMBER_FEATURE(Features10, textureCompressionBC),
+				EMBER_FEATURE(Features10, shaderStorageImageReadWithoutFormat),
+				EMBER_FEATURE(Features10, shaderStorageImageWriteWithoutFormat),
+			};
+
+			static constexpr FeatureRef<Features11> REQUIRED_11[] = {
+				// Roadmap 2022 feature set
+				EMBER_FEATURE(Features11, shaderDrawParameters),
+			};
+
+			static constexpr FeatureRef<Features12> REQUIRED_12[] = {
+				// 1.2 core-mandatory
+				EMBER_FEATURE(Features12, timelineSemaphore),
+				EMBER_FEATURE(Features12, hostQueryReset),
+				// Roadmap 2022 feature set: the bindless heap and friends
+				EMBER_FEATURE(Features12, descriptorIndexing),
+				EMBER_FEATURE(Features12, runtimeDescriptorArray),
+				EMBER_FEATURE(Features12, descriptorBindingPartiallyBound),
+				EMBER_FEATURE(Features12, descriptorBindingSampledImageUpdateAfterBind),
+				EMBER_FEATURE(Features12, descriptorBindingStorageImageUpdateAfterBind),
+				EMBER_FEATURE(Features12, descriptorBindingStorageBufferUpdateAfterBind),
+				EMBER_FEATURE(Features12, descriptorBindingUpdateUnusedWhilePending),
+				EMBER_FEATURE(Features12, shaderSampledImageArrayNonUniformIndexing),
+				EMBER_FEATURE(Features12, shaderStorageBufferArrayNonUniformIndexing),
+				EMBER_FEATURE(Features12, shaderStorageImageArrayNonUniformIndexing),
+				EMBER_FEATURE(Features12, scalarBlockLayout),
+				// GPU-driven rendering pulls vertices and draw records through device
+				// addresses, and D3D12 mandates GPUVAs: optionality here would be a lie.
+				EMBER_FEATURE(Features12, bufferDeviceAddress),
+			};
+
+			static constexpr FeatureRef<Features13> REQUIRED_13[] = {
+				// 1.3 core-mandatory
+				EMBER_FEATURE(Features13, dynamicRendering),
+				EMBER_FEATURE(Features13, synchronization2),
+				EMBER_FEATURE(Features13, maintenance4),
+			};
+
+#undef EMBER_FEATURE
+
+			[[nodiscard]] static VkBaseOutStructure* append(VkBaseOutStructure* tail, void* next) noexcept
+			{
+				tail->pNext = static_cast<VkBaseOutStructure*>(next);
+				return tail->pNext;
+			}
+
+			/**
+			 * Scans the whole table before answering, so an under-spec adapter logs
+			 * its complete gap list in one boot instead of one feature per attempt.
+			 */
+			template <typename S, size_t N>
+			[[nodiscard]] static bool
+			check(const S& available, const FeatureRef<S> (&required)[N], const char* adapter_name) noexcept
+			{
+				bool ok = true;
+
+				for (const FeatureRef<S>& feature : required)
+				{
+					if (available.*feature.flag != VK_TRUE)
+					{
+						EMBER_INFO("vulkan: skipping {}: missing feature {}", adapter_name, feature.name);
+						ok = false;
+					}
+				}
+
+				return ok;
+			}
+
+			template <typename S, size_t N> static void enable(S& enabled, const FeatureRef<S> (&required)[N]) noexcept
+			{
+				for (const FeatureRef<S>& feature : required)
+					enabled.*feature.flag = VK_TRUE;
+			}
+
+			VkPhysicalDeviceFeatures2 m_features2{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+			VkPhysicalDeviceVulkan11Features m_vulkan11{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+			VkPhysicalDeviceVulkan12Features m_vulkan12{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+			VkPhysicalDeviceVulkan13Features m_vulkan13{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+		};
+
 		/// Convenience wrapper for Vulkan's count-then-fetch dance.
 		template <class T, class F> [[nodiscard]] Vector<T> enumerate(F&& fetch) noexcept
 		{
@@ -28,157 +213,6 @@ namespace ember::gpu
 				out.clear();
 
 			return out;
-		}
-
-		/// Appends `next` to a pNext chain and advances the tail.
-		inline void chain_append(VkBaseOutStructure*& tail, void* next) noexcept
-		{
-			tail->pNext = static_cast<VkBaseOutStructure*>(next);
-			tail		= tail->pNext;
-		}
-
-		/**
-		 * Every feature struct ember queries or enables, as plain members.
-		 * The REQUIRED_* tables point into these; build_feature_chain() wires the pNext chain.
-		 *
-		 * A new extension is one member here, one conditional in build_feature_chain(), and its
-		 * table entries.
-		 */
-		struct FeatureSet
-		{
-			VkPhysicalDeviceFeatures2 features2{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-			VkPhysicalDeviceVulkan11Features vulkan11{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
-			VkPhysicalDeviceVulkan12Features vulkan12{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
-			VkPhysicalDeviceVulkan13Features vulkan13{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
-			VkPhysicalDeviceMeshShaderFeaturesEXT mesh_shader{
-				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
-
-			// Copying a wired set would dangle its internal chain; keep it impossible.
-			FeatureSet() noexcept					 = default;
-			FeatureSet(const FeatureSet&)			 = delete;
-			FeatureSet& operator=(const FeatureSet&) = delete;
-		};
-
-		/**
-		 * Wires the chain and returns its head, ready for vkGetPhysicalDeviceFeatures2 or
-		 * VkDeviceCreateInfo::pNext. Wire each instance once. Extension structs join only when the
-		 * adapter offers the extension: for device creation, a feature struct without its extension
-		 * enabled is a validation error.
-		 */
-		[[nodiscard]] VkPhysicalDeviceFeatures2* build_feature_chain(FeatureSet& set, bool with_mesh_shader) noexcept
-		{
-			auto* tail = reinterpret_cast<VkBaseOutStructure*>(&set.features2);
-
-			chain_append(tail, &set.vulkan11);
-			chain_append(tail, &set.vulkan12);
-			chain_append(tail, &set.vulkan13);
-
-			if (with_mesh_shader)
-				chain_append(tail, &set.mesh_shader);
-
-			return &set.features2;
-		}
-
-		/// One required feature: a typed pointer-to-member plus its name for diagnostics.
-		template <typename S> struct FeatureRef
-		{
-			VkBool32 S::* flag;
-			const char* name;
-		};
-
-		using Features10 = VkPhysicalDeviceFeatures;
-		using Features11 = VkPhysicalDeviceVulkan11Features;
-		using Features12 = VkPhysicalDeviceVulkan12Features;
-		using Features13 = VkPhysicalDeviceVulkan13Features;
-
-		// Stringizes each member exactly once
-#define EMBER_FEATURE(S, m)                                                                                            \
-	FeatureRef<S> { &S::m, #m }
-
-		/**
-		 * The required feature set, one table per chain struct. An adapter missing any entry
-		 * is rejected by name. The same tables drive enabling at device creation, so the check
-		 * and the enable can never drift. Grouping comments say *why* each feature is required.
-		 */
-		constexpr FeatureRef<Features10> REQUIRED_10[] = {
-			// Roadmap 2022 feature set
-			EMBER_FEATURE(Features10, samplerAnisotropy),
-			EMBER_FEATURE(Features10, depthClamp),
-			EMBER_FEATURE(Features10, depthBiasClamp),
-			EMBER_FEATURE(Features10, independentBlend),
-			EMBER_FEATURE(Features10, imageCubeArray),
-			EMBER_FEATURE(Features10, fragmentStoresAndAtomics),
-			EMBER_FEATURE(Features10, fullDrawIndexUint32),
-			EMBER_FEATURE(Features10, drawIndirectFirstInstance),
-			EMBER_FEATURE(Features10, shaderStorageImageExtendedFormats),
-			// Desktop-universal, required by ember
-			EMBER_FEATURE(Features10, multiDrawIndirect),
-			EMBER_FEATURE(Features10, textureCompressionBC),
-			EMBER_FEATURE(Features10, shaderStorageImageReadWithoutFormat),
-			EMBER_FEATURE(Features10, shaderStorageImageWriteWithoutFormat),
-		};
-
-		constexpr FeatureRef<Features11> REQUIRED_11[] = {
-			// Roadmap 2022 feature set
-			EMBER_FEATURE(Features11, shaderDrawParameters),
-		};
-
-		constexpr FeatureRef<Features12> REQUIRED_12[] = {
-			// 1.2 core-mandatory
-			EMBER_FEATURE(Features12, timelineSemaphore),
-			EMBER_FEATURE(Features12, hostQueryReset),
-			// Roadmap 2022 feature set: the bindless heap and friends
-			EMBER_FEATURE(Features12, descriptorIndexing),
-			EMBER_FEATURE(Features12, runtimeDescriptorArray),
-			EMBER_FEATURE(Features12, descriptorBindingPartiallyBound),
-			EMBER_FEATURE(Features12, descriptorBindingSampledImageUpdateAfterBind),
-			EMBER_FEATURE(Features12, descriptorBindingStorageImageUpdateAfterBind),
-			EMBER_FEATURE(Features12, descriptorBindingStorageBufferUpdateAfterBind),
-			EMBER_FEATURE(Features12, descriptorBindingUpdateUnusedWhilePending),
-			EMBER_FEATURE(Features12, shaderSampledImageArrayNonUniformIndexing),
-			EMBER_FEATURE(Features12, shaderStorageBufferArrayNonUniformIndexing),
-			EMBER_FEATURE(Features12, shaderStorageImageArrayNonUniformIndexing),
-			EMBER_FEATURE(Features12, scalarBlockLayout),
-			// GPU-driven rendering pulls vertices and draw records through device
-			// addresses, and D3D12 mandates GPUVAs: optionality here would be a lie.
-			EMBER_FEATURE(Features12, bufferDeviceAddress),
-		};
-
-		constexpr FeatureRef<Features13> REQUIRED_13[] = {
-			// 1.3 core-mandatory
-			EMBER_FEATURE(Features13, dynamicRendering),
-			EMBER_FEATURE(Features13, synchronization2),
-			EMBER_FEATURE(Features13, maintenance4),
-		};
-
-#undef EMBER_FEATURE
-
-		/**
-		 * Scans a whole table before answering, so an under-spec adapter logs its complete gap
-		 * list in one boot instead of one feature per attempt.
-		 */
-		template <typename S, size_t N>
-		[[nodiscard]] bool
-		check_features(const S& available, const FeatureRef<S> (&required)[N], const char* adapter_name) noexcept
-		{
-			bool ok = true;
-
-			for (const FeatureRef<S>& feature : required)
-			{
-				if (available.*feature.flag != VK_TRUE)
-				{
-					EMBER_INFO("vulkan: skipping {}: missing feature {}", adapter_name, feature.name);
-					ok = false;
-				}
-			}
-
-			return ok;
-		}
-
-		template <typename S, size_t N> void enable_features(S& enabled, const FeatureRef<S> (&required)[N]) noexcept
-		{
-			for (const FeatureRef<S>& feature : required)
-				enabled.*feature.flag = VK_TRUE;
 		}
 
 		[[nodiscard]] bool has_layer(Span<const VkLayerProperties> layers, const char* name) noexcept
@@ -555,29 +589,16 @@ namespace ember::gpu
 			out.memory_budget = has_extension(extensions, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
 
 			// Features: reject on missing required ones, logging every gap in a single pass.
-			FeatureSet available{};
-			vkGetPhysicalDeviceFeatures2(handle, build_feature_chain(available, out.mesh_shader));
+			FeatureChain available{};
+			available.query(handle);
 
-			bool features_ok  = true;
-			features_ok		 &= check_features(available.features2.features, REQUIRED_10, name);
-			features_ok		 &= check_features(available.vulkan11, REQUIRED_11, name);
-			features_ok		 &= check_features(available.vulkan12, REQUIRED_12, name);
-			features_ok		 &= check_features(available.vulkan13, REQUIRED_13, name);
-
-			if (!features_ok)
+			if (!available.check_required(name))
 				return false;
 
-			// Extension present but its features aren't: treat as absent.
-			if (out.mesh_shader &&
-				(available.mesh_shader.meshShader != VK_TRUE || available.mesh_shader.taskShader != VK_TRUE))
-				out.mesh_shader = false;
-
-			// Optional features, recorded while the one FeatureSet query is in hand:
-			// create_device enables from these, fill_caps reports them. No second query,
-			// no drift.
-			out.wireframe	   = available.features2.features.fillModeNonSolid == VK_TRUE;
-			out.indirect_count = available.vulkan12.drawIndirectCount == VK_TRUE;
-			out.sampler_minmax = available.vulkan12.samplerFilterMinmax == VK_TRUE;
+			// Optional features, recorded while the FeatureChain query is available.
+			out.wireframe	   = available.features10().fillModeNonSolid == VK_TRUE;
+			out.indirect_count = available.vulkan12().drawIndirectCount == VK_TRUE;
+			out.sampler_minmax = available.vulkan12().samplerFilterMinmax == VK_TRUE;
 
 			// Queues. The main family must do graphics+compute (universal on desktop) and, when a
 			// window system exists, present: a separate present queue would buy queue-ownership
@@ -717,20 +738,17 @@ namespace ember::gpu
 
 			// Required features come from the same tables that vetted the adapter;
 			// optional availability was recorded in AdapterInfo by query_adapter.
-			FeatureSet enabled{};
-			enable_features(enabled.features2.features, REQUIRED_10);
-			enable_features(enabled.vulkan11, REQUIRED_11);
-			enable_features(enabled.vulkan12, REQUIRED_12);
-			enable_features(enabled.vulkan13, REQUIRED_13);
+			FeatureChain enabled{};
+			enabled.enable_required();
 
 			if (adapter.indirect_count)
-				enabled.vulkan12.drawIndirectCount = VK_TRUE;
+				enabled.vulkan12().drawIndirectCount = VK_TRUE;
 
 			if (adapter.sampler_minmax)
-				enabled.vulkan12.samplerFilterMinmax = VK_TRUE;
+				enabled.vulkan12().samplerFilterMinmax = VK_TRUE;
 
 			if (adapter.wireframe)
-				enabled.features2.features.fillModeNonSolid = VK_TRUE;
+				enabled.features10().fillModeNonSolid = VK_TRUE;
 
 			const char* extensions[3];
 			u32 extension_count = 0;
@@ -738,21 +756,12 @@ namespace ember::gpu
 			if (ctx.platform != nullptr)
 				extensions[extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 
-			// Extension-gated features: the extension string and its feature structs travel
-			// together, which is why mesh shaders live here and not in the tables.
-			if (adapter.mesh_shader)
-			{
-				extensions[extension_count++]  = VK_EXT_MESH_SHADER_EXTENSION_NAME;
-				enabled.mesh_shader.taskShader = VK_TRUE;
-				enabled.mesh_shader.meshShader = VK_TRUE;
-			}
-
 			if (adapter.memory_budget)
 				extensions[extension_count++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
 
 			VkDeviceCreateInfo info{
 				.sType					 = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-				.pNext					 = build_feature_chain(enabled, adapter.mesh_shader),
+				.pNext					 = enabled.head(),
 				.queueCreateInfoCount	 = queue_count,
 				.pQueueCreateInfos		 = queue_infos,
 				.enabledExtensionCount	 = extension_count,
