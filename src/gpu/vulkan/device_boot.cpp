@@ -1,3 +1,4 @@
+#include "gpu/vulkan/destroy_queue.h"
 #include <ember/core/common.h>
 #include <ember/gpu/device.h>
 #include <ember/memory/memory.h>
@@ -136,6 +137,7 @@ namespace ember::gpu
 				EMBER_FEATURE(Features12, descriptorIndexing),
 				EMBER_FEATURE(Features12, runtimeDescriptorArray),
 				EMBER_FEATURE(Features12, descriptorBindingPartiallyBound),
+				EMBER_FEATURE(Features12, descriptorBindingVariableDescriptorCount),
 				EMBER_FEATURE(Features12, descriptorBindingSampledImageUpdateAfterBind),
 				EMBER_FEATURE(Features12, descriptorBindingStorageImageUpdateAfterBind),
 				EMBER_FEATURE(Features12, descriptorBindingStorageBufferUpdateAfterBind),
@@ -808,17 +810,16 @@ namespace ember::gpu
 			VmaVulkanFunctions functions{};
 			functions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
 			functions.vkGetDeviceProcAddr	= vkGetDeviceProcAddr;
+			functions.vkCreateImage			= vkCreateImage;
 
 			// Assignment, not designated init: VMA's member order is not stable across versions.
 			VmaAllocatorCreateInfo info{};
+			info.flags			  = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 			info.physicalDevice	  = ctx.adapter;
 			info.device			  = ctx.device;
 			info.instance		  = ctx.instance;
 			info.pVulkanFunctions = &functions;
 			info.vulkanApiVersion = vk::API_VERSION;
-
-			// bufferDeviceAddress is in REQUIRED_12: unconditional by contract.
-			info.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 
 			if (adapter.memory_budget)
 				info.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
@@ -1041,6 +1042,10 @@ namespace ember::gpu
 
 			if (!vk::staging_boot(backend, def.staging_ring_bytes))
 				return false;
+
+			// The DestroyQueue uses the frame's timeline_value to determine when resources
+			// can be freed safely (timeline_value + 1 signal).
+			backend.destroy_queue.bind(backend.frame);
 
 			EMBER_INFO(
 				"vulkan: {} ({}) | {} | Vulkan {}.{}.{} | {} MB local{}{}",

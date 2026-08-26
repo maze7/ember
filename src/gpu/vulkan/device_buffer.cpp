@@ -79,7 +79,7 @@ namespace ember::gpu
 		VmaAllocationInfo result{};
 
 		if (auto vr =
-				vmaCreateBuffer(m_state->context.allocator, &buffer_info, &alloc_info, &buffer, &allocation, &result);
+				vmaCreateBuffer(m_backend->context.allocator, &buffer_info, &alloc_info, &buffer, &allocation, &result);
 			vr != VK_SUCCESS)
 		{
 			EMBER_ERROR("gpu: buffer '{}' ({} bytes) failed: {}", def.name, def.size, vk::result_name(vr));
@@ -91,20 +91,20 @@ namespace ember::gpu
 			.buffer = buffer,
 		};
 
-		const VkDeviceAddress address = vkGetBufferDeviceAddress(m_state->context.device, &address_info);
+		const VkDeviceAddress address = vkGetBufferDeviceAddress(m_backend->context.device, &address_info);
 
-		BufferHandle handle = m_state->resources.buffers.insert(
+		BufferHandle handle = m_backend->resources.buffers.insert(
 			vk::BufferHot{.handle = buffer, .address = address},
 			vk::BufferCold{.allocation = allocation, .size = def.size, .mapped = result.pMappedData});
 
 		if (handle.is_null())
 		{
 			EMBER_ERROR("gpu: buffer pool exhausted ({})", def.name);
-			vmaDestroyBuffer(m_state->context.allocator, buffer, allocation);
+			vmaDestroyBuffer(m_backend->context.allocator, buffer, allocation);
 			return {};
 		}
 
-		vk::set_name(m_state->context, VK_OBJECT_TYPE_BUFFER, reinterpret_cast<u64>(buffer), def.name);
+		vk::set_name(m_backend->context, VK_OBJECT_TYPE_BUFFER, reinterpret_cast<u64>(buffer), def.name);
 
 		if (!def.initial_data.empty())
 		{
@@ -115,12 +115,12 @@ namespace ember::gpu
 				// Mapped memory: write it directly, flush for non-coherent heaps
 				// (a no-op on coherent ones, i.e. all desktop in practice).
 				memcpy(result.pMappedData, def.initial_data.data(), def.initial_data.size());
-				(void)vmaFlushAllocation(m_state->context.allocator, allocation, 0, def.initial_data.size());
+				(void)vmaFlushAllocation(m_backend->context.allocator, allocation, 0, def.initial_data.size());
 			}
 			else
 			{
 				// DeviceLocal: staged, TRANSFER_DST is provided to every buffer.
-				vk::staging_upload(*m_state, buffer, 0, def.initial_data);
+				vk::staging_upload(*m_backend, buffer, 0, def.initial_data);
 			}
 		}
 
@@ -131,27 +131,27 @@ namespace ember::gpu
 	{
 		EMBER_GPU_GUARD();
 
-		vk::BufferHot* hot = m_state->resources.buffers.try_get(handle);
+		vk::BufferHot* hot = m_backend->resources.buffers.try_get(handle);
 		if (hot == nullptr)
 			return;
 
 		// Erase-then-defer: the handle (and its bindless slot) dies immediately; the
 		// native object outlives every frame that can reference it.
-		vk::defer_destroy(*m_state, hot->handle, m_state->resources.buffers.get_cold(handle).allocation);
-		(void)m_state->resources.buffers.erase(handle);
+		m_backend->destroy_queue.destroy(hot->handle, m_backend->resources.buffers.get_cold(handle).allocation);
+		(void)m_backend->resources.buffers.erase(handle);
 	}
 
 	bool Device::is_valid(BufferHandle handle) const noexcept
 	{
-		return m_state != nullptr && m_state->resources.buffers.contains(handle);
+		return m_backend != nullptr && m_backend->resources.buffers.contains(handle);
 	}
 
 	void* Device::mapped(BufferHandle handle) noexcept
 	{
-		if (m_state == nullptr)
+		if (m_backend == nullptr)
 			return nullptr;
 
-		if (auto* cold = m_state->resources.buffers.try_get_cold(handle))
+		if (auto* cold = m_backend->resources.buffers.try_get_cold(handle))
 			return cold->mapped;
 
 		return nullptr;
@@ -164,7 +164,7 @@ namespace ember::gpu
 		if (data.empty())
 			return;
 
-		const vk::BufferHot* hot = m_state->resources.buffers.try_get(handle);
+		const vk::BufferHot* hot = m_backend->resources.buffers.try_get(handle);
 
 		if (hot == nullptr)
 		{
@@ -174,7 +174,7 @@ namespace ember::gpu
 			return;
 		}
 
-		const vk::BufferCold& cold = m_state->resources.buffers.get_cold(handle);
+		const vk::BufferCold& cold = m_backend->resources.buffers.get_cold(handle);
 		EMBER_ASSERT(offset + data.size() <= cold.size);
 
 		if (cold.mapped != nullptr)
@@ -182,10 +182,10 @@ namespace ember::gpu
 			// Upload/Readback: straight through the mapping. GPU-side hazards are the
 			// caller's contract (per-frame versioning); the GPU never copies here at all.
 			std::memcpy(static_cast<u8*>(cold.mapped) + offset, data.data(), data.size());
-			(void)vmaFlushAllocation(m_state->context.allocator, cold.allocation, offset, data.size());
+			(void)vmaFlushAllocation(m_backend->context.allocator, cold.allocation, offset, data.size());
 			return;
 		}
 
-		vk::staging_upload(*m_state, hot->handle, offset, data);
+		vk::staging_upload(*m_backend, hot->handle, offset, data);
 	}
 }

@@ -1,10 +1,10 @@
 #pragma once
 
-#include <ember/gpu/transient.h>
 #include <ember/core/common.h>
 #include <ember/gpu/buffer.h>
 #include <ember/gpu/common.h>
 #include <ember/gpu/swapchain.h>
+#include <ember/gpu/transient.h>
 
 // Forward declarations.
 namespace ember
@@ -121,13 +121,13 @@ namespace ember::gpu
 		f32 timestamp_period_ns = 0.0f; // ticks -> ns for GPU zones
 		bool timestamps			= false;
 
-		bool wireframe		= false; // FillMode::Wireframe
-		bool indirect_count = false; // draw_*_indirect_count
-		bool mesh_shaders	= false;
-		bool sampler_minmax = false; // ReductionMode::Min/Max (Hi-Z)
-		bool ray_tracing	= false; // reserved
+		bool wireframe			   = false; // FillMode::Wireframe
+		bool indirect_count		   = false; // draw_*_indirect_count
+		bool mesh_shaders		   = false;
+		bool sampler_minmax		   = false; // ReductionMode::Min/Max (Hi-Z)
+		bool ray_tracing		   = false; // reserved
 		bool buffer_device_address = false;
-		bool memory_budget = false;
+		bool memory_budget		   = false;
 	};
 
 	struct FrameInfo
@@ -178,7 +178,7 @@ namespace ember::gpu
 		Device(Device&&)				 = delete;
 		Device& operator=(Device&&)		 = delete;
 
-		[[nodiscard]] explicit operator bool() const noexcept { return m_state != nullptr; }
+		[[nodiscard]] explicit operator bool() const noexcept { return m_backend != nullptr; }
 
 		[[nodiscard]] const DeviceCaps& caps() const noexcept;
 		[[nodiscard]] bool device_lost() const noexcept;
@@ -246,7 +246,7 @@ namespace ember::gpu
 		void shutdown() noexcept;
 
 		/// Compile-time polymorphic platform-specific state (Vulkan, DX12, etc.)
-		Backend* m_state = nullptr;
+		Backend* m_backend = nullptr;
 	};
 
 	namespace detail

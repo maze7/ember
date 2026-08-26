@@ -121,7 +121,7 @@ namespace ember::gpu
 		FrameState frame;
 
 		// Services.
-		vk::DestroyQueue deferred{};
+		vk::DestroyQueue destroy_queue{};
 		vk::ResourcePools resources{};
 		TransientAllocator transient{};		// fast path; user-facing via Device::transient()
 		vk::TransientRing transient_ring{}; // its memory, overflow pages, telemetry
@@ -148,7 +148,7 @@ namespace ember::gpu
 	}
 
 #define EMBER_GPU_GUARD(...)                                                                                           \
-	if (m_state == nullptr)                                                                                            \
+	if (m_backend == nullptr)                                                                                          \
 		return __VA_ARGS__;                                                                                            \
-	EMBER_ASSERT(m_state->owner_thread == current_thread_id())
+	EMBER_ASSERT(m_backend->owner_thread == current_thread_id())
 }

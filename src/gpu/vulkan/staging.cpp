@@ -66,9 +66,9 @@ namespace ember::gpu::vk
 				return {};
 			}
 
-			// Enqueue now: the stamp (timeline_value + 1) is exactly the submit that will consume
-			// this copy, so the buffer dies the moment it provably can.
-			defer_destroy(backend, buffer, allocation);
+			// The timeline_value + 1 is the submit that will consume this copy, so we can kill the
+			// buffer the moment that timeline_value has provably completed.
+			backend.destroy_queue.destroy(buffer, allocation);
 
 			return {
 				.buffer		= buffer,
