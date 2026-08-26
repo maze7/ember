@@ -3,7 +3,9 @@
 #include <ember/core/common.h>
 #include <ember/gpu/buffer.h>
 #include <ember/gpu/common.h>
+#include <ember/gpu/sampler.h>
 #include <ember/gpu/swapchain.h>
+#include <ember/gpu/texture.h>
 #include <ember/gpu/transient.h>
 
 // Forward declarations.
@@ -183,26 +185,26 @@ namespace ember::gpu
 		[[nodiscard]] const DeviceCaps& caps() const noexcept;
 		[[nodiscard]] bool device_lost() const noexcept;
 
-		// [[nodiscard]] TextureHandle create_texture(const TextureDef&& def) noexcept;
-		// [[nodiscard]] SamplerHandle create_sampler(const SamplerDef&& def) noexcept;
-		// [[nodiscard]] GraphicsPipelineHandle create_graphics_pipeline(const GraphicsPipelineDef&& def) noexcept;
-		// [[nodiscard]] ComputePipelineHandle create_compute_pipeline(const ComputePipelineDef&& def) noexcept;
 		[[nodiscard]] SwapchainHandle create_swapchain(const SwapchainDef& def) noexcept;
 		[[nodiscard]] BufferHandle create_buffer(const BufferDef& def) noexcept;
+		[[nodiscard]] TextureHandle create_texture(const TextureDef&& def) noexcept;
+		[[nodiscard]] SamplerHandle create_sampler(const SamplerDef&& def) noexcept;
+		// [[nodiscard]] GraphicsPipelineHandle create_graphics_pipeline(const GraphicsPipelineDef&& def) noexcept;
+		// [[nodiscard]] ComputePipelineHandle create_compute_pipeline(const ComputePipelineDef&& def) noexcept;
 
+		[[nodiscard]] bool is_valid(SwapchainHandle handle) const noexcept;
 		[[nodiscard]] bool is_valid(BufferHandle handle) const noexcept;
-		// [[nodsicard]] bool is_valid(TextureHandle handle) noexcept;
-		// [[nodiscard]] bool is_valid(SamplerHandle handle) noexcept;
+		[[nodiscard]] bool is_valid(TextureHandle handle) noexcept;
+		[[nodiscard]] bool is_valid(SamplerHandle handle) noexcept;
 		// [[nodiscard]] bool is_valid(GraphicsPipelineHandle handle) noexcept;
 		// [[nodiscard]] bool is_valid(ComputePipelineHandle handle) noexcept;
-		// [[nodiscard]] bool is_valid(SwapchainHandle handle) const noexcept;
 
+		void destroy(SwapchainHandle handle) noexcept;
 		void destroy(BufferHandle handle) noexcept;
-		// void destroy(TextureHandle handle) noexcept;
-		// void destroy(SamplerHandle handle) noexcept;
+		void destroy(TextureHandle handle) noexcept;
+		void destroy(SamplerHandle handle) noexcept;
 		// void destroy(GraphicsPipelineHandle handle) noexcept;
 		// void destroy(ComputePipelineHandle handle) noexcept;
-		void destroy(SwapchainHandle handle) noexcept;
 
 		[[nodiscard]] TextureHandle acquire(SwapchainHandle handle) noexcept;
 		[[nodiscard]] Extent2D swapchain_extent(SwapchainHandle handle) const noexcept;
@@ -228,6 +230,12 @@ namespace ember::gpu
 		 * in-flight GPU reads are the caller's to avoid (version per frame, or use transient).
 		 */
 		void update_buffer(BufferHandle handle, u64 offset, Span<const u8> data) noexcept;
+
+		/**
+		 * Replaces one subresource, staged through the ring; lands before this frame's GPU work.
+		 * @param data the tightly packed mip (blocks for BC).
+		 */
+		void update_texture(TextureHandle handle, u32 mip, u32 layer, Span<const u8> data) noexcept;
 
 		FrameInfo begin_frame() noexcept;
 		// void submit(CommandList& list) noexcept;

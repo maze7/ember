@@ -20,8 +20,8 @@ namespace ember::gpu::vk
 		EMBER_ASSERT(m_owner == current_thread_id());
 		EMBER_ASSERT(dead.kind != Kind::None);
 
-		// The pending value: what the next submit will signal. Read live here so
-		// out-of-frame defers stamp against the submit that actually consumes them.
+		// The pending value: what the next submit will signal. Read live here so out-of-frame
+		// defers (one-off staging, load screens) stamp against the submit that actually consumes them.
 		dead.value = m_frame->timeline_value + 1;
 		m_entries.push_back(dead);
 	}
@@ -61,6 +61,17 @@ namespace ember::gpu::vk
 		});
 	}
 
+	void DestroyQueue::destroy(VkSampler sampler) noexcept
+	{
+		if (sampler == VK_NULL_HANDLE)
+			return;
+
+		enqueue({
+			.handle = sampler,
+			.kind	= Kind::Sampler,
+		});
+	}
+
 	void DestroyQueue::destroy(VkSemaphore semaphore) noexcept
 	{
 		if (semaphore == VK_NULL_HANDLE)
@@ -94,7 +105,16 @@ namespace ember::gpu::vk
 		});
 	}
 
-	void DestroyQueue::drain(const Context& ctx, u64 completed) noexcept
+	void DestroyQueue::reset_slot(u16 slot, u8 heap_mask) noexcept
+	{
+		// Slot 0 belongs to the fallbacks for the device's whole life; resetting
+		// it means a handle went through destroy() that never should have.
+		EMBER_ASSERT(slot != 0);
+
+		enqueue({.kind = Kind::HeapSlot, .heap_mask = heap_mask, .slot = slot});
+	}
+
+	void DestroyQueue::drain(const Context& ctx, DescriptorHeap& heap, u64 completed) noexcept
 	{
 		EMBER_ASSERT(m_owner == current_thread_id());
 
@@ -120,6 +140,10 @@ namespace ember::gpu::vk
 					vkDestroyImageView(ctx.device, reinterpret_cast<VkImageView>(dead.handle), nullptr);
 					break;
 
+				case Kind::Sampler:
+					vkDestroySampler(ctx.device, static_cast<VkSampler>(dead.handle), nullptr);
+					break;
+
 				case Kind::Semaphore:
 					vkDestroySemaphore(ctx.device, reinterpret_cast<VkSemaphore>(dead.handle), nullptr);
 					break;
@@ -130,6 +154,10 @@ namespace ember::gpu::vk
 
 				case Kind::Surface:
 					vkDestroySurfaceKHR(ctx.instance, reinterpret_cast<VkSurfaceKHR>(dead.handle), nullptr);
+					break;
+
+				case Kind::HeapSlot:
+					heap.reset_slot(ctx, dead.slot, dead.heap_mask);
 					break;
 			}
 		}

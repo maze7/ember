@@ -18,6 +18,7 @@ ember_add_module(Gpu
 		vulkan/destroy_queue.cpp
 		vulkan/staging.cpp
 		vulkan/transient_ring.cpp
+		vulkan/descriptor_heap.cpp
 	PUBLIC_DEPS
 		Ember::Core
 		Ember::Platform

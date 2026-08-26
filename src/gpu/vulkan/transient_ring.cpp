@@ -4,7 +4,6 @@
 #include <gpu/vulkan/transient_ring.h>
 
 #include <algorithm>
-#include <cstring>
 
 namespace ember::gpu::vk
 {

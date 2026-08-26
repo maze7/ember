@@ -6,6 +6,7 @@
 #include <ember/gpu/transient.h>
 #include <ember/sync/thread.h>
 #include <gpu/vulkan/common.h>
+#include <gpu/vulkan/descriptor_heap.h>
 #include <gpu/vulkan/destroy_queue.h>
 #include <gpu/vulkan/resources.h>
 #include <gpu/vulkan/staging.h>
@@ -123,9 +124,10 @@ namespace ember::gpu
 		// Services.
 		vk::DestroyQueue destroy_queue{};
 		vk::ResourcePools resources{};
-		TransientAllocator transient{};		// fast path; user-facing via Device::transient()
-		vk::TransientRing transient_ring{}; // its memory, overflow pages, telemetry
-		vk::Staging staging{};				// staging ring + upload batches
+		vk::DescriptorHeap descriptor_heap{}; // bindless heap
+		TransientAllocator transient{};		  // fast path; user-facing via Device::transient()
+		vk::TransientRing transient_ring{};	  // its memory, overflow pages, telemetry
+		vk::Staging staging{};				  // staging ring + upload batches
 
 		/// Bookkeeping
 		u32 owner_thread = current_thread_id(); // the thread that constructed the Device

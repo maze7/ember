@@ -2,14 +2,10 @@
 
 /// Volk must be the first Vulkan include in every backend translation unit: it defines
 /// VK_NO_PROTOTYPES and pulls in <vulkan/vulkan.h>.
-#include "ember/memory/memory.h"
 #include <volk.h>
 
 #include <ember/core/common.h>
 #include <ember/core/logger.h>
-
-#include <cstdint>
-#include <type_traits>
 
 // Forward declaration
 namespace ember::gpu
