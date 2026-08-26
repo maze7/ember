@@ -139,6 +139,53 @@ namespace ember::gpu::vk
 		return true;
 	}
 
+	void transient_destroy(Backend& backend) noexcept
+	{
+		TransientRing& ring = backend.transient_ring;
+
+		// A stray late allocation reports invalid instead of scribbling on freed memory.
+		backend.transient.bind(nullptr, {}, 0, 0, nullptr, nullptr);
+
+		// No lock: the caller guarantees the GPU is idle and every worker has stopped.
+		const auto release = [&backend](TransientPage& page)
+		{
+			if (const BufferHot* hot = backend.resources.buffers.try_get(page.handle))
+			{
+				vmaDestroyBuffer(backend.context.allocator, hot->handle, page.allocation);
+				(void)backend.resources.buffers.erase(page.handle);
+			}
+
+			page = {};
+		};
+
+		release(ring.active);
+
+		for (TransientPage& page : ring.frame_pages)
+			release(page);
+
+		for (RetiredPage& retired : ring.retired)
+			release(retired.page);
+
+		for (TransientPage& page : ring.free_pages)
+			release(page);
+
+		ring.frame_pages.clear();
+		ring.retired.clear();
+		ring.free_pages.clear();
+		ring.page_count = 0;
+
+		// The ring buffer itself is just another pool-registered buffer.
+		TransientPage as_page{.handle = ring.handle, .allocation = ring.allocation};
+		release(as_page);
+
+		ring.handle			= {};
+		ring.allocation		= VK_NULL_HANDLE;
+		ring.cpu			= nullptr;
+		ring.slice_bytes	= 0;
+		ring.frame_begin	= 0;
+		ring.overflow_bytes = 0;
+	}
+
 	void transient_begin_frame(Backend& backend, u32 slot) noexcept
 	{
 		TransientRing& ring = backend.transient_ring;

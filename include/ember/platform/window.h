@@ -5,8 +5,6 @@
 #include <ember/core/handle.h>
 #include <glm/glm.hpp>
 
-#include <string_view>
-
 namespace ember
 {
 	struct Window;

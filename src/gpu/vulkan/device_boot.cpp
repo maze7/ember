@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <vulkan/vulkan_core.h>
 
 namespace ember::gpu
 {
@@ -1030,7 +1031,7 @@ namespace ember::gpu
 				return false;
 
 			if (!vk::staging_boot(backend, def.staging_ring_bytes))
-						return false;
+				return false;
 
 			EMBER_INFO(
 				"vulkan: {} ({}) | {} | Vulkan {}.{}.{} | {} MB local{}{}",

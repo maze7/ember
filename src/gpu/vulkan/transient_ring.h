@@ -73,6 +73,11 @@ namespace ember::gpu::vk
 	/// Creates the ring buffer and registers it in the pool. False fails the boot.
 	[[nodiscard]] bool transient_boot(Backend& backend, u64 per_slot_bytes) noexcept;
 
+	/// Raw teardown for shutdown: GPU idle, workers stopped. Destroys the ring and every
+	/// overflow page and erases their pool entries, so the shutdown leak sweep reports
+	/// only genuine user buffers. Tolerates partial boots.
+	void transient_destroy(Backend& backend) noexcept;
+
 	/// Recycles provably-retired pages, services starvation, binds the frame's slice.
 	void transient_begin_frame(Backend& backend, u32 slot) noexcept;
 
