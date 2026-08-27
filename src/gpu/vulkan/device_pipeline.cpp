@@ -189,6 +189,8 @@ namespace ember::gpu
 			.sType		 = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
 			.polygonMode = def.fill == FillMode::Wireframe ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL,
 			.cullMode	 = to_vk_cull(def.cull),
+			// The negative viewport flip mirrors framebuffer winding, so the enum speaks
+			// the content convention (glTF: CCW outward, Y up) and the backend compensates.
 			.frontFace =
 				def.front == FrontFace::CounterClockwise ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE,
 			.lineWidth = 1.0f,
