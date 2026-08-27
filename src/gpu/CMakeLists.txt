@@ -14,11 +14,13 @@ ember_add_module(Gpu
 		vulkan/device_boot.cpp
 		vulkan/device_buffer.cpp
 		vulkan/device_swapchain.cpp
+		vulkan/device_pipeline.cpp
 		vulkan/vma.cpp
 		vulkan/destroy_queue.cpp
 		vulkan/staging.cpp
 		vulkan/transient_ring.cpp
 		vulkan/descriptor_heap.cpp
+		vulkan/command_list.cpp
 	PUBLIC_DEPS
 		Ember::Core
 		Ember::Platform

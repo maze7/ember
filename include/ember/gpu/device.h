@@ -2,7 +2,9 @@
 
 #include <ember/core/common.h>
 #include <ember/gpu/buffer.h>
+#include <ember/gpu/command_list.h>
 #include <ember/gpu/common.h>
+#include <ember/gpu/pipeline.h>
 #include <ember/gpu/sampler.h>
 #include <ember/gpu/swapchain.h>
 #include <ember/gpu/texture.h>
@@ -185,29 +187,34 @@ namespace ember::gpu
 		[[nodiscard]] const DeviceCaps& caps() const noexcept;
 		[[nodiscard]] bool device_lost() const noexcept;
 
+		[[nodiscard]] CommandList begin_command_list() noexcept;
+		void submit(CommandList& list) noexcept;
+		// void submit(Span<CommandList* const> lists) noexcept;
+
 		[[nodiscard]] SwapchainHandle create_swapchain(const SwapchainDef& def) noexcept;
 		[[nodiscard]] BufferHandle create_buffer(const BufferDef& def) noexcept;
-		[[nodiscard]] TextureHandle create_texture(const TextureDef&& def) noexcept;
-		[[nodiscard]] SamplerHandle create_sampler(const SamplerDef&& def) noexcept;
-		// [[nodiscard]] GraphicsPipelineHandle create_graphics_pipeline(const GraphicsPipelineDef&& def) noexcept;
+		[[nodiscard]] TextureHandle create_texture(const TextureDef& def) noexcept;
+		[[nodiscard]] SamplerHandle create_sampler(const SamplerDef& def) noexcept;
+		[[nodiscard]] GraphicsPipelineHandle create_graphics_pipeline(const GraphicsPipelineDef& def) noexcept;
 		// [[nodiscard]] ComputePipelineHandle create_compute_pipeline(const ComputePipelineDef&& def) noexcept;
 
 		[[nodiscard]] bool is_valid(SwapchainHandle handle) const noexcept;
 		[[nodiscard]] bool is_valid(BufferHandle handle) const noexcept;
-		[[nodiscard]] bool is_valid(TextureHandle handle) noexcept;
-		[[nodiscard]] bool is_valid(SamplerHandle handle) noexcept;
-		// [[nodiscard]] bool is_valid(GraphicsPipelineHandle handle) noexcept;
+		[[nodiscard]] bool is_valid(TextureHandle handle) const noexcept;
+		[[nodiscard]] bool is_valid(SamplerHandle handle) const noexcept;
+		[[nodiscard]] bool is_valid(GraphicsPipelineHandle handle) const noexcept;
 		// [[nodiscard]] bool is_valid(ComputePipelineHandle handle) noexcept;
 
 		void destroy(SwapchainHandle handle) noexcept;
 		void destroy(BufferHandle handle) noexcept;
 		void destroy(TextureHandle handle) noexcept;
 		void destroy(SamplerHandle handle) noexcept;
-		// void destroy(GraphicsPipelineHandle handle) noexcept;
+		void destroy(GraphicsPipelineHandle handle) noexcept;
 		// void destroy(ComputePipelineHandle handle) noexcept;
 
 		[[nodiscard]] TextureHandle acquire(SwapchainHandle handle) noexcept;
 		[[nodiscard]] Extent2D swapchain_extent(SwapchainHandle handle) const noexcept;
+		[[nodiscard]] TextureFormat swapchain_format(SwapchainHandle handle) const noexcept;
 
 		[[nodiscard]] void* mapped(BufferHandle handle) noexcept;
 

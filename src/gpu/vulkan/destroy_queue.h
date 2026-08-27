@@ -41,12 +41,13 @@ namespace ember::gpu::vk
 		void destroy(VkImageView view) noexcept;
 		void destroy(VkSampler sampler) noexcept;
 		void destroy(VkSemaphore semaphore) noexcept;
+		void destroy(VkPipeline pipeline) noexcept;
 		void destroy(VkSwapchainKHR swapchain) noexcept;
 		void destroy(VkSurfaceKHR surface) noexcept;
 
 		/// Points `slot` back at the fallbacks in every array `heap_mask` names,
 		/// once every frame that could have read the old descriptor has retired.
-		void reset_slot(u16 slot, u8 heap_mask) noexcept;
+		void reset_slot(u16 slot, HeapArray heap_mask) noexcept;
 
 		/// Destroys every entry whose value has provably completed.
 		void drain(const Context& ctx, DescriptorHeap& heap, u64 completed) noexcept;
@@ -65,17 +66,18 @@ namespace ember::gpu::vk
 			Semaphore,
 			Swapchain,
 			Surface,
+			Pipeline,
 			HeapSlot, // descriptor reset; handle unused, slot/heap_mask carry the payload
 		};
 
 		struct Entry
 		{
-			u64 value				 = 0;			   // destroyed once the timeline passes this
-			void* handle			 = 0;			   // the VK object's handle bits
-			VmaAllocation allocation = VK_NULL_HANDLE; // Buffer & Image only.
-			Kind kind				 = Kind::None;	   //
-			u8 heap_mask			 = 0;			   // HeapSlot: which arrays to reset (vk::HeapArray bits)
-			u16 slot				 = 0;			   // HeapSlot: the array element
+			u64 value				 = 0;				// destroyed once the timeline passes this
+			void* handle			 = 0;				// the VK object's handle bits
+			VmaAllocation allocation = VK_NULL_HANDLE;	// Buffer & Image only.
+			Kind kind				 = Kind::None;		//
+			HeapArray heap_mask		 = HeapArray::None; // HeapSlot: which arrays to reset (vk::HeapArray bits)
+			u16 slot				 = 0;				// HeapSlot: the array element
 		};
 
 		// Non-dispatchable handles are distinct pointer types only on 64-bit platforms.

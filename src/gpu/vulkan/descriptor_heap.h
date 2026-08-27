@@ -16,9 +16,10 @@ namespace ember::gpu::vk
 	/// Which arrays a deferred slot reset touches (DestroyQueue::reset_slot mask)
 	enum class HeapArray : u8
 	{
+		None	= 0,
 		Sampled = 1 << 0,
 		Storage = 1 << 1,
-		Sampler = 1 << 1,
+		Sampler = 1 << 2,
 		Buffer	= 1 << 3,
 	};
 
@@ -81,7 +82,7 @@ namespace ember::gpu::vk
 
 		/// Drain-time: point `slot` back at the fallbacks in every array `mask` names.
 		/// No-ops once the fallbacks are released (shutdown).
-		void reset_slot(const Context& ctx, u32 slot, u8 mask) noexcept;
+		void reset_slot(const Context& ctx, u32 slot, HeapArray mask) noexcept;
 
 		/// Every pipeline is compiled against this.
 		[[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept { return m_pipeline_layout; }
@@ -89,7 +90,6 @@ namespace ember::gpu::vk
 		[[nodiscard]] VkDescriptorSet constants_set() const noexcept { return m_constants; }
 
 	private:
-		[[nodiscard]] bool check_limits(const Context& ctx) const noexcept;
 		void flood_fill(const Context& ctx) noexcept;
 
 		VkDescriptorSetLayout m_heap_layout		 = VK_NULL_HANDLE;

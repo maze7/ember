@@ -83,6 +83,17 @@ namespace ember::gpu::vk
 		});
 	}
 
+	void DestroyQueue::destroy(VkPipeline pipeline) noexcept
+	{
+		if (pipeline == VK_NULL_HANDLE)
+			return;
+
+		enqueue({
+			.handle = reinterpret_cast<void*>(pipeline),
+			.kind	= Kind::Pipeline,
+		});
+	}
+
 	void DestroyQueue::destroy(VkSwapchainKHR swapchain) noexcept
 	{
 		if (swapchain == VK_NULL_HANDLE)
@@ -105,7 +116,7 @@ namespace ember::gpu::vk
 		});
 	}
 
-	void DestroyQueue::reset_slot(u16 slot, u8 heap_mask) noexcept
+	void DestroyQueue::reset_slot(u16 slot, HeapArray heap_mask) noexcept
 	{
 		// Slot 0 belongs to the fallbacks for the device's whole life; resetting
 		// it means a handle went through destroy() that never should have.
@@ -141,11 +152,15 @@ namespace ember::gpu::vk
 					break;
 
 				case Kind::Sampler:
-					vkDestroySampler(ctx.device, static_cast<VkSampler>(dead.handle), nullptr);
+					vkDestroySampler(ctx.device, reinterpret_cast<VkSampler>(dead.handle), nullptr);
 					break;
 
 				case Kind::Semaphore:
 					vkDestroySemaphore(ctx.device, reinterpret_cast<VkSemaphore>(dead.handle), nullptr);
+					break;
+
+				case Kind::Pipeline:
+					vkDestroyPipeline(ctx.device, reinterpret_cast<VkPipeline>(dead.handle), nullptr);
 					break;
 
 				case Kind::Swapchain:

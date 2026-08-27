@@ -38,9 +38,14 @@ namespace ember::gpu::vk
 	{
 		VmaAllocation allocation = VK_NULL_HANDLE;
 		VkExtent3D extent{};
-		VkFormat format = VK_FORMAT_UNDEFINED;
+		VkFormat format			 = VK_FORMAT_UNDEFINED;
+		TextureFormat api_format = TextureFormat::Undefined;
+
 		u32 mip_count	= 1;
 		u32 layer_count = 1;
+
+		/// Where the texture rests between uses
+		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
 		// False for swapchain images.
 		bool owns_image = true;

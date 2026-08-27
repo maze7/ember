@@ -15,14 +15,12 @@ namespace ember::gpu
 	namespace
 	{
 		/**
-		 * The Vulkan feature pNext chain as a value type.
+		 * The Vulkan feature pNext chain plus the feature set ember requires of it.
+		 * The chain wires itself at construction and points into its own members, so
+		 * copies are deleted. check_required() and enable_required() walk the same
+		 * REQUIRED_* tables, which keeps the adapter check and the device enable in sync.
 		 *
-		 * Wires the core and extension feature structs into their pNext chain at construction.
-		 * The chain is self-referential, so copying or moving a wired set would dangle it.
-		 *
-		 * check_required() and enable_required() walk the same REQUIRED_* tables, so what adapter
-		 * selection verifies and what device creation enable can never drift. Optional feature bits
-		 * are the caller's policy.
+		 * Optional feature bits stay with the caller.
 		 */
 		class FeatureChain
 		{
@@ -48,10 +46,7 @@ namespace ember::gpu
 			/** Fills every chained struct from the adapter in one call. */
 			void query(VkPhysicalDevice adapter) noexcept { vkGetPhysicalDeviceFeatures2(adapter, &m_features2); }
 
-			/**
-			 * True when the adapter has every required feature; logs each gap by name so an under-spec adapter
-			 * reports its complete list in one boot.
-			 */
+			/// Logs every missing feature by name so one boot reports the full gap list.
 			[[nodiscard]] bool check_required(const char* adapter_name) const noexcept
 			{
 				bool ok	 = true;
@@ -85,7 +80,7 @@ namespace ember::gpu
 			[[nodiscard]] const VkPhysicalDeviceVulkan13Features& vulkan13() const noexcept { return m_vulkan13; }
 
 		private:
-			/// One required feature: a typed pointer-to-member plus its name for diagnostics.
+			/// A required feature bit and its name for logging.
 			template <typename S> struct FeatureRef
 			{
 				VkBool32 S::* flag;
@@ -97,7 +92,7 @@ namespace ember::gpu
 			using Features12 = VkPhysicalDeviceVulkan12Features;
 			using Features13 = VkPhysicalDeviceVulkan13Features;
 
-			// Stringizes each member exactly once
+			// Stringizes the feature name
 #define EMBER_FEATURE(S, m)                                                                                            \
 	FeatureRef<S> { &S::m, #m }
 
@@ -146,8 +141,8 @@ namespace ember::gpu
 				EMBER_FEATURE(Features12, shaderStorageBufferArrayNonUniformIndexing),
 				EMBER_FEATURE(Features12, shaderStorageImageArrayNonUniformIndexing),
 				EMBER_FEATURE(Features12, scalarBlockLayout),
-				// GPU-driven rendering pulls vertices and draw records through device
-				// addresses, and D3D12 mandates GPUVAs: optionality here would be a lie.
+				/// GPU-driven rendering reads vertices and draw records through device
+				/// addresses, and D3D12 requires GPUVAs.
 				EMBER_FEATURE(Features12, bufferDeviceAddress),
 			};
 
@@ -257,8 +252,7 @@ namespace ember::gpu
 				debug.errors.fetch_add(1, std::memory_order_relaxed);
 				EMBER_ERROR("vulkan[{}]: {}", id, data->pMessage);
 
-				// Breaks inside the offending vkCmd*/vkCreate* call: the call stack is
-				// the diagnosis. Works in every build, not just ones with asserts.
+				// Break inside the offending call so the stack shows the cause.
 				if (debug.break_on_error)
 					EMBER_DEBUG_BREAK();
 			}
@@ -280,8 +274,8 @@ namespace ember::gpu
 		/// Loader -> layers/extensions -> instance -> volk instance table -> debug messenger.
 		[[nodiscard]] bool create_instance(Context& ctx, const DeviceDef& def) noexcept
 		{
-			/// Loader. With a Platform*, SDL owns the Vulkan library so our calls and its
-			/// surface creation share one loader instance; headless boots dlopen it via volk.
+			/// With a Platform, SDL owns the Vulkan library and surface creation shares
+			/// its loader. Headless boots load through volk instead.
 			if (ctx.platform != nullptr)
 			{
 				const auto proc = platform::vk::get_instance_proc_addr();
@@ -317,9 +311,6 @@ namespace ember::gpu
 
 			Vector<const char*> enabled_layers(&memory::heap(MemoryTag::Graphics));
 			Vector<const char*> enabled_extensions(&memory::heap(MemoryTag::Graphics));
-
-			// Boot-local by the audit: nothing reads this after create_instance returns,
-			// so the layer's presence is logged here and stored nowhere.
 			bool validation = false;
 
 			if (def.enable_validation)
@@ -559,7 +550,8 @@ namespace ember::gpu
 		}
 
 		/// Rejects adapters that cannot run ember's contract. Fills `out` for the ones that can.
-		[[nodiscard]] bool query_adapter(const Context& ctx, VkPhysicalDevice handle, AdapterInfo& out) noexcept
+		[[nodiscard]] bool query_adapter(
+			const Context& ctx, const DeviceLimits& limits, VkPhysicalDevice handle, AdapterInfo& out) noexcept
 		{
 			out.handle = handle;
 			vkGetPhysicalDeviceProperties(handle, &out.properties);
@@ -648,14 +640,45 @@ namespace ember::gpu
 				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES,
 				.pNext = &driver,
 			};
+			VkPhysicalDeviceVulkan12Properties props12{
+				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES,
+				.pNext = &props11,
+			};
 			VkPhysicalDeviceProperties2 props2{
 				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-				.pNext = &props11,
+				.pNext = &props12,
 			};
 			vkGetPhysicalDeviceProperties2(handle, &props2);
 
 			out.subgroup_size = props11.subgroupSize;
 			std::snprintf(out.driver, sizeof(out.driver), "%s %s", driver.driverName, driver.driverInfo);
+
+			// For now, ember is fully bindless, so a heap that can't fit is an adapter that can't run ember.
+			// Reject here, where selection can still fall through to another adapter.
+			const auto check_uab = [name](u32 available, u32 needed, const char* what)
+			{
+				if (available >= needed)
+					return true;
+
+				EMBER_INFO("vulkan: skipping {}: update-after-bind {} {} < {}", name, what, available, needed);
+				return false;
+			};
+
+			bool heap_ok = true;
+			heap_ok &=
+				check_uab(props12.maxDescriptorSetUpdateAfterBindSampledImages, limits.max_textures, "sampled images");
+			heap_ok &=
+				check_uab(props12.maxDescriptorSetUpdateAfterBindStorageImages, limits.max_textures, "storage images");
+			heap_ok &=
+				check_uab(props12.maxDescriptorSetUpdateAfterBindStorageBuffers, limits.max_buffers, "storage buffers");
+			heap_ok &= check_uab(props12.maxDescriptorSetUpdateAfterBindSamplers, limits.max_samplers, "samplers");
+			heap_ok &= check_uab(
+				props12.maxPerStageUpdateAfterBindResources,
+				limits.max_textures * 2u + limits.max_buffers,
+				"per-stage resources");
+
+			if (!heap_ok)
+				return false;
 
 			return true;
 		}
@@ -664,7 +687,8 @@ namespace ember::gpu
 		 * Filter-then-score: query_adapter rejects anything that cannot run the contract, then
 		 * the best-scoring survivor wins. Strictly-greater keeps enumeration order on ties.
 		 */
-		[[nodiscard]] bool select_adapter(const Context& ctx, const DeviceDef& def, AdapterInfo& out) noexcept
+		[[nodiscard]] bool
+		select_adapter(const Context& ctx, const DeviceDef& def, const DeviceLimits& limits, AdapterInfo& out) noexcept
 		{
 			const auto adapters =
 				enumerate<VkPhysicalDevice>([&ctx](u32* count, VkPhysicalDevice* data)
@@ -682,12 +706,12 @@ namespace ember::gpu
 			{
 				AdapterInfo candidate{};
 
-				if (!query_adapter(ctx, handle, candidate))
+				if (!query_adapter(ctx, limits, handle, candidate))
 					continue;
 
 				const int score = adapter_score(to_adapter_kind(candidate.properties.deviceType), def.adapter);
 
-				// Copy-on-better on purpose: boot reads the winner's full AdapterInfo.
+				// Copy on better score; boot reads the winner's full AdapterInfo.
 				if (score > best_score)
 				{
 					best_score = score;
@@ -705,10 +729,9 @@ namespace ember::gpu
 		}
 
 		/**
-		 * Logical device with exactly the required tables plus available optionals — never
-		 * "everything the adapter has": unused features (robustBufferAccess, ...) can cost real
-		 * GPU time. One queue per distinct family; dedicated compute/transfer families are
-		 * created now so async work needs no boot changes later.
+		 * Creates the logical device with the required tables plus available optionals.
+		 * Unused features such as robustBufferAccess can cost GPU time, so nothing is enabled
+		 * wholesale.
 		 */
 		[[nodiscard]] bool create_device(Context& ctx, const AdapterInfo& adapter) noexcept
 		{
@@ -1018,13 +1041,14 @@ namespace ember::gpu
 
 			debug_state().break_on_error = def.break_on_validation_error;
 
-			backend.resources.reserve(sanitize(def.limits));
+			const DeviceLimits limits = sanitize(def.limits);
+			backend.resources.reserve(limits);
 
 			if (!create_instance(ctx, def))
 				return false;
 
 			AdapterInfo adapter{};
-			if (!select_adapter(ctx, def, adapter))
+			if (!select_adapter(ctx, def, limits, adapter))
 				return false;
 
 			ctx.adapter = adapter.handle;
@@ -1035,6 +1059,9 @@ namespace ember::gpu
 			fill_caps(ctx.caps, adapter);
 
 			if (!create_frame_resources(ctx, frame))
+				return false;
+
+			if (!backend.descriptor_heap.init(ctx, limits.max_textures, limits.max_samplers, limits.max_buffers))
 				return false;
 
 			if (!vk::transient_boot(backend, def.transient_ring_bytes))
@@ -1069,25 +1096,18 @@ namespace ember::gpu
 			if (ctx.device != VK_NULL_HANDLE)
 			{
 				vk::staging_destroy(ctx, backend.staging);
+				backend.descriptor_heap.destroy(ctx);
 
 				for (FrameSlot& slot : backend.frame.slots)
-					if (slot.pool != VK_NULL_HANDLE)
-						vkDestroyCommandPool(ctx.device, slot.pool, nullptr);
+					vkDestroyCommandPool(ctx.device, slot.pool, nullptr);
 
-				if (backend.frame.timeline != VK_NULL_HANDLE)
-					vkDestroySemaphore(ctx.device, backend.frame.timeline, nullptr);
-
-				if (ctx.allocator != VK_NULL_HANDLE)
-					vmaDestroyAllocator(ctx.allocator);
-
+				vkDestroySemaphore(ctx.device, backend.frame.timeline, nullptr);
+				vmaDestroyAllocator(ctx.allocator);
 				vkDestroyDevice(ctx.device, nullptr);
 			}
 
-			if (ctx.messenger != VK_NULL_HANDLE)
-				vkDestroyDebugUtilsMessengerEXT(ctx.instance, ctx.messenger, nullptr);
-
-			if (ctx.instance != VK_NULL_HANDLE)
-				vkDestroyInstance(ctx.instance, nullptr);
+			vkDestroyDebugUtilsMessengerEXT(ctx.instance, ctx.messenger, nullptr);
+			vkDestroyInstance(ctx.instance, nullptr);
 
 			volkFinalize(); // safe when volk never initialized: it just nulls pointers
 

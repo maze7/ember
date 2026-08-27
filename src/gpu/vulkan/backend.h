@@ -81,6 +81,9 @@ namespace ember::gpu
 		u64 index			 = 0;			   // slot = index % frames_in_flight
 		bool open			 = false;
 
+		bool list_open		= false;
+		u32 lists_submitted = 0;
+
 		/// Highest timeline value proven complete (begin_frame waits, wait_idle). Batch and
 		/// page recycling key off this instead of querying the semaphore.
 		u64 completed = 0;

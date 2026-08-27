@@ -3,6 +3,7 @@
 #include <ember/gpu/device.h>
 #include <ember/memory/memory.h>
 #include <gpu/vulkan/backend.h>
+#include <gpu/vulkan/formats.h>
 
 #include <atomic>
 #include <cmath>
@@ -404,6 +405,8 @@ namespace ember::gpu
 		vk::transient_begin_frame(*m_backend, slot);
 
 		frame.pending_present_count = 0;
+		frame.list_open				= false;
+		frame.lists_submitted		= 0;
 		frame.open					= true;
 
 		return {.frame_index = static_cast<u32>(frame.index), .slot = slot};
@@ -419,7 +422,12 @@ namespace ember::gpu
 		const u64 value	  = ++frame.timeline_value;
 
 		VkCommandBuffer cmd = frame.slots[slot].commands;
-		record_placeholder_clears(*m_backend, cmd);
+		EMBER_ASSERT(!frame.list_open && "a command list was begun but never submitted");
+
+		// Frames that submitted nothing still owe every acquired backbuffer a legal
+		// present; the boot era clear survives as that fallback.
+		if (frame.lists_submitted == 0)
+			record_placeholder_clears(*m_backend, cmd);
 
 		// Seal the frame's CPU-written memory before the submit that publishes it: transient
 		// flushes and poisons, the upload batch closes stamped with this frame's value.
@@ -432,5 +440,78 @@ namespace ember::gpu
 		frame.slots[slot].submitted = value;
 		frame.open					= false;
 		++frame.index;
+	}
+
+	CommandList Device::begin_command_list() noexcept
+	{
+		EMBER_GPU_GUARD({});
+
+		FrameState& frame = m_backend->frame;
+		EMBER_ASSERT(frame.open && "command lists record between begin_frame and end_frame");
+		EMBER_ASSERT(!frame.list_open && "one command list per frame for now");
+
+		const u32 slot			  = static_cast<u32>(frame.index % m_backend->context.frames_in_flight);
+		const VkCommandBuffer cmd = frame.slots[slot].commands;
+
+		const VkCommandBufferBeginInfo begin_info{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+			.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+		};
+		EMBER_VK_CHECK(vkBeginCommandBuffer(cmd, &begin_info));
+
+		// The only descriptor bind in the engine. Every pipeline shares the heap's
+		// layout, so one bind makes the whole frame's resources reachable by index.
+		// Set 1 joins with transient constants.
+		const VkDescriptorSet heap_set = m_backend->descriptor_heap.heap_set();
+		vkCmdBindDescriptorSets(
+			cmd,
+			VK_PIPELINE_BIND_POINT_GRAPHICS,
+			m_backend->descriptor_heap.pipeline_layout(),
+			0,
+			1,
+			&heap_set,
+			0,
+			nullptr);
+
+		frame.list_open = true;
+
+		CommandList list;
+		list.m_backend = m_backend;
+		return list;
+	}
+
+	void Device::submit(CommandList& list) noexcept
+	{
+		EMBER_GPU_GUARD();
+
+		FrameState& frame = m_backend->frame;
+		EMBER_ASSERT(list.m_backend == m_backend && "submit of a foreign command list");
+		EMBER_ASSERT(frame.list_open && "submit without begin_command_list");
+
+		const u32 slot = static_cast<u32>(frame.index % m_backend->context.frames_in_flight);
+		EMBER_VK_CHECK(vkEndCommandBuffer(frame.slots[slot].commands));
+
+		frame.list_open = false;
+		++frame.lists_submitted;
+
+		// A sealed list ignores every later call instead of corrupting the next frame.
+		list.m_backend = nullptr;
+	}
+
+	TextureFormat Device::swapchain_format(SwapchainHandle handle) const noexcept
+	{
+		if (m_backend == nullptr)
+			return TextureFormat::Undefined;
+
+		const vk::SwapchainData* data = m_backend->resources.swapchains.try_get(handle);
+		if (data == nullptr)
+			return TextureFormat::Undefined;
+
+		// Reverse walk of the format table; the surface picker only chooses formats it knows.
+		for (u32 i = 0; i < static_cast<u32>(TextureFormat::Count); ++i)
+			if (vk::FORMAT_TABLE[i].vk == data->surface_format.format)
+				return static_cast<TextureFormat>(i);
+
+		return TextureFormat::Undefined;
 	}
 }
