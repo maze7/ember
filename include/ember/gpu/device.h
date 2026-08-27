@@ -216,6 +216,9 @@ namespace ember::gpu
 		[[nodiscard]] Extent2D swapchain_extent(SwapchainHandle handle) const noexcept;
 		[[nodiscard]] TextureFormat swapchain_format(SwapchainHandle handle) const noexcept;
 
+		/// The buffer's GPU virtual address, for shader pointer access. Stable for the
+		/// buffer's whole life. Null and stale handles return 0.
+		[[nodiscard]] u64 buffer_address(BufferHandle handle) const noexcept;
 		[[nodiscard]] void* mapped(BufferHandle handle) noexcept;
 
 		/**

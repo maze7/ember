@@ -188,4 +188,18 @@ namespace ember::gpu
 
 		vk::staging_upload(*m_backend, hot->handle, offset, data);
 	}
+
+	u64 Device::buffer_address(BufferHandle handle) const noexcept
+	{
+		if (m_backend == nullptr)
+			return 0;
+
+		if (const vk::BufferHot* hot = m_backend->resources.buffers.try_get(handle))
+			return hot->address;
+
+		// Like update_buffer: asking for a dead buffer's address is always a bug
+		// upstream, and asserting here beats a GPU fault three frames later.
+		EMBER_ASSERT(false && "buffer_address on a stale handle");
+		return 0;
+	}
 }
