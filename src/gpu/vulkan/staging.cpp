@@ -1,9 +1,11 @@
 #include <ember/core/common.h>
 #include <gpu/vulkan/backend.h>
 #include <gpu/vulkan/destroy_queue.h>
+#include <gpu/vulkan/formats.h>
 #include <gpu/vulkan/staging.h>
 
 #include <cstring>
+#include <numeric>
 
 namespace ember::gpu::vk
 {
@@ -27,13 +29,13 @@ namespace ember::gpu::vk
 		 * proven any slice free, and load-time volume shouldn't be bounded by ring size
 		 * anyway. Load-time cost is dominated by IO and decode, not by VMA allocations.
 		 */
-		[[nodiscard]] StagingAlloc staging_alloc(Backend& backend, u64 size) noexcept
+		[[nodiscard]] StagingAlloc staging_alloc(Backend& backend, u64 size, u64 alignment) noexcept
 		{
 			StagingRing& ring = backend.staging.ring;
 
 			if (backend.frame.open)
 			{
-				const u64 aligned = align_up(ring.cursor, STAGING_ALIGN);
+				const u64 aligned = align_up(ring.cursor, alignment);
 
 				if (aligned + size <= ring.slice_end)
 				{
@@ -76,6 +78,11 @@ namespace ember::gpu::vk
 				.offset		= 0,
 				.cpu		= static_cast<u8*>(result.pMappedData),
 			};
+		}
+
+		[[nodiscard]] constexpr u64 region_alignment(const FormatInfo& info) noexcept
+		{
+			return std::lcm<u64>(16, info.block_bytes);
 		}
 
 		/**
@@ -132,6 +139,95 @@ namespace ember::gpu::vk
 			// fif+1 batches with at most fif in flight: unreachable unless the frame model broke.
 			EMBER_ASSERT(false && "upload batch pool exhausted");
 			return VK_NULL_HANDLE;
+		}
+
+		void image_barrier(
+			VkCommandBuffer cmd,
+			VkImage image,
+			VkImageAspectFlags aspect,
+			u32 base_mip,
+			u32 mips,
+			u32 base_layer,
+			u32 layers,
+			VkImageLayout from,
+			VkImageLayout to,
+			bool entry) noexcept
+		{
+			// The exit side is broad because upload boundaries run per texture, not
+			// per frame; precision here would buy nothing.
+			const VkImageMemoryBarrier2 barrier{
+				.sType		   = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+				.srcStageMask  = entry ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_COPY_BIT,
+				.srcAccessMask = entry ? VK_ACCESS_2_NONE : VK_ACCESS_2_TRANSFER_WRITE_BIT,
+				.dstStageMask  = entry ? VK_PIPELINE_STAGE_2_COPY_BIT : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+				.dstAccessMask =
+					entry ? VK_ACCESS_2_TRANSFER_WRITE_BIT : VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+				.oldLayout		  = from,
+				.newLayout		  = to,
+				.image			  = image,
+				.subresourceRange = {aspect, base_mip, mips, base_layer, layers},
+			};
+
+			const VkDependencyInfo dependency{
+				.sType					 = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+				.imageMemoryBarrierCount = 1,
+				.pImageMemoryBarriers	 = &barrier,
+			};
+
+			vkCmdPipelineBarrier2(cmd, &dependency);
+		}
+
+		/// Stages one subresource and records its copy. One region per call keeps
+		/// the ring and one-off paths uniform: each region names its own buffer,
+		/// so ring exhaustion degrades per mip instead of per texture.
+		[[nodiscard]] bool copy_subresource(
+			Backend& backend,
+			VkCommandBuffer cmd,
+			const TextureUpload& upload,
+			const FormatInfo& info,
+			u32 mip,
+			u32 layer,
+			Span<const u8> bytes) noexcept
+		{
+			const StagingAlloc src = staging_alloc(backend, bytes.size(), region_alignment(info));
+
+			if (src.cpu == nullptr)
+			{
+				EMBER_ERROR("gpu: staging failed; texture mip {} layer {} dropped", mip, layer);
+				return false;
+			}
+
+			std::memcpy(src.cpu, bytes.data(), bytes.size());
+
+			if (src.allocation != VK_NULL_HANDLE)
+				(void)vmaFlushAllocation(backend.context.allocator, src.allocation, 0, bytes.size());
+			else if (!backend.staging.ring.coherent)
+				(void)vmaFlushAllocation(
+					backend.context.allocator, backend.staging.ring.allocation, src.offset, bytes.size());
+
+			const VkBufferImageCopy2 region{
+				.sType			  = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+				.bufferOffset	  = src.offset,
+				.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, layer, 1},
+				.imageExtent =
+					{
+						upload.extent.width >> mip > 0 ? upload.extent.width >> mip : 1,
+						upload.extent.height >> mip > 0 ? upload.extent.height >> mip : 1,
+						upload.extent.depth >> mip > 0 ? upload.extent.depth >> mip : 1,
+					},
+			};
+
+			const VkCopyBufferToImageInfo2 copy{
+				.sType			= VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
+				.srcBuffer		= src.buffer,
+				.dstImage		= upload.image,
+				.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				.regionCount	= 1,
+				.pRegions		= &region,
+			};
+
+			vkCmdCopyBufferToImage2(cmd, &copy);
+			return true;
 		}
 	}
 
@@ -227,7 +323,7 @@ namespace ember::gpu::vk
 
 	void staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, Span<const u8> data) noexcept
 	{
-		const StagingAlloc src = staging_alloc(backend, data.size());
+		const StagingAlloc src = staging_alloc(backend, data.size(), STAGING_ALIGN);
 
 		if (src.cpu == nullptr)
 		{
@@ -282,5 +378,108 @@ namespace ember::gpu::vk
 		VkCommandBuffer cmd = staging.open_cmd;
 		staging.open_cmd	= VK_NULL_HANDLE;
 		return cmd;
+	}
+
+	void staging_upload_texture(Backend& backend, const TextureUpload& upload, Span<const u8> data) noexcept
+	{
+		const FormatInfo& info = format_info(upload.format);
+
+		VkCommandBuffer cmd = upload_cmd(backend);
+		if (cmd == VK_NULL_HANDLE)
+			return;
+
+		// Empty data: just the christening transition into the steady layout.
+		// Depth targets take this path, so the color-only rule starts below it.
+		if (data.empty())
+		{
+			image_barrier(
+				cmd,
+				upload.image,
+				info.aspect,
+				0,
+				upload.mip_count,
+				0,
+				upload.layer_count,
+				VK_IMAGE_LAYOUT_UNDEFINED,
+				upload.steady,
+				false);
+			return;
+		}
+
+		EMBER_ASSERT(info.aspect == VK_IMAGE_ASPECT_COLOR_BIT && "depth-stencil uploads are out of contract");
+
+		// One barrier pair brackets the whole chain; the copies land in between.
+		image_barrier(
+			cmd,
+			upload.image,
+			info.aspect,
+			0,
+			upload.mip_count,
+			0,
+			upload.layer_count,
+			VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			true);
+
+		u64 cursor = 0;
+		for (u32 layer = 0; layer < upload.layer_count; ++layer)
+		{
+			for (u32 mip = 0; mip < upload.mip_count; ++mip)
+			{
+				const u64 bytes = subresource_bytes(info, upload.extent, mip);
+				(void)copy_subresource(backend, cmd, upload, info, mip, layer, {data.data() + cursor, bytes});
+				cursor += bytes;
+			}
+		}
+
+		EMBER_ASSERT(cursor == data.size() && "the caller validates the chain size; this is the tripwire");
+
+		image_barrier(
+			cmd,
+			upload.image,
+			info.aspect,
+			0,
+			upload.mip_count,
+			0,
+			upload.layer_count,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			upload.steady,
+			false);
+	}
+
+	void staging_update_texture(
+		Backend& backend, const TextureUpload& upload, u32 mip, u32 layer, Span<const u8> data) noexcept
+	{
+		const FormatInfo& info = format_info(upload.format);
+		EMBER_ASSERT(info.aspect == VK_IMAGE_ASPECT_COLOR_BIT && "depth-stencil uploads are out of contract");
+
+		VkCommandBuffer cmd = upload_cmd(backend);
+		if (cmd == VK_NULL_HANDLE)
+			return;
+
+		// Round-trip the one subresource so whole-image layout tracking stays true.
+		image_barrier(
+			cmd,
+			upload.image,
+			info.aspect,
+			mip,
+			1,
+			layer,
+			1,
+			upload.steady,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			true);
+		(void)copy_subresource(backend, cmd, upload, info, mip, layer, data);
+		image_barrier(
+			cmd,
+			upload.image,
+			info.aspect,
+			mip,
+			1,
+			layer,
+			1,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			upload.steady,
+			false);
 	}
 }

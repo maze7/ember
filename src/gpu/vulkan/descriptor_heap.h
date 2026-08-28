@@ -1,14 +1,15 @@
 #pragma once
 
-#include "ember/core/bitmask.h"
+#include <ember/core/bitmask.h>
 #include <ember/core/common.h>
 #include <ember/gpu/common.h>
+#include <ember/gpu/texture.h>
 #include <gpu/vulkan/common.h>
-#include <vulkan/vulkan_core.h>
 
 namespace ember::gpu
 {
 	struct Backend;
+	class Device;
 }
 
 namespace ember::gpu::vk
@@ -45,13 +46,16 @@ namespace ember::gpu::vk
 		/// never touch the pools.
 		struct Fallbacks
 		{
-			TextureHandle texture{};
+			/// One per TextureType, in enum order. textures[0] owns pool index 0
+			/// so no user texture can ever claim slot 0 of any array.
+			TextureHandle texture[SAMPLED_ARRAY_COUNT]{};
 			SamplerHandle sampler{};
 			BufferHandle buffer{};
-			VkImageView sampled_view = VK_NULL_HANDLE;
-			VkImageView storage_view = VK_NULL_HANDLE;
-			VkSampler sampler_vk	 = VK_NULL_HANDLE;
-			VkBuffer buffer_vk		 = VK_NULL_HANDLE;
+
+			VkImageView sampled_views[SAMPLED_ARRAY_COUNT] = {};
+			VkImageView storage_view					   = VK_NULL_HANDLE;
+			VkSampler sampler_vk						   = VK_NULL_HANDLE;
+			VkBuffer buffer_vk							   = VK_NULL_HANDLE;
 		};
 
 		/// Layouts, pool, both sets, and the update-after-bind limit tripwire.
@@ -75,7 +79,8 @@ namespace ember::gpu::vk
 
 		// Creation-time writes. `layout` is the texture's steady layout: a
 		// descriptor must state the layout the image is in when a shader reads it.
-		void write_sampled(const Context& ctx, u32 slot, VkImageView view, VkImageLayout layout) noexcept;
+		void
+		write_sampled(const Context& ctx, u32 slot, VkImageView view, VkImageLayout layout, TextureType type) noexcept;
 		void write_storage(const Context& ctx, u32 slot, VkImageView view) noexcept;
 		void write_sampler(const Context& ctx, u32 slot, VkSampler sampler) noexcept;
 		void write_buffer(const Context& ctx, u32 slot, VkBuffer buffer, u64 size) noexcept;
@@ -88,6 +93,9 @@ namespace ember::gpu::vk
 		[[nodiscard]] VkPipelineLayout pipeline_layout() const noexcept { return m_pipeline_layout; }
 		[[nodiscard]] VkDescriptorSet heap_set() const noexcept { return m_set; }
 		[[nodiscard]] VkDescriptorSet constants_set() const noexcept { return m_constants; }
+
+		/// Shutdown reads the handles to release the fallback pool entries.
+		[[nodiscard]] const Fallbacks& fallbacks() const noexcept { return m_fallbacks; }
 
 	private:
 		void flood_fill(const Context& ctx) noexcept;
@@ -105,4 +113,13 @@ namespace ember::gpu::vk
 		u32 m_sampler_capacity = 0;
 		u32 m_buffer_capacity  = 0;
 	};
+
+	/// Boot orchestrator. init, then the fallbacks through the public API as the
+	/// first pool inserts so the 2D one takes index 0, then bind_fallbacks.
+	/// Requires staging booted: the fallback contents ride an upload batch.
+	[[nodiscard]] bool heap_boot(Device& device, Backend& backend) noexcept;
+
+	/// Destroys the fallback pool entries before the shutdown leak sweep, GPU idle,
+	/// then clears the cached raws so later slot resets no-op.
+	void heap_destroy_fallbacks(Backend& backend) noexcept;
 }

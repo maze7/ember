@@ -106,6 +106,10 @@ namespace ember::gpu
 
 		vk::set_name(m_backend->context, VK_OBJECT_TYPE_BUFFER, reinterpret_cast<u64>(buffer), def.name);
 
+		// Storage buffers live in the bindless SSBO array at their pool index.
+		if ((def.usage & BufferUsage::Storage) != BufferUsage::None)
+			m_backend->descriptor_heap.write_buffer(m_backend->context, handle.index, buffer, def.size);
+
 		if (!def.initial_data.empty())
 		{
 			EMBER_ASSERT(def.initial_data.size() <= def.size);
@@ -138,6 +142,7 @@ namespace ember::gpu
 		// Erase-then-defer: the handle (and its bindless slot) dies immediately; the
 		// native object outlives every frame that can reference it.
 		m_backend->destroy_queue.destroy(hot->handle, m_backend->resources.buffers.get_cold(handle).allocation);
+		m_backend->destroy_queue.reset_slot(handle.index, vk::HeapArray::Buffer);
 		(void)m_backend->resources.buffers.erase(handle);
 	}
 

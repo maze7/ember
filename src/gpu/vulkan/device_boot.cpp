@@ -664,9 +664,11 @@ namespace ember::gpu
 				return false;
 			};
 
-			bool heap_ok = true;
-			heap_ok &=
-				check_uab(props12.maxDescriptorSetUpdateAfterBindSampledImages, limits.max_textures, "sampled images");
+			bool heap_ok  = true;
+			heap_ok		 &= check_uab(
+				props12.maxDescriptorSetUpdateAfterBindSampledImages,
+				limits.max_textures * SAMPLED_ARRAY_COUNT,
+				"sampled images");
 			heap_ok &=
 				check_uab(props12.maxDescriptorSetUpdateAfterBindStorageImages, limits.max_textures, "storage images");
 			heap_ok &=
@@ -674,7 +676,7 @@ namespace ember::gpu
 			heap_ok &= check_uab(props12.maxDescriptorSetUpdateAfterBindSamplers, limits.max_samplers, "samplers");
 			heap_ok &= check_uab(
 				props12.maxPerStageUpdateAfterBindResources,
-				limits.max_textures * 2u + limits.max_buffers,
+				limits.max_textures * (SAMPLED_ARRAY_COUNT + 1u) + limits.max_buffers,
 				"per-stage resources");
 
 			if (!heap_ok)
@@ -1031,7 +1033,7 @@ namespace ember::gpu
 
 	namespace vk
 	{
-		bool boot(Backend& backend, const DeviceDef& def) noexcept
+		bool boot(Device& device, Backend& backend, const DeviceDef& def) noexcept
 		{
 			Context& ctx	  = backend.context; // the one mutable Context reference in the codebase
 			FrameState& frame = backend.frame;
@@ -1061,18 +1063,16 @@ namespace ember::gpu
 			if (!create_frame_resources(ctx, frame))
 				return false;
 
-			if (!backend.descriptor_heap.init(ctx, limits.max_textures, limits.max_samplers, limits.max_buffers))
-				return false;
-
-			if (!vk::transient_boot(backend, def.transient_ring_bytes))
-				return false;
+			backend.destroy_queue.bind(backend.frame);
 
 			if (!vk::staging_boot(backend, def.staging_ring_bytes))
 				return false;
 
-			// The DestroyQueue uses the frame's timeline_value to determine when resources
-			// can be freed safely (timeline_value + 1 signal).
-			backend.destroy_queue.bind(backend.frame);
+			if (!vk::heap_boot(device, backend))
+				return false;
+
+			if (!vk::transient_boot(backend, def.transient_ring_bytes))
+				return false;
 
 			EMBER_INFO(
 				"vulkan: {} ({}) | {} | Vulkan {}.{}.{} | {} MB local{}{}",

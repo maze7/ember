@@ -135,6 +135,16 @@ namespace ember::gpu::vk
 		if (!ring.coherent)
 			EMBER_WARN("gpu: transient memory is not host-coherent; end_frame flushes explicitly");
 
+		// The ring serves Storage data, so it takes a bindless slot like any other
+		// storage buffer; set 1's constant descriptors point at it once.
+		{
+			const BufferHot& hot = backend.resources.buffers.get(ring.handle);
+			backend.descriptor_heap.write_buffer(
+				backend.context, ring.handle.index, hot.handle, slice * backend.context.frames_in_flight);
+			backend.descriptor_heap.bind_constants(
+				backend.context, hot.handle, backend.context.caps.max_constant_block_bytes);
+		}
+
 		return true;
 	}
 

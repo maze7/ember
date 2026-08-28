@@ -1,6 +1,7 @@
 #include <ember/gpu/device.h>
 #include <ember/gpu/pipeline.h>
 #include <gpu/vulkan/backend.h>
+#include <gpu/vulkan/common.h>
 #include <gpu/vulkan/formats.h>
 
 namespace ember::gpu
@@ -35,30 +36,6 @@ namespace ember::gpu
 					return VK_CULL_MODE_FRONT_BIT;
 			}
 			return VK_CULL_MODE_NONE;
-		}
-
-		[[nodiscard]] VkCompareOp to_vk_compare(CompareOp op) noexcept
-		{
-			switch (op)
-			{
-				case CompareOp::Never:
-					return VK_COMPARE_OP_NEVER;
-				case CompareOp::Less:
-					return VK_COMPARE_OP_LESS;
-				case CompareOp::Equal:
-					return VK_COMPARE_OP_EQUAL;
-				case CompareOp::LessEqual:
-					return VK_COMPARE_OP_LESS_OR_EQUAL;
-				case CompareOp::Greater:
-					return VK_COMPARE_OP_GREATER;
-				case CompareOp::NotEqual:
-					return VK_COMPARE_OP_NOT_EQUAL;
-				case CompareOp::GreaterEqual:
-					return VK_COMPARE_OP_GREATER_OR_EQUAL;
-				case CompareOp::Always:
-					return VK_COMPARE_OP_ALWAYS;
-			}
-			return VK_COMPARE_OP_ALWAYS;
 		}
 
 		[[nodiscard]] VkPipelineColorBlendAttachmentState to_vk_blend(BlendPreset preset) noexcept
@@ -205,7 +182,7 @@ namespace ember::gpu
 			.sType			  = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
 			.depthTestEnable  = def.depth_test ? VK_TRUE : VK_FALSE,
 			.depthWriteEnable = def.depth_write ? VK_TRUE : VK_FALSE,
-			.depthCompareOp	  = to_vk_compare(def.depth_compare),
+			.depthCompareOp	  = vk::to_vk_compare(def.depth_compare),
 		};
 
 		VkPipelineColorBlendAttachmentState blend_attachments[MAX_COLOR_ATTACHMENTS];

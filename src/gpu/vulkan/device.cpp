@@ -258,7 +258,7 @@ namespace ember::gpu
 		// (and releases the claim). Boot logs the adapter summary on success.
 		m_backend = memory::new_object<Backend>(MemoryTag::Graphics);
 
-		if (!vk::boot(*m_backend, def))
+		if (!vk::boot(*this, *m_backend, def))
 			shutdown();
 	}
 
@@ -277,6 +277,7 @@ namespace ember::gpu
 			// Backend-owned pool entries (transient ring, overflow pages) leave first so
 			// the sweep below reports only genuine user leaks. Idle makes it legal.
 			vk::transient_destroy(*m_backend);
+			vk::heap_destroy_fallbacks(*m_backend);
 
 			// Destroy surviving user resources while m_state is still published.
 			destroy_resources();

@@ -3,6 +3,7 @@
 #include <ember/containers/span.h>
 #include <ember/core/common.h>
 #include <ember/gpu/common.h>
+#include <ember/gpu/texture.h>
 #include <gpu/vulkan/common.h>
 
 #include <vk_mem_alloc.h>
@@ -32,6 +33,17 @@ namespace ember::gpu::vk
 		u64 value			= 0; // reusable once the frame timeline passes this; 0 = never used.
 	};
 
+	/// A texture's shape, for the image staging paths.
+	struct TextureUpload
+	{
+		VkImage image		 = VK_NULL_HANDLE;
+		TextureFormat format = TextureFormat::Undefined;
+		Extent3D extent		 = {1, 1, 1};
+		u32 mip_count		 = 1;
+		u32 layer_count		 = 1;
+		VkImageLayout steady = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	};
+
 	struct StagingRing
 	{
 		VkBuffer buffer			 = VK_NULL_HANDLE; // raw on purpose: staging is never shader-visible,
@@ -50,7 +62,7 @@ namespace ember::gpu::vk
 											 // because they cross frame-slot boundaries.
 		UploadBatch batches[MAX_FRAMES_IN_FLIGHT + 1]{};
 		VkCommandBuffer open_cmd = VK_NULL_HANDLE;
-		u32 open_index = 0;
+		u32 open_index			 = 0;
 	};
 
 	[[nodiscard]] bool staging_boot(Backend& backend, u64 per_slot_bytes) noexcept;
@@ -65,6 +77,17 @@ namespace ember::gpu::vk
 	/// Source memory comes from the ring while a frame s open, else a one-off buffer that
 	/// rides the desttroy queue. Owner thread only.
 	void staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, Span<const u8> data) noexcept;
+
+	/// Uploads the whole subresource chain (layer-major, mip-minor, tightly packed
+	/// blocks) and leaves the image in its steady layout. Empty data records only
+	/// the UNDEFINED to steady transition, which is how creation christens every
+	/// texture into a known layout. Owner thread only.
+	void staging_upload_texture(Backend& backend, const TextureUpload& upload, Span<const u8> data) noexcept;
+
+	/// One subresource, steady to copy and back. The batch's entry barrier orders
+	/// all prior submitted work before the copy, so frames in flight are safe.
+	void staging_update_texture(
+		Backend& backend, const TextureUpload& upload, u32 mip, u32 layer, Span<const u8> data) noexcept;
 
 	/// Ends the open batch (exit barrier + vkEndCommandBuffer), stamps it with the value
 	/// the consuming submit will signal, and returns its command buffer. Null when nothing to do.

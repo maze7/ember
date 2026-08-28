@@ -6,6 +6,7 @@
 
 #include <ember/core/common.h>
 #include <ember/core/logger.h>
+#include <ember/gpu/pipeline.h>
 
 // Forward declaration
 namespace ember::gpu
@@ -94,6 +95,30 @@ namespace ember::gpu::vk
 
 	/// Device loss is sticky: every later call no-ops and the app is expected to tear down.
 	void note_result(Backend& backend, VkResult result) noexcept;
+
+	[[nodiscard]] inline VkCompareOp to_vk_compare(CompareOp op) noexcept
+	{
+		switch (op)
+		{
+			case gpu::CompareOp::Never:
+				return VK_COMPARE_OP_NEVER;
+			case gpu::CompareOp::Less:
+				return VK_COMPARE_OP_LESS;
+			case gpu::CompareOp::Equal:
+				return VK_COMPARE_OP_EQUAL;
+			case gpu::CompareOp::LessEqual:
+				return VK_COMPARE_OP_LESS_OR_EQUAL;
+			case gpu::CompareOp::Greater:
+				return VK_COMPARE_OP_GREATER;
+			case gpu::CompareOp::NotEqual:
+				return VK_COMPARE_OP_NOT_EQUAL;
+			case gpu::CompareOp::GreaterEqual:
+				return VK_COMPARE_OP_GREATER_OR_EQUAL;
+			case gpu::CompareOp::Always:
+				return VK_COMPARE_OP_ALWAYS;
+		}
+		return VK_COMPARE_OP_ALWAYS;
+	}
 }
 
 /**

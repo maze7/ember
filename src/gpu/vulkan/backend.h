@@ -145,7 +145,7 @@ namespace ember::gpu
 	{
 		/// Boot orchestrator (device_boot.cpp): fills context and frame; false on failure.
 		/// Partial progress is legal: destroy_boot_state tears down whatever exists.
-		[[nodiscard]] bool boot(Backend& backend, const DeviceDef& def) noexcept;
+		[[nodiscard]] bool boot(Device& device, Backend& backend, const DeviceDef& def) noexcept;
 
 		/// Reverse of boot, tolerant of partial boots. Resource pools must already be
 		/// drained and the GPU idle. Leaves the Backend allocation itself alive.

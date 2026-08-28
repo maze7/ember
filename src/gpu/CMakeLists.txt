@@ -16,6 +16,7 @@ ember_add_module(Gpu
 		vulkan/device_swapchain.cpp
 		vulkan/device_pipeline.cpp
 		vulkan/device_texture.cpp
+		vulkan/device_sampler.cpp
 		vulkan/vma.cpp
 		vulkan/destroy_queue.cpp
 		vulkan/staging.cpp

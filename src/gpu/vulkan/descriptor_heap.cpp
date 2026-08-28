@@ -4,6 +4,8 @@
 #include <ember/gpu/texture.h>
 #include <gpu/vulkan/backend.h>
 #include <gpu/vulkan/descriptor_heap.h>
+
+#include <cstring>
 #include <vulkan/vulkan_core.h>
 
 namespace ember::gpu::vk
@@ -38,7 +40,6 @@ namespace ember::gpu::vk
 
 			vkUpdateDescriptorSets(ctx.device, 1, &write, 0, nullptr);
 		}
-
 	}
 
 	bool
@@ -48,21 +49,33 @@ namespace ember::gpu::vk
 		m_sampler_capacity = sampler_capacity;
 		m_buffer_capacity  = buffer_capacity;
 
-		// Set O: the four bindless arrays, sized to the pools so a handle's index is its slot.
-		// Update-after-bind lets creation write descriptors while earlier frames still render.
-		const VkDescriptorSetLayoutBinding heap_bindings[] = {
-			{BINDING_SAMPLED_IMAGES, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_capacity, VK_SHADER_STAGE_ALL, nullptr},
+		const VkDescriptorSetLayoutBinding bindings[] = {
+			{BINDING_SAMPLED_2D, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_capacity, VK_SHADER_STAGE_ALL, nullptr},
+			{BINDING_SAMPLED_2D_ARRAY,
+			 VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+			 texture_capacity,
+			 VK_SHADER_STAGE_ALL,
+			 nullptr},
+			{BINDING_SAMPLED_CUBE, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_capacity, VK_SHADER_STAGE_ALL, nullptr},
+			{BINDING_SAMPLED_3D, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_capacity, VK_SHADER_STAGE_ALL, nullptr},
 			{BINDING_STORAGE_IMAGES, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, texture_capacity, VK_SHADER_STAGE_ALL, nullptr},
 			{BINDING_SAMPLERS, VK_DESCRIPTOR_TYPE_SAMPLER, sampler_capacity, VK_SHADER_STAGE_ALL, nullptr},
 			{BINDING_STORAGE_BUFFERS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buffer_capacity, VK_SHADER_STAGE_ALL, nullptr},
 		};
 
 		const VkDescriptorBindingFlags binding_flags[] = {
-			BINDLESS_FLAGS, BINDLESS_FLAGS, BINDLESS_FLAGS, BINDLESS_FLAGS};
+			BINDLESS_FLAGS,
+			BINDLESS_FLAGS,
+			BINDLESS_FLAGS,
+			BINDLESS_FLAGS,
+			BINDLESS_FLAGS,
+			BINDLESS_FLAGS,
+			BINDLESS_FLAGS,
+		};
 
 		const VkDescriptorSetLayoutBindingFlagsCreateInfo heap_flags{
 			.sType		   = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO,
-			.bindingCount  = static_cast<u32>(std::size(heap_bindings)),
+			.bindingCount  = static_cast<u32>(std::size(bindings)),
 			.pBindingFlags = binding_flags,
 		};
 
@@ -70,8 +83,8 @@ namespace ember::gpu::vk
 			.sType		  = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 			.pNext		  = &heap_flags,
 			.flags		  = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT,
-			.bindingCount = static_cast<u32>(std::size(heap_bindings)),
-			.pBindings	  = heap_bindings,
+			.bindingCount = static_cast<u32>(std::size(bindings)),
+			.pBindings	  = bindings,
 		};
 
 		if (vkCreateDescriptorSetLayout(ctx.device, &heap_info, nullptr, &m_heap_layout) != VK_SUCCESS)
@@ -124,7 +137,7 @@ namespace ember::gpu::vk
 		}
 
 		const VkDescriptorPoolSize pool_sizes[] = {
-			{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_capacity},
+			{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_capacity * SAMPLED_ARRAY_COUNT},
 			{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, texture_capacity},
 			{VK_DESCRIPTOR_TYPE_SAMPLER, sampler_capacity},
 			{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buffer_capacity},
@@ -185,11 +198,19 @@ namespace ember::gpu::vk
 		m_constants		   = VK_NULL_HANDLE;
 	}
 
-	void DescriptorHeap::write_sampled(const Context& ctx, u32 slot, VkImageView view, VkImageLayout layout) noexcept
+	void DescriptorHeap::write_sampled(
+		const Context& ctx, u32 slot, VkImageView view, VkImageLayout layout, TextureType type) noexcept
 	{
 		EMBER_ASSERT(slot < m_texture_capacity);
 		write_image(
-			ctx, m_set, BINDING_SAMPLED_IMAGES, slot, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, view, VK_NULL_HANDLE, layout);
+			ctx,
+			m_set,
+			BINDING_SAMPLED_2D + static_cast<u32>(type),
+			slot,
+			VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+			view,
+			VK_NULL_HANDLE,
+			layout);
 	}
 
 	void DescriptorHeap::write_storage(const Context& ctx, u32 slot, VkImageView view) noexcept
@@ -241,18 +262,248 @@ namespace ember::gpu::vk
 
 	void DescriptorHeap::reset_slot(const Context& ctx, u32 slot, HeapArray mask) noexcept
 	{
-		// Shutdown releases the fallbacks before the leak sweep runs; after that a
-		// reset has nothing valid to write and the GPU is idle anyway.
-		if (m_fallbacks.sampled_view == VK_NULL_HANDLE)
+		if (m_fallbacks.sampled_views[0] == VK_NULL_HANDLE)
 			return;
 
 		if ((mask & HeapArray::Sampled) != HeapArray::None)
-			write_sampled(ctx, slot, m_fallbacks.sampled_view, VK_IMAGE_LAYOUT_GENERAL);
+		{
+			for (u32 i = 0; i < SAMPLED_ARRAY_COUNT; ++i)
+				write_image(
+					ctx,
+					m_set,
+					BINDING_SAMPLED_2D + i,
+					slot,
+					VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+					m_fallbacks.sampled_views[i],
+					VK_NULL_HANDLE,
+					VK_IMAGE_LAYOUT_GENERAL);
+		}
+
 		if ((mask & HeapArray::Storage) != HeapArray::None)
 			write_storage(ctx, slot, m_fallbacks.storage_view);
 		if ((mask & HeapArray::Sampler) != HeapArray::None)
 			write_sampler(ctx, slot, m_fallbacks.sampler_vk);
 		if ((mask & HeapArray::Buffer) != HeapArray::None)
 			write_buffer(ctx, slot, m_fallbacks.buffer_vk, VK_WHOLE_SIZE);
+	}
+
+	void DescriptorHeap::bind_fallbacks(const Context& ctx, const Fallbacks& fallbacks) noexcept
+	{
+		// Only the 2D fallback's pool index is load-bearing: reserving index 0
+		// keeps any user texture from claiming slot 0 of any typed array. The
+		// other fallbacks' slots are covered by the flood fill regardless.
+		EMBER_ASSERT(fallbacks.texture[0].index == 0 && fallbacks.sampler.index == 0 && fallbacks.buffer.index == 0);
+		EMBER_ASSERT(fallbacks.sampled_views[0] != VK_NULL_HANDLE && fallbacks.buffer_vk != VK_NULL_HANDLE);
+
+		m_fallbacks = fallbacks;
+		flood_fill(ctx);
+	}
+
+	void DescriptorHeap::flood_fill(const Context& ctx) noexcept
+	{
+		// Every slot of every array gets a fallback before the first user resource
+		// exists. Chunked so boot never heap-allocates for this; runs once.
+		constexpr u32 CHUNK = 256;
+
+		VkDescriptorImageInfo images[CHUNK];
+
+		const auto fill = [&](u32 binding, VkDescriptorType type, VkDescriptorImageInfo info, u32 count)
+		{
+			for (VkDescriptorImageInfo& entry : images)
+				entry = info;
+
+			for (u32 first = 0; first < count; first += CHUNK)
+			{
+				const VkWriteDescriptorSet write{
+					.sType			 = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+					.dstSet			 = m_set,
+					.dstBinding		 = binding,
+					.dstArrayElement = first,
+					.descriptorCount = std::min(CHUNK, count - first),
+					.descriptorType	 = type,
+					.pImageInfo		 = images,
+				};
+
+				vkUpdateDescriptorSets(ctx.device, 1, &write, 0, nullptr);
+			}
+		};
+
+		// GENERAL everywhere: the fallbacks carry Storage usage, so one layout
+		// serves all arrays and no per-array bookkeeping exists.
+		for (u32 i = 0; i < SAMPLED_ARRAY_COUNT; ++i)
+			fill(
+				BINDING_SAMPLED_2D + i,
+				VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+				{VK_NULL_HANDLE, m_fallbacks.sampled_views[i], VK_IMAGE_LAYOUT_GENERAL},
+				m_texture_capacity);
+
+		fill(
+			BINDING_STORAGE_IMAGES,
+			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			{VK_NULL_HANDLE, m_fallbacks.storage_view, VK_IMAGE_LAYOUT_GENERAL},
+			m_texture_capacity);
+		fill(
+			BINDING_SAMPLERS,
+			VK_DESCRIPTOR_TYPE_SAMPLER,
+			{m_fallbacks.sampler_vk, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED},
+			m_sampler_capacity);
+
+		VkDescriptorBufferInfo buffers[CHUNK];
+		for (VkDescriptorBufferInfo& entry : buffers)
+			entry = {m_fallbacks.buffer_vk, 0, VK_WHOLE_SIZE};
+
+		for (u32 first = 0; first < m_buffer_capacity; first += CHUNK)
+		{
+			const VkWriteDescriptorSet write{
+				.sType			 = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet			 = m_set,
+				.dstBinding		 = BINDING_STORAGE_BUFFERS,
+				.dstArrayElement = first,
+				.descriptorCount = std::min(CHUNK, m_buffer_capacity - first),
+				.descriptorType	 = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.pBufferInfo	 = buffers,
+			};
+
+			vkUpdateDescriptorSets(ctx.device, 1, &write, 0, nullptr);
+		}
+	}
+
+	void DescriptorHeap::bind_constants(const Context& ctx, VkBuffer ring, u64 window_bytes) noexcept
+	{
+		VkDescriptorBufferInfo infos[CONSTANT_BUFFER_SLOTS];
+		VkWriteDescriptorSet writes[CONSTANT_BUFFER_SLOTS];
+
+		for (u32 i = 0; i < CONSTANT_BUFFER_SLOTS; ++i)
+		{
+			// Base offset 0 with a fixed window; dynamic offsets do the addressing.
+			// The window is what a shader may read past the offset.
+			infos[i]  = {ring, 0, window_bytes};
+			writes[i] = {
+				.sType			 = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				.dstSet			 = m_constants,
+				.dstBinding		 = i,
+				.descriptorCount = 1,
+				.descriptorType	 = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+				.pBufferInfo	 = &infos[i],
+			};
+		}
+
+		vkUpdateDescriptorSets(ctx.device, CONSTANT_BUFFER_SLOTS, writes, 0, nullptr);
+	}
+
+	bool heap_boot(Device& device, Backend& backend) noexcept
+	{
+		DescriptorHeap& heap = backend.descriptor_heap;
+
+		if (!heap.init(
+				backend.context,
+				backend.resources.textures.capacity(),
+				backend.resources.samplers.capacity(),
+				backend.resources.buffers.capacity()))
+			return false;
+
+		struct FallbackDef
+		{
+			const char* name;
+			TextureType type;
+			u32 layers;
+		};
+
+		constexpr FallbackDef FALLBACKS[] = {
+			{"ember.fallback.2d", TextureType::Texture2D, 1},
+			{"ember.fallback.2d_array", TextureType::Texture2DArray, 1},
+			{"ember.fallback.cube", TextureType::TextureCube, 6},
+			{"ember.fallback.3d", TextureType::Texture3D, 1},
+		};
+
+		// Magenta screams in development builds; white multiplies through as
+		// identity in shipped ones.
+		static constexpr u8 LOUD[4]	 = {0xff, 0x00, 0xff, 0xff};
+		static constexpr u8 QUIET[4] = {0xff, 0xff, 0xff, 0xff};
+		const u8* pixel				 = GPU_VALIDATION_DEFAULT ? LOUD : QUIET;
+
+		DescriptorHeap::Fallbacks fb{};
+
+		// Through the public API: the fallbacks exercise the same path as every
+		// user resource, and as the first pool inserts the 2D one takes index 0.
+		for (u32 i = 0; i < SAMPLED_ARRAY_COUNT; ++i)
+		{
+			u8 pixels[6 * 4];
+			for (u32 layer = 0; layer < FALLBACKS[i].layers; ++layer)
+				std::memcpy(pixels + layer * 4, pixel, 4);
+
+			const TextureHandle handle = device.create_texture({
+				.name		  = FALLBACKS[i].name,
+				.type		  = FALLBACKS[i].type,
+				.extent		  = {1, 1, 1},
+				.layers		  = FALLBACKS[i].layers,
+				.format		  = TextureFormat::RGBA8Unorm,
+				.usage		  = TextureUsage::Sampled | TextureUsage::Storage,
+				.initial_data = Span<const u8>{pixels, FALLBACKS[i].layers * 4u},
+			});
+
+			if (handle.is_null())
+				return false;
+
+			const TextureHot& hot = backend.resources.textures.get(handle);
+			fb.texture[i]		  = handle;
+			fb.sampled_views[i]	  = hot.sampled_view;
+		}
+
+		fb.storage_view = backend.resources.textures.get(fb.texture[0]).storage_view;
+
+		static constexpr u8 ZERO[256] = {};
+
+		fb.buffer = device.create_buffer({
+			.name		  = "ember.fallback.zero",
+			.size		  = sizeof(ZERO),
+			.usage		  = BufferUsage::Storage,
+			.initial_data = Span<const u8>{ZERO, sizeof(ZERO)},
+		});
+
+		fb.sampler = device.create_sampler({.name = "ember.fallback.linear"});
+
+		if (fb.buffer.is_null() || fb.sampler.is_null())
+			return false;
+
+		fb.buffer_vk  = backend.resources.buffers.get(fb.buffer).handle;
+		fb.sampler_vk = backend.resources.samplers.get(fb.sampler).handle;
+
+		heap.bind_fallbacks(backend.context, fb);
+		return true;
+	}
+
+	void heap_destroy_fallbacks(Backend& backend) noexcept
+	{
+		const DescriptorHeap::Fallbacks& fb = backend.descriptor_heap.fallbacks();
+
+		// Raw teardown on purpose: the GPU is idle, the sweep must not warn about
+		// backend-owned entries, and the public destroy would trip the slot-0 assert.
+		for (const TextureHandle handle : fb.texture)
+		{
+			if (const TextureHot* hot = backend.resources.textures.try_get(handle))
+			{
+				vkDestroyImageView(backend.context.device, hot->sampled_view, nullptr);
+				vkDestroyImageView(backend.context.device, hot->storage_view, nullptr);
+				vmaDestroyImage(
+					backend.context.allocator, hot->image, backend.resources.textures.get_cold(handle).allocation);
+				(void)backend.resources.textures.erase(handle);
+			}
+		}
+
+		if (const BufferHot* hot = backend.resources.buffers.try_get(fb.buffer))
+		{
+			vmaDestroyBuffer(
+				backend.context.allocator, hot->handle, backend.resources.buffers.get_cold(fb.buffer).allocation);
+			(void)backend.resources.buffers.erase(fb.buffer);
+		}
+
+		if (const SamplerData* data = backend.resources.samplers.try_get(fb.sampler))
+		{
+			vkDestroySampler(backend.context.device, data->handle, nullptr);
+			(void)backend.resources.samplers.erase(fb.sampler);
+		}
+
+		backend.descriptor_heap.clear_fallbacks();
 	}
 }

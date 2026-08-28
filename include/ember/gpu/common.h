@@ -54,15 +54,15 @@ namespace ember
 	inline constexpr u32 ALL_MIPS			   = ~0u;
 	inline constexpr u32 ALL_LAYERS			   = ~0u;
 
-	/// The bindless heap's four arrays, as canonical logical slots. Vulkan uses
-	/// them verbatim as set-0 binding indices; shaders/ember.slang declares them;
-	/// D3D12 reaches them through the Slang target mapping (register/space
-	/// spelling differs, the identities and order do not). Contract, not user API:
-	/// user code addresses resources through handles and bindless_index() only.
-	inline constexpr u32 BINDING_SAMPLED_IMAGES	 = 0;
-	inline constexpr u32 BINDING_STORAGE_IMAGES	 = 1;
-	inline constexpr u32 BINDING_SAMPLERS		 = 2;
-	inline constexpr u32 BINDING_STORAGE_BUFFERS = 3;
+	/// The bindless heap's arrays.
+	inline constexpr u32 BINDING_SAMPLED_2D = 0;
+	inline constexpr u32 BINDING_SAMPLED_2D_ARRAY = 1;
+	inline constexpr u32 BINDING_SAMPLED_CUBE = 2;
+	inline constexpr u32 BINDING_SAMPLED_3D = 3;
+	inline constexpr u32 BINDING_STORAGE_IMAGES = 4;
+	inline constexpr u32 BINDING_SAMPLERS = 5;
+	inline constexpr u32 BINDING_STORAGE_BUFFERS = 6;
+	inline constexpr u32 SAMPLED_ARRAY_COUNT = 4; // one per TextureType
 
 #if defined(EMBER_DEBUG) || defined(EMBER_PROFILE)
 	inline constexpr bool GPU_VALIDATION_DEFAULT = true;
