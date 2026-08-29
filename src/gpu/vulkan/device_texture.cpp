@@ -278,14 +278,24 @@ namespace ember::gpu
 
 		if (cold == nullptr || !cold->owns_image)
 		{
-			EMBER_ASSERT(false && "update_texture on a stale or backbuffer handle");
+			EMBER_ERROR("gpu: update_texture on a stale or backbuffer handle");
+			return;
+		}
+
+		if (mip >= cold->mip_count || layer >= cold->layer_count)
+		{
+			EMBER_ERROR("gpu: update_texture subresource out of range (mip {}, layer {})", mip, layer);
 			return;
 		}
 
 		const Extent3D extent{cold->extent.width, cold->extent.height, cold->extent.depth};
+		const u64 expected = vk::subresource_bytes(vk::format_info(cold->api_format), extent, mip);
 
-		EMBER_ASSERT(mip < cold->mip_count && layer < cold->layer_count);
-		EMBER_ASSERT(data.size() == vk::subresource_bytes(vk::format_info(cold->api_format), extent, mip));
+		if (data.size() != expected)
+		{
+			EMBER_ERROR("gpu: update_texture data is {} bytes, mip {} needs {}", data.size(), mip, expected);
+			return;
+		}
 
 		vk::staging_update_texture(
 			*m_backend,

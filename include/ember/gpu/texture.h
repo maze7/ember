@@ -31,7 +31,6 @@ namespace ember::gpu
 		RG11B10Float,
 		RGB10A2Unorm,
 		D32Float,
-		D24UnormS8,
 		// Block-compressed.
 		BC1Unorm,
 		BC1Srgb,
@@ -87,7 +86,7 @@ namespace ember::gpu
 	/// Returns true if the provided format is a supported Depth format
 	[[nodiscard]] constexpr bool is_depth_format(TextureFormat format) noexcept
 	{
-		return format == TextureFormat::D32Float || format == TextureFormat::D24UnormS8;
+		return format == TextureFormat::D32Float;
 	}
 
 	/// Returns true if the provided format utilizes compression

@@ -47,6 +47,7 @@ namespace ember::gpu
 
 	/// One stage of a pipeline. `code` is the backend's blob (SPIR-V); one blob
 	/// may serve several stages when it carries multiple entry points.
+	/// The blob must start 4-byte aligned (SPIR-V is a stream of u32 words).
 	struct ShaderStageDef
 	{
 		Span<const u8> code = {};

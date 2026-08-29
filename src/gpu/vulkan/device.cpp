@@ -297,7 +297,8 @@ namespace ember::gpu
 	{
 		EMBER_GPU_GUARD();
 
-		// Destroy swapchains
+		// Swapchains first: their backbuffers are texture pool entries, and the
+		// texture path refuses those by design.
 		auto& swapchains = m_backend->resources.swapchains;
 		for (auto it = swapchains.begin(); it != swapchains.end();)
 		{
@@ -307,7 +308,33 @@ namespace ember::gpu
 			destroy(handle);
 		}
 
-		// Destroy buffers
+		auto& pipelines = m_backend->resources.graphics_pipelines;
+		for (auto it = pipelines.begin(); it != pipelines.end();)
+		{
+			const GraphicsPipelineHandle handle = it.handle();
+			++it;
+			EMBER_WARN("gpu: graphics pipeline leaked at device destruction");
+			destroy(handle);
+		}
+
+		auto& textures = m_backend->resources.textures;
+		for (auto it = textures.begin(); it != textures.end();)
+		{
+			const TextureHandle handle = it.handle();
+			++it;
+			EMBER_WARN("gpu: texture leaked at device destruction");
+			destroy(handle);
+		}
+
+		auto& samplers = m_backend->resources.samplers;
+		for (auto it = samplers.begin(); it != samplers.end();)
+		{
+			const SamplerHandle handle = it.handle();
+			++it;
+			EMBER_WARN("gpu: sampler leaked at device destruction");
+			destroy(handle);
+		}
+
 		auto& buffers = m_backend->resources.buffers;
 		for (auto it = buffers.begin(); it != buffers.end();)
 		{

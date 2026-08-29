@@ -87,6 +87,12 @@ namespace ember::gpu
 
 		[[nodiscard]] VkShaderModule create_module(VkDevice device, Span<const u8> code) noexcept
 		{
+			// SPIR-V is a u32 stream; a misaligned blob is UB at the reinterpret below.
+			if ((reinterpret_cast<uintptr_t>(code.data()) & 3) != 0)
+			{
+				EMBER_ERROR("gpu: shader bytecode is not 4-byte aligned");
+				return VK_NULL_HANDLE;
+			}
 			const VkShaderModuleCreateInfo info{
 				.sType	  = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 				.codeSize = code.size(),

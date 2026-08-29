@@ -40,7 +40,6 @@ namespace ember::gpu::vk
 		/* RG11B10Float */ {VK_FORMAT_B10G11R11_UFLOAT_PACK32,  1, 1,  4},
 		/* RGB10A2Unorm */ {VK_FORMAT_A2B10G10R10_UNORM_PACK32, 1, 1,  4},
 		/* D32Float     */ {VK_FORMAT_D32_SFLOAT,               1, 1,  4, VK_IMAGE_ASPECT_DEPTH_BIT},
-		/* D24UnormS8   */ {VK_FORMAT_D24_UNORM_S8_UINT,        1, 1,  4, VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT},
 		/* BC1Unorm     */ {VK_FORMAT_BC1_RGBA_UNORM_BLOCK,     4, 4,  8},
 		/* BC1Srgb      */ {VK_FORMAT_BC1_RGBA_SRGB_BLOCK,      4, 4,  8},
 		/* BC3Unorm     */ {VK_FORMAT_BC3_UNORM_BLOCK,          4, 4, 16},

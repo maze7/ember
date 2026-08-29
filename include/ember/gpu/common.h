@@ -55,16 +55,16 @@ namespace ember
 	inline constexpr u32 ALL_LAYERS			   = ~0u;
 
 	/// The bindless heap's arrays.
-	inline constexpr u32 BINDING_SAMPLED_2D = 0;
+	inline constexpr u32 BINDING_SAMPLED_2D		  = 0;
 	inline constexpr u32 BINDING_SAMPLED_2D_ARRAY = 1;
-	inline constexpr u32 BINDING_SAMPLED_CUBE = 2;
-	inline constexpr u32 BINDING_SAMPLED_3D = 3;
-	inline constexpr u32 BINDING_STORAGE_IMAGES = 4;
-	inline constexpr u32 BINDING_SAMPLERS = 5;
-	inline constexpr u32 BINDING_STORAGE_BUFFERS = 6;
-	inline constexpr u32 SAMPLED_ARRAY_COUNT = 4; // one per TextureType
+	inline constexpr u32 BINDING_SAMPLED_CUBE	  = 2;
+	inline constexpr u32 BINDING_SAMPLED_3D		  = 3;
+	inline constexpr u32 BINDING_STORAGE_IMAGES	  = 4;
+	inline constexpr u32 BINDING_SAMPLERS		  = 5;
+	inline constexpr u32 BINDING_STORAGE_BUFFERS  = 6;
+	inline constexpr u32 SAMPLED_ARRAY_COUNT	  = 4; // one per TextureType
 
-#if defined(EMBER_DEBUG) || defined(EMBER_PROFILE)
+#if defined(EMBER_DEBUG)
 	inline constexpr bool GPU_VALIDATION_DEFAULT = true;
 #else
 	inline constexpr bool GPU_VALIDATION_DEFAULT = false;
