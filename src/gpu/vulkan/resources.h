@@ -112,12 +112,12 @@ namespace ember::gpu::vk
 
 		void reserve(const DeviceLimits& limits) noexcept
 		{
-			buffers.reserve(limits.max_buffers);
-			textures.reserve(limits.max_textures);
-			samplers.reserve(limits.max_samplers);
-			graphics_pipelines.reserve(limits.max_graphics_pipelines);
-			compute_pipelines.reserve(limits.max_compute_pipelines);
-			swapchains.reserve(limits.max_swapchains);
+			buffers.init(limits.max_buffers);
+			textures.init(limits.max_textures);
+			samplers.init(limits.max_samplers);
+			graphics_pipelines.init(limits.max_graphics_pipelines);
+			compute_pipelines.init(limits.max_compute_pipelines);
+			swapchains.init(limits.max_swapchains);
 		}
 	};
 }

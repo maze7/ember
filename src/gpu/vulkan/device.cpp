@@ -39,8 +39,8 @@ namespace ember::gpu
 			for (u32 i = 0; i < backend.frame.pending_present_count; ++i)
 			{
 				const vk::SwapchainData& data =
-					backend.resources.swapchains.get(backend.frame.pending_presents[i].swapchain);
-				const vk::TextureHot& hot = backend.resources.textures.get(data.images[data.acquired_image]);
+					*backend.resources.swapchains.get(backend.frame.pending_presents[i].swapchain);
+				const vk::TextureHot& hot = *backend.resources.textures.get(data.images[data.acquired_image]);
 
 				// Acquired contents are undefined; the acquire-semaphore wait in submit_frame is
 				// scoped to COLOR_ATTACHMENT_OUTPUT, which is why both barriers pivot on that stage.
@@ -121,7 +121,7 @@ namespace ember::gpu
 
 			for (u32 i = 0; i < frame.pending_present_count; ++i)
 			{
-				const vk::SwapchainData& data = backend.resources.swapchains.get(frame.pending_presents[i].swapchain);
+				const vk::SwapchainData& data = *backend.resources.swapchains.get(frame.pending_presents[i].swapchain);
 
 				waits[wait_count++] = {
 					.sType	   = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
@@ -181,7 +181,7 @@ namespace ember::gpu
 
 			for (u32 i = 0; i < frame.pending_present_count; ++i)
 			{
-				const vk::SwapchainData& data = backend.resources.swapchains.get(frame.pending_presents[i].swapchain);
+				const vk::SwapchainData& data = *backend.resources.swapchains.get(frame.pending_presents[i].swapchain);
 
 				swapchains[i]	 = data.swapchain;
 				present_waits[i] = data.present_semaphores[data.acquired_image];
@@ -203,7 +203,7 @@ namespace ember::gpu
 			// Per-swapchain outcome: OUT_OF_DATE/SUBOPTIMAL here means recreate at next acquire.
 			for (u32 i = 0; i < frame.pending_present_count; ++i)
 				if (results[i] == VK_ERROR_OUT_OF_DATE_KHR || results[i] == VK_SUBOPTIMAL_KHR)
-					backend.resources.swapchains.get(frame.pending_presents[i].swapchain).needs_recreate = true;
+					backend.resources.swapchains.get(frame.pending_presents[i].swapchain)->needs_recreate = true;
 		}
 
 		/**
@@ -504,7 +504,7 @@ namespace ember::gpu
 		if (m_backend == nullptr)
 			return TextureFormat::Undefined;
 
-		const vk::SwapchainData* data = m_backend->resources.swapchains.try_get(handle);
+		const vk::SwapchainData* data = m_backend->resources.swapchains.get(handle);
 		if (data == nullptr)
 			return TextureFormat::Undefined;
 

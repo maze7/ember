@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <array>
-#include <concepts>
 #include <iterator>
 #include <limits>
 #include <memory_resource>
@@ -32,13 +31,16 @@ namespace
 	struct ResourceTag;
 	struct CapacityTag;
 	struct GenerationTag;
+	struct RingTag;
 	struct StressTag;
 	struct NonDefaultColdTag;
 	struct OverflowTag;
 
-	using BasicPool = Pool<BasicTag, int>;
+	using BasicPool	  = Pool<BasicTag, int>;
+	using BasicHandle = Handle<BasicTag>;
 
-	static_assert(std::is_same_v<BasicPool::HandleType, Handle<BasicTag, u16>>);
+	static_assert(std::is_same_v<BasicPool::Hot, int>);
+	static_assert(BasicPool::MAX_CAPACITY == 1u << 16);
 
 	static_assert(!std::is_copy_constructible_v<BasicPool>);
 	static_assert(!std::is_copy_assignable_v<BasicPool>);
@@ -48,11 +50,11 @@ namespace
 	static_assert(std::forward_iterator<BasicPool::Iterator>);
 	static_assert(std::forward_iterator<BasicPool::ConstIterator>);
 
-	static_assert(!std::is_same_v<BasicPool::HandleType, Pool<OtherTag, int>::HandleType>);
+	static_assert(!std::is_same_v<Handle<BasicTag>, Handle<OtherTag>>);
 
-	template <typename HandleType>
+	template <typename HandleT>
 	[[nodiscard]]
-	u64 handle_key(HandleType handle) noexcept
+	u64 handle_key(HandleT handle) noexcept
 	{
 		return static_cast<u64>(handle.to_bits());
 	}
@@ -235,7 +237,7 @@ namespace
 		size_t m_record_count = 0;
 	};
 
-	TEST(Pool, DefaultStateAndBasicRoundTrip)
+	TEST(Pool, DefaultStateRejectsEverything)
 	{
 		BasicPool values;
 
@@ -243,6 +245,21 @@ namespace
 		EXPECT_EQ(values.size(), 0u);
 		EXPECT_EQ(values.capacity(), 0u);
 		EXPECT_EQ(values.begin(), values.end());
+
+		EXPECT_TRUE(values.insert(1).is_null());
+		EXPECT_TRUE(values.emplace(2).is_null());
+		EXPECT_EQ(values.get(BasicHandle{}), nullptr);
+		EXPECT_FALSE(values.erase(BasicHandle{}));
+		EXPECT_TRUE(values.empty());
+	}
+
+	TEST(Pool, InitAndBasicRoundTrip)
+	{
+		BasicPool values;
+		values.init(8);
+
+		EXPECT_TRUE(values.empty());
+		EXPECT_EQ(values.capacity(), 8u);
 
 		int lvalue = 42;
 
@@ -254,27 +271,39 @@ namespace
 		EXPECT_EQ(values.size(), 3u);
 		EXPECT_FALSE(values.empty());
 
-		EXPECT_EQ(values.get(first), 42);
-		EXPECT_EQ(values.get(second), 7);
-		EXPECT_EQ(values.get(third), 9);
-
-		EXPECT_EQ(values.try_get(first), &values.get(first));
+		ASSERT_NE(values.get(first), nullptr);
+		EXPECT_EQ(*values.get(first), 42);
+		EXPECT_EQ(*values.get(second), 7);
+		EXPECT_EQ(*values.get(third), 9);
 
 		const BasicPool& const_values = values;
 
-		ASSERT_NE(const_values.try_get(second), nullptr);
-		EXPECT_EQ(const_values.get(second), 7);
+		ASSERT_NE(const_values.get(second), nullptr);
+		EXPECT_EQ(*const_values.get(second), 7);
+	}
+
+	TEST(Pool, FirstAllocationsAscendFromZero)
+	{
+		// The GPU layer's fallbacks claim bindless slot 0 by being the first insert.
+		BasicPool values;
+		values.init(4);
+
+		EXPECT_EQ(values.insert(1).index, 0u);
+		EXPECT_EQ(values.insert(2).index, 1u);
+		EXPECT_EQ(values.insert(3).index, 2u);
+		EXPECT_EQ(values.insert(4).index, 3u);
 	}
 
 	TEST(Pool, RejectsNullStaleWrongGenerationAndOutOfRangeHandles)
 	{
 		BasicPool values;
+		values.init(4);
 
-		const BasicPool::HandleType null_handle{};
+		const BasicHandle null_handle{};
 
 		EXPECT_TRUE(null_handle.is_null());
 		EXPECT_FALSE(values.contains(null_handle));
-		EXPECT_EQ(values.try_get(null_handle), nullptr);
+		EXPECT_EQ(values.get(null_handle), nullptr);
 		EXPECT_FALSE(values.erase(null_handle));
 
 		const auto live = values.insert(11);
@@ -286,36 +315,62 @@ namespace
 			wrong_generation.generation = 1;
 
 		EXPECT_FALSE(values.contains(wrong_generation));
-		EXPECT_EQ(values.try_get(wrong_generation), nullptr);
+		EXPECT_EQ(values.get(wrong_generation), nullptr);
 		EXPECT_FALSE(values.erase(wrong_generation));
 
-		const BasicPool::HandleType out_of_range{
+		const BasicHandle out_of_range{
 			static_cast<u16>(values.capacity()),
 			1,
 		};
 
 		EXPECT_FALSE(values.contains(out_of_range));
-		EXPECT_EQ(values.try_get(out_of_range), nullptr);
+		EXPECT_EQ(values.get(out_of_range), nullptr);
 		EXPECT_FALSE(values.erase(out_of_range));
 
 		ASSERT_TRUE(values.erase(live));
 
 		EXPECT_FALSE(values.contains(live));
-		EXPECT_EQ(values.try_get(live), nullptr);
+		EXPECT_EQ(values.get(live), nullptr);
 		EXPECT_FALSE(values.erase(live));
+	}
+
+	TEST(Pool, FullPoolReturnsNullAndRecoversAfterErase)
+	{
+		BasicPool values;
+		values.init(2);
+
+		const auto first  = values.insert(1);
+		const auto second = values.insert(2);
+
+		ASSERT_FALSE(first.is_null());
+		ASSERT_FALSE(second.is_null());
+
+		const auto refused = values.insert(3);
+
+		EXPECT_TRUE(refused.is_null());
+		EXPECT_EQ(values.size(), 2u);
+
+		ASSERT_TRUE(values.erase(first));
+
+		const auto recovered = values.insert(4);
+
+		EXPECT_FALSE(recovered.is_null());
+		EXPECT_EQ(recovered.index, first.index);
+		EXPECT_NE(recovered.generation, first.generation);
+		EXPECT_EQ(*values.get(recovered), 4);
 	}
 
 	TEST(Pool, EraseDoesNotMoveSurvivingValues)
 	{
 		BasicPool values;
-		values.reserve(16);
+		values.init(16);
 
 		const auto first  = values.insert(10);
 		const auto middle = values.insert(20);
 		const auto last	  = values.insert(30);
 
-		int* first_address = values.try_get(first);
-		int* last_address  = values.try_get(last);
+		int* first_address = values.get(first);
+		int* last_address  = values.get(last);
 
 		ASSERT_NE(first_address, nullptr);
 		ASSERT_NE(last_address, nullptr);
@@ -323,15 +378,16 @@ namespace
 		ASSERT_TRUE(values.erase(middle));
 
 		EXPECT_EQ(values.size(), 2u);
-		EXPECT_EQ(values.try_get(first), first_address);
-		EXPECT_EQ(values.try_get(last), last_address);
-		EXPECT_EQ(values.get(first), 10);
-		EXPECT_EQ(values.get(last), 30);
+		EXPECT_EQ(values.get(first), first_address);
+		EXPECT_EQ(values.get(last), last_address);
+		EXPECT_EQ(*values.get(first), 10);
+		EXPECT_EQ(*values.get(last), 30);
 	}
 
 	TEST(Pool, ReusesErasedSlotsWithNewGenerations)
 	{
 		BasicPool values;
+		values.init(1);
 
 		const auto original = values.insert(11);
 
@@ -344,12 +400,13 @@ namespace
 
 		EXPECT_FALSE(values.contains(original));
 		EXPECT_TRUE(values.contains(replacement));
-		EXPECT_EQ(values.get(replacement), 22);
+		EXPECT_EQ(*values.get(replacement), 22);
 	}
 
-	TEST(Pool, FreeListIsLastFreedFirst)
+	TEST(Pool, FreeRingIsFifo)
 	{
 		BasicPool values;
+		values.init(3);
 
 		const auto first  = values.insert(1);
 		const auto second = values.insert(2);
@@ -362,37 +419,69 @@ namespace
 		ASSERT_TRUE(values.erase(first));
 		ASSERT_TRUE(values.erase(third));
 
-		EXPECT_EQ(values.insert(4).index, third.index);
-		EXPECT_EQ(values.insert(5).index, first.index);
-		EXPECT_EQ(values.insert(6).index, 3u);
+		// Oldest free slot first.
+		EXPECT_EQ(values.insert(4).index, first.index);
+		EXPECT_EQ(values.insert(5).index, third.index);
+		EXPECT_TRUE(values.insert(6).is_null());
 	}
 
-	TEST(Pool, ExplicitGrowthUsesFreshSlotsBeforeRecycledSlots)
+	TEST(Pool, FifoCyclesThroughVirginSlotsBeforeRecycledOnes)
 	{
 		BasicPool values;
-		values.reserve(16);
+		values.init(4);
 
-		const auto erased	= values.insert(1);
-		const auto survivor = values.insert(2);
+		const auto a = values.insert(1);
+		(void)values.insert(2);
 
-		ASSERT_TRUE(values.erase(erased));
+		ASSERT_TRUE(values.erase(a));
 
-		values.reserve(17);
+		// Slots 2 and 3 were queued at init and are older than the freed slot 0.
+		EXPECT_EQ(values.insert(3).index, 2u);
+		EXPECT_EQ(values.insert(4).index, 3u);
+		EXPECT_EQ(values.insert(5).index, a.index);
+	}
 
-		EXPECT_EQ(values.capacity(), 32u);
-		EXPECT_EQ(values.get(survivor), 2);
+	TEST(Pool, RingSeamWrapsCleanly)
+	{
+		Pool<RingTag, int> values;
+		values.init(3);
 
-		const auto first_fresh	= values.insert(3);
-		const auto second_fresh = values.insert(4);
+		auto a = values.insert(0);
+		auto b = values.insert(1);
+		auto c = values.insert(2);
 
-		EXPECT_EQ(first_fresh.index, 16u);
-		EXPECT_EQ(second_fresh.index, 17u);
-		EXPECT_FALSE(values.contains(erased));
+		ASSERT_FALSE(a.is_null() || b.is_null() || c.is_null());
+
+		// One-in-one-out on a full pool reuses the just-freed slot every cycle,
+		// walking the ring head across the seam repeatedly.
+		auto oldest = a;
+
+		for (int cycle = 0; cycle < 10; ++cycle)
+		{
+			const u16 freed_index = oldest.index;
+
+			ASSERT_TRUE(values.erase(oldest));
+
+			const auto replacement = values.insert(100 + cycle);
+
+			ASSERT_FALSE(replacement.is_null());
+			EXPECT_EQ(replacement.index, freed_index);
+			EXPECT_EQ(*values.get(replacement), 100 + cycle);
+			EXPECT_EQ(values.size(), 3u);
+
+			oldest = cycle % 3 == 0 ? b : (cycle % 3 == 1 ? c : replacement);
+
+			if (cycle % 3 == 0)
+				b = replacement;
+			else if (cycle % 3 == 1)
+				c = replacement;
+		}
 	}
 
 	TEST(Pool, ClearInvalidatesHandlesAndRetainsAllocation)
 	{
 		BasicPool values;
+		values.init(8);
 
 		const auto first		  = values.insert(1);
 		const auto second		  = values.insert(2);
@@ -410,7 +499,7 @@ namespace
 
 		EXPECT_EQ(replacement.index, 0u);
 		EXPECT_NE(replacement.generation, first.generation);
-		EXPECT_EQ(values.get(replacement), 3);
+		EXPECT_EQ(*values.get(replacement), 3);
 		EXPECT_EQ(values.capacity(), capacity_before);
 
 		values.clear();
@@ -423,6 +512,7 @@ namespace
 	TEST(Pool, IterationSkipsHolesAndProducesMatchingHandles)
 	{
 		BasicPool values;
+		values.init(8);
 
 		const auto erased_first	 = values.insert(10);
 		const auto first_live	 = values.insert(20);
@@ -445,15 +535,15 @@ namespace
 			const auto handle = iterator.handle();
 
 			EXPECT_TRUE(values.contains(handle));
-			EXPECT_EQ(values.try_get(handle), &*iterator);
+			EXPECT_EQ(values.get(handle), &*iterator);
 
 			*iterator += 1;
 			++visited_count;
 		}
 
 		EXPECT_EQ(visited_count, values.size());
-		EXPECT_EQ(values.get(first_live), 21);
-		EXPECT_EQ(values.get(second_live), 41);
+		EXPECT_EQ(*values.get(first_live), 21);
+		EXPECT_EQ(*values.get(second_live), 41);
 
 		auto iterator = values.begin();
 		auto previous = iterator++;
@@ -466,87 +556,57 @@ namespace
 		EXPECT_EQ(std::count(const_values.begin(), const_values.end(), 41), 1);
 	}
 
-	TEST(Pool, GrowthPreservesAllHandlesAndValues)
-	{
-		BasicPool values;
-		std::vector<BasicPool::HandleType> handles;
-
-		for (int value = 0; value < 1000; ++value)
-			handles.push_back(values.insert(value * 3));
-
-		EXPECT_GE(values.capacity(), 1000u);
-		EXPECT_EQ(values.size(), 1000u);
-
-		for (u32 i = 0; i < handles.size(); ++i)
-		{
-			ASSERT_TRUE(values.contains(handles[i]));
-			EXPECT_EQ(values.get(handles[i]), static_cast<int>(i) * 3);
-		}
-	}
-
-	TEST(Pool, ReservePreventsInsertionGrowthAndNeverShrinks)
-	{
-		BasicPool values;
-
-		values.reserve(100);
-
-		const u32 reserved_capacity = values.capacity();
-
-		EXPECT_GE(reserved_capacity, 100u);
-
-		for (int value = 0; value < 100; ++value)
-		{
-			const auto handle = values.insert(value);
-
-			EXPECT_EQ(values.get(handle), value);
-			EXPECT_EQ(values.capacity(), reserved_capacity);
-		}
-
-		values.reserve(1);
-		values.reserve(reserved_capacity);
-
-		EXPECT_EQ(values.capacity(), reserved_capacity);
-	}
-
-	TEST(Pool, GrowthMaterializesAliasedLvalueBeforeRelocation)
+	TEST(Pool, AliasedInsertCopiesFromPoolStorageAndFullInsertConstructsNothing)
 	{
 		TrackedValue::reset();
 
 		{
 			Pool<AliasTag, TrackedValue> values;
-			values.reserve(16);
+			values.init(16);
 
-			std::vector<Pool<AliasTag, TrackedValue>::HandleType> handles;
+			std::vector<Handle<AliasTag>> handles;
 
-			for (int value = 0; value < 16; ++value)
+			for (int value = 0; value < 15; ++value)
 				handles.push_back(values.emplace(value));
-
-			ASSERT_EQ(values.size(), values.capacity());
 
 			const auto source = handles.front();
 
-			const auto copied = values.insert(values.get(source));
+			// Copying out of pool storage into the last free slot.
+			const auto copied = values.insert(*values.get(source));
 
-			EXPECT_EQ(values.get(source).value, 0);
-			EXPECT_EQ(values.get(source).text, "0");
-			EXPECT_EQ(values.get(copied).value, 0);
-			EXPECT_EQ(values.get(copied).text, "0");
+			ASSERT_FALSE(copied.is_null());
+			ASSERT_EQ(values.size(), values.capacity());
+
+			EXPECT_EQ(values.get(source)->value, 0);
+			EXPECT_EQ(values.get(source)->text, "0");
+			EXPECT_EQ(values.get(copied)->value, 0);
+			EXPECT_EQ(values.get(copied)->text, "0");
 			EXPECT_GE(TrackedValue::copies, 1);
+
+			// A refused insert runs no constructor and no destructor.
+			const int constructions_before = TrackedValue::constructions;
+			const int live_before		   = TrackedValue::live;
+
+			const auto refused = values.insert(*values.get(source));
+
+			EXPECT_TRUE(refused.is_null());
+			EXPECT_EQ(TrackedValue::constructions, constructions_before);
+			EXPECT_EQ(TrackedValue::live, live_before);
 		}
 
 		EXPECT_EQ(TrackedValue::live, 0);
 		EXPECT_EQ(TrackedValue::constructions, TrackedValue::destructions);
 	}
 
-	TEST(Pool, NonTrivialRelocationMovesOnlyLiveSlots)
+	TEST(Pool, FixedStorageNeverMovesValues)
 	{
 		TrackedValue::reset();
 
 		{
 			Pool<LifetimeTag, TrackedValue> values;
-			std::vector<Pool<LifetimeTag, TrackedValue>::HandleType> handles;
+			values.init(16);
 
-			values.reserve(16);
+			std::vector<Handle<LifetimeTag>> handles;
 
 			for (int value = 0; value < 16; ++value)
 				handles.push_back(values.emplace(value));
@@ -554,20 +614,12 @@ namespace
 			for (u32 index = 0; index < handles.size(); index += 2)
 				ASSERT_TRUE(values.erase(handles[index]));
 
-			const int live_before  = TrackedValue::live;
-			const int moves_before = TrackedValue::moves;
-
-			values.reserve(64);
-
-			EXPECT_EQ(TrackedValue::live, live_before);
-			EXPECT_EQ(TrackedValue::moves - moves_before, live_before);
-
 			for (u32 index = 0; index < handles.size(); ++index)
 			{
 				if (index % 2 == 0)
 					EXPECT_FALSE(values.contains(handles[index]));
 				else
-					EXPECT_EQ(values.get(handles[index]).value, static_cast<int>(index));
+					EXPECT_EQ(values.get(handles[index])->value, static_cast<int>(index));
 			}
 
 			values.clear();
@@ -575,8 +627,11 @@ namespace
 
 			const auto reused = values.emplace(99);
 
-			EXPECT_EQ(values.get(reused).text, "99");
+			EXPECT_EQ(values.get(reused)->text, "99");
 			EXPECT_EQ(TrackedValue::live, 1);
+
+			EXPECT_EQ(TrackedValue::moves, 0);
+			EXPECT_EQ(TrackedValue::copies, 0);
 		}
 
 		EXPECT_EQ(TrackedValue::live, 0);
@@ -586,42 +641,43 @@ namespace
 	TEST(Pool, HotAndColdStreamsShareOneHandle)
 	{
 		TexturePool textures;
+		textures.init(8);
 
 		const auto albedo = textures.insert(TextureHot{7}, TextureCold{16, 32, "albedo"});
 
 		const auto normal = textures.emplace(TextureHot{9});
 
-		EXPECT_EQ(textures.get(albedo).backend_id, 7u);
-		EXPECT_EQ(textures.get_cold(albedo).width, 16u);
-		EXPECT_EQ(textures.get_cold(albedo).height, 32u);
-		EXPECT_EQ(textures.get_cold(albedo).debug_name, "albedo");
+		EXPECT_EQ(textures.get(albedo)->backend_id, 7u);
+		EXPECT_EQ(textures.get_cold(albedo)->width, 16u);
+		EXPECT_EQ(textures.get_cold(albedo)->height, 32u);
+		EXPECT_EQ(textures.get_cold(albedo)->debug_name, "albedo");
 
 		// emplace() value-initializes the cold stream.
-		EXPECT_EQ(textures.get(normal).backend_id, 9u);
-		EXPECT_EQ(textures.get_cold(normal).width, 0u);
-		EXPECT_EQ(textures.get_cold(normal).height, 0u);
-		EXPECT_TRUE(textures.get_cold(normal).debug_name.empty());
+		EXPECT_EQ(textures.get(normal)->backend_id, 9u);
+		EXPECT_EQ(textures.get_cold(normal)->width, 0u);
+		EXPECT_EQ(textures.get_cold(normal)->height, 0u);
+		EXPECT_TRUE(textures.get_cold(normal)->debug_name.empty());
 
-		textures.get_cold(normal).debug_name = "normal";
+		textures.get_cold(normal)->debug_name = "normal";
 
 		const TexturePool& const_textures = textures;
 
-		ASSERT_NE(const_textures.try_get_cold(normal), nullptr);
+		ASSERT_NE(const_textures.get_cold(normal), nullptr);
 
-		EXPECT_EQ(const_textures.get_cold(normal).debug_name, "normal");
+		EXPECT_EQ(const_textures.get_cold(normal)->debug_name, "normal");
 
 		ASSERT_TRUE(textures.erase(albedo));
 
-		EXPECT_EQ(textures.try_get(albedo), nullptr);
-		EXPECT_EQ(textures.try_get_cold(albedo), nullptr);
+		EXPECT_EQ(textures.get(albedo), nullptr);
+		EXPECT_EQ(textures.get_cold(albedo), nullptr);
 	}
 
-	TEST(Pool, HotAndColdAliasingIsSafeDuringGrowth)
+	TEST(Pool, HotAndColdAliasingIsSafeAtFullCapacity)
 	{
 		TexturePool textures;
-		textures.reserve(16);
+		textures.init(17);
 
-		std::vector<TexturePool::HandleType> handles;
+		std::vector<Handle<TextureTag>> handles;
 
 		for (u32 index = 0; index < 16; ++index)
 		{
@@ -634,34 +690,37 @@ namespace
 				}));
 		}
 
-		ASSERT_EQ(textures.size(), textures.capacity());
-
 		const auto source = handles.front();
 
-		const auto copy = textures.insert(textures.get(source), textures.get_cold(source));
+		const auto copy = textures.insert(*textures.get(source), *textures.get_cold(source));
 
-		EXPECT_EQ(textures.get(source).backend_id, 0u);
-		EXPECT_EQ(textures.get_cold(source).debug_name, "0");
+		ASSERT_FALSE(copy.is_null());
+		ASSERT_EQ(textures.size(), textures.capacity());
 
-		EXPECT_EQ(textures.get(copy).backend_id, 0u);
-		EXPECT_EQ(textures.get_cold(copy).width, 1u);
-		EXPECT_EQ(textures.get_cold(copy).height, 2u);
-		EXPECT_EQ(textures.get_cold(copy).debug_name, "0");
+		EXPECT_EQ(textures.get(source)->backend_id, 0u);
+		EXPECT_EQ(textures.get_cold(source)->debug_name, "0");
+
+		EXPECT_EQ(textures.get(copy)->backend_id, 0u);
+		EXPECT_EQ(textures.get_cold(copy)->width, 1u);
+		EXPECT_EQ(textures.get_cold(copy)->height, 2u);
+		EXPECT_EQ(textures.get_cold(copy)->debug_name, "0");
 	}
 
 	TEST(Pool, ExplicitColdInsertionSupportsNonDefaultColdTypes)
 	{
 		Pool<NonDefaultColdTag, int, NonDefaultCold> values;
+		values.init(1);
 
 		const auto handle = values.insert(12, NonDefaultCold{34});
 
-		EXPECT_EQ(values.get(handle), 12);
-		EXPECT_EQ(values.get_cold(handle).value, 34);
+		EXPECT_EQ(*values.get(handle), 12);
+		EXPECT_EQ(values.get_cold(handle)->value, 34);
 	}
 
-	TEST(Pool, MoveConstructionAssignmentAndSelfMovePreserveStorage)
+	TEST(Pool, MovedFromPoolIsEmptyAndCanBeReinitialized)
 	{
 		BasicPool source;
+		source.init(8);
 
 		const auto first  = source.insert(101);
 		const auto second = source.insert(202);
@@ -670,28 +729,34 @@ namespace
 
 		EXPECT_TRUE(source.empty());
 		EXPECT_EQ(source.capacity(), 0u);
-		EXPECT_EQ(moved.get(first), 101);
-		EXPECT_EQ(moved.get(second), 202);
+		EXPECT_EQ(*moved.get(first), 101);
+		EXPECT_EQ(*moved.get(second), 202);
+
+		// A moved-from pool has no storage; inserts refuse until init runs again.
+		EXPECT_TRUE(source.insert(303).is_null());
+
+		source.init(4);
+
+		const auto reused_source = source.insert(303);
+
+		EXPECT_EQ(*source.get(reused_source), 303);
 
 		BasicPool assigned;
+		assigned.init(4);
 		(void)assigned.insert(-1);
 
 		assigned = std::move(moved);
 
 		EXPECT_TRUE(moved.empty());
 		EXPECT_EQ(moved.capacity(), 0u);
-		EXPECT_EQ(assigned.get(first), 101);
-		EXPECT_EQ(assigned.get(second), 202);
+		EXPECT_EQ(*assigned.get(first), 101);
+		EXPECT_EQ(*assigned.get(second), 202);
 
 		BasicPool& self = assigned;
-		assigned = std::move(self);
+		assigned		= std::move(self);
 
-		EXPECT_EQ(assigned.get(first), 101);
-		EXPECT_EQ(assigned.get(second), 202);
-
-		const auto reused_source = source.insert(303);
-
-		EXPECT_EQ(source.get(reused_source), 303);
+		EXPECT_EQ(*assigned.get(first), 101);
+		EXPECT_EQ(*assigned.get(second), 202);
 	}
 
 	TEST(Pool, UsesOneAlignedPmrBlockAndBalancedDeallocation)
@@ -701,7 +766,7 @@ namespace
 		{
 			Pool<ResourceTag, OverAlignedHot, OverAlignedCold> values(resource, MemoryTag::Graphics);
 
-			values.reserve(17);
+			values.init(17);
 
 			EXPECT_EQ(resource.allocation_count, 1u);
 			EXPECT_EQ(resource.deallocation_count, 0u);
@@ -714,20 +779,14 @@ namespace
 
 			EXPECT_EQ(resource.allocation_count, allocations_before_insert);
 
-			ASSERT_NE(values.try_get(handle), nullptr);
-			ASSERT_NE(values.try_get_cold(handle), nullptr);
+			ASSERT_NE(values.get(handle), nullptr);
+			ASSERT_NE(values.get_cold(handle), nullptr);
 
-			EXPECT_TRUE(ember::is_aligned(values.try_get(handle), alignof(OverAlignedHot)));
+			EXPECT_TRUE(ember::is_aligned(values.get(handle), alignof(OverAlignedHot)));
+			EXPECT_TRUE(ember::is_aligned(values.get_cold(handle), alignof(OverAlignedCold)));
 
-			EXPECT_TRUE(ember::is_aligned(values.try_get_cold(handle), alignof(OverAlignedCold)));
-
-			values.reserve(65);
-
-			EXPECT_EQ(resource.allocation_count, 2u);
-			EXPECT_EQ(resource.deallocation_count, 1u);
-			EXPECT_EQ(resource.outstanding, 1u);
-			EXPECT_EQ(values.get(handle).value, 11u);
-			EXPECT_EQ(values.get_cold(handle).value, 22u);
+			EXPECT_EQ(values.get(handle)->value, 11u);
+			EXPECT_EQ(values.get_cold(handle)->value, 22u);
 		}
 
 		EXPECT_EQ(resource.allocation_count, resource.deallocation_count);
@@ -743,8 +802,10 @@ namespace
 
 		{
 			Pool<ResourceTag, int> source(source_resource, MemoryTag::Graphics);
+			source.init(4);
 
 			Pool<ResourceTag, int> destination(destination_resource, MemoryTag::Audio);
+			destination.init(4);
 
 			const auto source_handle = source.insert(123);
 			(void)destination.insert(456);
@@ -756,7 +817,7 @@ namespace
 
 			EXPECT_TRUE(source.empty());
 			EXPECT_EQ(source.capacity(), 0u);
-			EXPECT_EQ(destination.get(source_handle), 123);
+			EXPECT_EQ(*destination.get(source_handle), 123);
 
 			// Destination's previous allocation was released through its
 			// original resource.
@@ -772,10 +833,10 @@ namespace
 
 	TEST(Pool, FillsEntireRepresentableIndexSpace)
 	{
-		constexpr u32 maximum = std::numeric_limits<u16>::max();
+		constexpr u32 maximum = Pool<CapacityTag, u32>::MAX_CAPACITY;
 
 		Pool<CapacityTag, u32> values;
-		values.reserve(maximum);
+		values.init(maximum);
 
 		EXPECT_EQ(values.capacity(), maximum);
 
@@ -788,8 +849,10 @@ namespace
 		EXPECT_EQ(values.size(), maximum);
 		EXPECT_EQ(first.index, 0u);
 		EXPECT_EQ(last.index, maximum - 1);
-		EXPECT_EQ(values.get(first), 0u);
-		EXPECT_EQ(values.get(last), maximum - 1);
+		EXPECT_EQ(*values.get(first), 0u);
+		EXPECT_EQ(*values.get(last), maximum - 1);
+
+		EXPECT_TRUE(values.insert(0u).is_null());
 	}
 
 	TEST(Pool, GenerationWrapBoundIsExplicit)
@@ -797,6 +860,7 @@ namespace
 		constexpr u32 maximum_generation = std::numeric_limits<u16>::max();
 
 		Pool<GenerationTag, int> values;
+		values.init(1);
 
 		const auto original = values.insert(1);
 
@@ -821,7 +885,36 @@ namespace
 		EXPECT_EQ(wrapped.generation, original.generation);
 
 		EXPECT_TRUE(values.contains(original));
-		EXPECT_EQ(values.get(original), 999);
+		EXPECT_EQ(*values.get(original), 999);
+	}
+
+	TEST(Pool, ForgedHandleCannotCorruptTheFreeRing)
+	{
+		BasicPool values;
+		values.init(2);
+
+		const auto live = values.insert(1);
+
+		// Wrong generation against a live slot fails on the compare.
+		auto forged = live;
+		++forged.generation;
+
+		if (forged.generation == 0)
+			forged.generation = 1;
+
+		EXPECT_FALSE(values.erase(forged));
+
+		ASSERT_TRUE(values.erase(live));
+
+		// The freed slot now holds the forged generation; the live test is what
+		// keeps this erase from double-pushing the index.
+		EXPECT_FALSE(values.erase(forged));
+		EXPECT_FALSE(values.contains(forged));
+
+		// Exactly two slots remain allocatable: the ring was not corrupted.
+		EXPECT_FALSE(values.insert(2).is_null());
+		EXPECT_FALSE(values.insert(3).is_null());
+		EXPECT_TRUE(values.insert(4).is_null());
 	}
 
 	TEST(Pool, RandomizedOperationsMatchReferenceModel)
@@ -831,9 +924,11 @@ namespace
 		constexpr u32 maximum_capacity = 4'096;
 
 		using StressPool   = Pool<StressTag, int>;
-		using StressHandle = StressPool::HandleType;
+		using StressHandle = Handle<StressTag>;
 
 		StressPool values;
+		values.init(maximum_capacity);
+
 		std::vector<StressHandle> live_handles;
 		std::vector<StressHandle> stale_handles;
 		std::unordered_map<u64, int> reference;
@@ -863,14 +958,14 @@ namespace
 				const auto found = reference.find(handle_key(handle));
 
 				ASSERT_NE(found, reference.end());
-				ASSERT_NE(values.try_get(handle), nullptr);
-				EXPECT_EQ(values.get(handle), found->second);
+				ASSERT_NE(values.get(handle), nullptr);
+				EXPECT_EQ(*values.get(handle), found->second);
 			}
 
 			for (const StressHandle handle : stale_handles)
 			{
 				EXPECT_FALSE(values.contains(handle));
-				EXPECT_EQ(values.try_get(handle), nullptr);
+				EXPECT_EQ(values.get(handle), nullptr);
 			}
 		};
 
@@ -883,11 +978,13 @@ namespace
 				const int value			  = operation * 17 + 3;
 				const StressHandle handle = values.insert(value);
 
+				ASSERT_FALSE(handle.is_null());
+
 				live_handles.push_back(handle);
 
 				ASSERT_TRUE(reference.emplace(handle_key(handle), value).second);
 			}
-			else if (choice < 82)
+			else if (choice < 85)
 			{
 				const size_t index = static_cast<size_t>(random()) % live_handles.size();
 
@@ -903,17 +1000,7 @@ namespace
 
 				live_handles.pop_back();
 			}
-			else if (choice < 88)
-			{
-				if (values.capacity() < maximum_capacity)
-				{
-					const u32 requested =
-						std::min(maximum_capacity, values.capacity() + 1u + static_cast<u32>(random() % 256u));
-
-					values.reserve(requested);
-				}
-			}
-			else if (choice < 93)
+			else if (choice < 90)
 			{
 				if (!live_handles.empty() && stale_handles.size() < 256)
 				{
@@ -932,7 +1019,7 @@ namespace
 
 				const int replacement = -operation - 1;
 
-				values.get(handle)				 = replacement;
+				*values.get(handle)				 = replacement;
 				reference.at(handle_key(handle)) = replacement;
 			}
 
@@ -943,53 +1030,59 @@ namespace
 		validate();
 	}
 
-	TEST(PoolDeathTest, CapacityAboveIndexLimitIsFatal)
+#ifndef NDEBUG
+	TEST(PoolDeathTest, InitTwiceIsFatal)
+	{
+		EXPECT_DEATH(
+			{
+				BasicPool values;
+				values.init(4);
+				values.init(4);
+			},
+			"assert");
+	}
+
+	TEST(PoolDeathTest, InitWithZeroCapacityIsFatal)
+	{
+		EXPECT_DEATH(
+			{
+				BasicPool values;
+				values.init(0);
+			},
+			"assert");
+	}
+
+	TEST(PoolDeathTest, InitAboveIndexLimitIsFatal)
 	{
 		using OverflowPool = Pool<OverflowTag, u32>;
-
-		constexpr u32 invalid_capacity = static_cast<u32>(std::numeric_limits<u16>::max()) + 1u;
 
 		EXPECT_DEATH(
 			{
 				OverflowPool values;
-				values.reserve(invalid_capacity);
-			},
-			"Out of memory");
-	}
-
-#ifndef NDEBUG
-	TEST(PoolDeathTest, GetRejectsNullHandle)
-	{
-		EXPECT_DEATH(
-			{
-				BasicPool values;
-				(void)values.get({});
+				values.init(OverflowPool::MAX_CAPACITY + 1u);
 			},
 			"assert");
 	}
 
-	TEST(PoolDeathTest, GetRejectsStaleHandle)
+	TEST(PoolDeathTest, GetTrapsForgedHandleToFreedSlot)
 	{
+		// A handle forged to the generation a freed slot currently holds passes
+		// the compare; the debug assert on the live bit is what catches it.
 		EXPECT_DEATH(
 			{
 				BasicPool values;
+				values.init(1);
+
 				const auto handle = values.insert(1);
-				(void)values.erase(handle);
-				(void)values.get(handle);
-			},
-			"assert");
-	}
 
-	TEST(PoolDeathTest, GetColdRejectsStaleHandle)
-	{
-		EXPECT_DEATH(
-			{
-				TexturePool values;
+				auto forged = handle;
+				++forged.generation;
 
-				const auto handle = values.insert(TextureHot{1}, TextureCold{1, 1, "stale"});
+				if (forged.generation == 0)
+					forged.generation = 1;
 
 				(void)values.erase(handle);
-				(void)values.get_cold(handle);
+				(void)values.get(forged);
 			},
 			"assert");
 	}

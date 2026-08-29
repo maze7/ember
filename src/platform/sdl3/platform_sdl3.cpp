@@ -313,8 +313,8 @@ namespace ember
 				return;
 			}
 
-			windows.reserve(8);
-			cursors.reserve(16);
+			windows.init(8);
+			cursors.init(16);
 			windows_by_id.reserve(8);
 
 			initialized = true;
@@ -839,7 +839,7 @@ namespace ember
 
 		EMBER_ASSERT(m_impl->is_owner_thread());
 
-		SdlWindow* window = m_impl->windows.try_get(handle);
+		SdlWindow* window = m_impl->windows.get(handle);
 
 		if (window == nullptr)
 			return {};
@@ -870,7 +870,7 @@ namespace ember
 		if (!m_impl->is_owner_thread())
 			return;
 
-		auto* window = m_impl->windows.try_get(handle);
+		auto* window = m_impl->windows.get(handle);
 
 		if (window == nullptr)
 		{
@@ -892,7 +892,7 @@ namespace ember
 		if (!m_impl->is_owner_thread())
 			return;
 
-		auto* window = m_impl->windows.try_get(handle);
+		auto* window = m_impl->windows.get(handle);
 
 		if (window == nullptr)
 		{
@@ -916,7 +916,7 @@ namespace ember
 		if (!m_impl->is_owner_thread())
 			return;
 
-		auto* window = m_impl->windows.try_get(handle);
+		auto* window = m_impl->windows.get(handle);
 
 		if (window == nullptr)
 		{
@@ -949,7 +949,7 @@ namespace ember
 		if (!m_impl->is_owner_thread())
 			return;
 
-		auto* window = m_impl->windows.try_get(handle);
+		auto* window = m_impl->windows.get(handle);
 
 		if (window == nullptr)
 		{
@@ -1151,7 +1151,7 @@ namespace ember
 		if (!m_impl->is_owner_thread())
 			return;
 
-		SdlCursor* native = m_impl->cursors.try_get(cursor);
+		SdlCursor* native = m_impl->cursors.get(cursor);
 
 		if (native == nullptr)
 		{
@@ -1223,7 +1223,7 @@ namespace ember
 		if (!m_impl->is_owner_thread())
 			return;
 
-		auto* window = m_impl->windows.try_get(handle);
+		auto* window = m_impl->windows.get(handle);
 
 		if (window == nullptr)
 		{
@@ -1245,7 +1245,7 @@ namespace ember
 		if (!m_impl->is_owner_thread())
 			return;
 
-		auto* window = m_impl->windows.try_get(handle);
+		auto* window = m_impl->windows.get(handle);
 
 		if (window == nullptr)
 		{
@@ -1323,7 +1323,7 @@ namespace ember
 		if (m_impl == nullptr || !m_impl->is_owner_thread())
 			return {};
 
-		auto* window = m_impl->windows.try_get(handle);
+		auto* window = m_impl->windows.get(handle);
 
 		if (window == nullptr)
 			return {};

@@ -118,7 +118,7 @@ namespace ember::gpu
 	{
 		EMBER_GPU_GUARD();
 
-		vk::SamplerData* data = m_backend->resources.samplers.try_get(handle);
+		vk::SamplerData* data = m_backend->resources.samplers.get(handle);
 		if (data == nullptr)
 			return;
 

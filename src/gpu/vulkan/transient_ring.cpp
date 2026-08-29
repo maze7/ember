@@ -138,7 +138,7 @@ namespace ember::gpu::vk
 		// The ring serves Storage data, so it takes a bindless slot like any other
 		// storage buffer; set 1's constant descriptors point at it once.
 		{
-			const BufferHot& hot = backend.resources.buffers.get(ring.handle);
+			const BufferHot& hot = *backend.resources.buffers.get(ring.handle);
 			backend.descriptor_heap.write_buffer(
 				backend.context, ring.handle.index, hot.handle, slice * backend.context.frames_in_flight);
 			backend.descriptor_heap.bind_constants(
@@ -158,7 +158,7 @@ namespace ember::gpu::vk
 		// No lock: the caller guarantees the GPU is idle and every worker has stopped.
 		const auto release = [&backend](TransientPage& page)
 		{
-			if (const BufferHot* hot = backend.resources.buffers.try_get(page.handle))
+			if (const BufferHot* hot = backend.resources.buffers.get(page.handle))
 			{
 				vmaDestroyBuffer(backend.context.allocator, hot->handle, page.allocation);
 				(void)backend.resources.buffers.erase(page.handle);

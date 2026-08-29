@@ -125,13 +125,13 @@ namespace ember::gpu
 		}
 
 		const VkImageCreateInfo image_info{
-			.sType		   = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-			.flags		   = def.type == TextureType::TextureCube ? VkImageCreateFlags{VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT}
-																  : VkImageCreateFlags{},
-			.imageType	   = to_vk_type(def.type),
-			.format		   = info.vk,
-			.extent		   = {def.extent.width, def.extent.height, def.extent.depth},
-			.mipLevels	   = def.mip_count,
+			.sType	   = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+			.flags	   = def.type == TextureType::TextureCube ? VkImageCreateFlags{VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT}
+															  : VkImageCreateFlags{},
+			.imageType = to_vk_type(def.type),
+			.format	   = info.vk,
+			.extent	   = {def.extent.width, def.extent.height, def.extent.depth},
+			.mipLevels = def.mip_count,
 			.arrayLayers   = def.layers,
 			.samples	   = static_cast<VkSampleCountFlagBits>(def.sample_count),
 			.tiling		   = VK_IMAGE_TILING_OPTIMAL,
@@ -244,11 +244,11 @@ namespace ember::gpu
 	{
 		EMBER_GPU_GUARD();
 
-		vk::TextureHot* hot = m_backend->resources.textures.try_get(handle);
+		vk::TextureHot* hot = m_backend->resources.textures.get(handle);
 		if (hot == nullptr)
 			return;
 
-		const vk::TextureCold& cold = m_backend->resources.textures.get_cold(handle);
+		const vk::TextureCold& cold = *m_backend->resources.textures.get_cold(handle);
 		if (!cold.owns_image)
 		{
 			EMBER_ASSERT(false && "backbuffers are destroyed through their swapchain");
@@ -274,7 +274,7 @@ namespace ember::gpu
 		if (data.empty())
 			return;
 
-		const vk::TextureCold* cold = m_backend->resources.textures.try_get_cold(handle);
+		const vk::TextureCold* cold = m_backend->resources.textures.get_cold(handle);
 
 		if (cold == nullptr || !cold->owns_image)
 		{
@@ -290,7 +290,7 @@ namespace ember::gpu
 		vk::staging_update_texture(
 			*m_backend,
 			{
-				.image		 = m_backend->resources.textures.get(handle).image,
+				.image		 = m_backend->resources.textures.get(handle)->image,
 				.format		 = cold->api_format,
 				.extent		 = extent,
 				.mip_count	 = cold->mip_count,

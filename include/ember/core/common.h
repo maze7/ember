@@ -1,11 +1,11 @@
 #pragma once
 
 #include <ankerl/unordered_dense.h>
+#include <array>
 #include <cstdint>
 #include <span>
 #include <string>
 #include <vector>
-#include <array>
 
 #if defined(_MSC_VER)
 	#define EMBER_INLINE __inline
@@ -81,8 +81,8 @@ namespace ember
 
 	// PMR containers
 	template <typename T> using Vector = std::pmr::vector<T>;
-	using String	 = std::pmr::string;
-	using StringView = std::string_view;
+	using String					   = std::pmr::string;
+	using StringView				   = std::string_view;
 
 	template <typename K, typename V, typename Hash = ankerl::unordered_dense::hash<K>>
 

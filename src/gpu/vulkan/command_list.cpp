@@ -1,7 +1,6 @@
-#include "ember/core/common.h"
-#include "ember/gpu/common.h"
-#include "ember/memory/common.h"
+#include <ember/core/common.h>
 #include <ember/gpu/command_list.h>
+#include <ember/gpu/common.h>
 #include <ember/gpu/device.h>
 #include <gpu/vulkan/backend.h>
 #include <gpu/vulkan/formats.h>
@@ -89,14 +88,14 @@ namespace ember::gpu
 		{
 			EMBER_ASSERT(barrier.after != TextureState::Undefined && "cannot transition into garbage");
 
-			const vk::TextureHot* hot = m_backend->resources.textures.try_get(barrier.texture);
+			const vk::TextureHot* hot = m_backend->resources.textures.get(barrier.texture);
 			if (hot == nullptr)
 			{
 				EMBER_ASSERT(false && "barrier on a stale texture handle");
 				continue;
 			}
 
-			const vk::TextureCold& cold = m_backend->resources.textures.get_cold(barrier.texture);
+			const vk::TextureCold& cold = *m_backend->resources.textures.get_cold(barrier.texture);
 			const StateInfo src			= state_info(barrier.before);
 			const StateInfo dst			= state_info(barrier.after);
 
@@ -167,8 +166,8 @@ namespace ember::gpu
 		for (u32 i = 0; i < def.colors.size(); ++i)
 		{
 			const ColorAttachment& attachment = def.colors[i];
-			const vk::TextureHot& hot		  = m_backend->resources.textures.get(attachment.texture);
-			extent							  = m_backend->resources.textures.get_cold(attachment.texture).extent;
+			const vk::TextureHot& hot		  = *m_backend->resources.textures.get(attachment.texture);
+			extent							  = m_backend->resources.textures.get_cold(attachment.texture)->extent;
 
 			colors[i] = {
 				.sType		 = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -187,8 +186,8 @@ namespace ember::gpu
 
 		if (has_depth)
 		{
-			const vk::TextureHot& hot = m_backend->resources.textures.get(def.depth.texture);
-			extent					  = m_backend->resources.textures.get_cold(def.depth.texture).extent;
+			const vk::TextureHot& hot = *m_backend->resources.textures.get(def.depth.texture);
+			extent					  = m_backend->resources.textures.get_cold(def.depth.texture)->extent;
 
 			depth = {
 				.sType		 = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
@@ -240,7 +239,7 @@ namespace ember::gpu
 		if (m_backend == nullptr)
 			return;
 
-		const vk::PipelineData* data = m_backend->resources.graphics_pipelines.try_get(pipeline);
+		const vk::PipelineData* data = m_backend->resources.graphics_pipelines.get(pipeline);
 		if (data == nullptr)
 		{
 			EMBER_ASSERT(false && "set_pipeline on a stale handle");

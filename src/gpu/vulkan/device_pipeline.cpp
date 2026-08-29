@@ -264,7 +264,7 @@ namespace ember::gpu
 	{
 		EMBER_GPU_GUARD();
 
-		vk::PipelineData* data = m_backend->resources.graphics_pipelines.try_get(handle);
+		vk::PipelineData* data = m_backend->resources.graphics_pipelines.get(handle);
 		if (data == nullptr)
 			return;
 

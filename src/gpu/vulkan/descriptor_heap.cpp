@@ -445,12 +445,12 @@ namespace ember::gpu::vk
 			if (handle.is_null())
 				return false;
 
-			const TextureHot& hot = backend.resources.textures.get(handle);
+			const TextureHot& hot = *backend.resources.textures.get(handle);
 			fb.texture[i]		  = handle;
 			fb.sampled_views[i]	  = hot.sampled_view;
 		}
 
-		fb.storage_view = backend.resources.textures.get(fb.texture[0]).storage_view;
+		fb.storage_view = backend.resources.textures.get(fb.texture[0])->storage_view;
 
 		static constexpr u8 ZERO[256] = {};
 
@@ -466,8 +466,8 @@ namespace ember::gpu::vk
 		if (fb.buffer.is_null() || fb.sampler.is_null())
 			return false;
 
-		fb.buffer_vk  = backend.resources.buffers.get(fb.buffer).handle;
-		fb.sampler_vk = backend.resources.samplers.get(fb.sampler).handle;
+		fb.buffer_vk  = backend.resources.buffers.get(fb.buffer)->handle;
+		fb.sampler_vk = backend.resources.samplers.get(fb.sampler)->handle;
 
 		heap.bind_fallbacks(backend.context, fb);
 		return true;
@@ -481,24 +481,24 @@ namespace ember::gpu::vk
 		// backend-owned entries, and the public destroy would trip the slot-0 assert.
 		for (const TextureHandle handle : fb.texture)
 		{
-			if (const TextureHot* hot = backend.resources.textures.try_get(handle))
+			if (const TextureHot* hot = backend.resources.textures.get(handle))
 			{
 				vkDestroyImageView(backend.context.device, hot->sampled_view, nullptr);
 				vkDestroyImageView(backend.context.device, hot->storage_view, nullptr);
 				vmaDestroyImage(
-					backend.context.allocator, hot->image, backend.resources.textures.get_cold(handle).allocation);
+					backend.context.allocator, hot->image, backend.resources.textures.get_cold(handle)->allocation);
 				(void)backend.resources.textures.erase(handle);
 			}
 		}
 
-		if (const BufferHot* hot = backend.resources.buffers.try_get(fb.buffer))
+		if (const BufferHot* hot = backend.resources.buffers.get(fb.buffer))
 		{
 			vmaDestroyBuffer(
-				backend.context.allocator, hot->handle, backend.resources.buffers.get_cold(fb.buffer).allocation);
+				backend.context.allocator, hot->handle, backend.resources.buffers.get_cold(fb.buffer)->allocation);
 			(void)backend.resources.buffers.erase(fb.buffer);
 		}
 
-		if (const SamplerData* data = backend.resources.samplers.try_get(fb.sampler))
+		if (const SamplerData* data = backend.resources.samplers.get(fb.sampler))
 		{
 			vkDestroySampler(backend.context.device, data->handle, nullptr);
 			(void)backend.resources.samplers.erase(fb.sampler);

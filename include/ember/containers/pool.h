@@ -5,40 +5,57 @@
 #include <ember/core/handle.h>
 #include <ember/memory/memory.h>
 
+#include <algorithm>
+
 namespace ember
 {
 	/**
-	 * Sparse generational storage for persistent engine resources.
+	 * Fixed-capacity generational storage for persistent engine resources.
 	 *
-	 * Handles map directly to stable slots. Erasing one resource does not move
-	 * another. reserve() may relocate live objects, invalidating pointers and
-	 * iterators while preserving handles.
+	 * A sparse slot map with weak-reference semantics: a handle's index addresses
+	 * its slot directly, slots never move, and pointers stay valid until the pool
+	 * is destroyed. The GPU layer relies on the direct addressing because a Handle's
+	 * index is also its bindless heap slot.
 	 *
-	 * Reserve pools during initialization to prevent allocations and relocation
-	 * during frame execution.
+	 * Each slot carries a generation. Freeing the slot advances it, skipping zero,
+	 * and create mints the slot's current generation, so get() is one compare and
+	 * stale or null handles return nullptr. A slot's handles repeat after 65535 frees.
 	 *
-	 * The pool is neither thread-safe nor re-entrant. Its memory resource must
-	 * outlive it.
+	 * Free indices live in a FIFO ring: create pops the oldest free slot, so reuse
+	 * cycles through every free slot before revisiting one and generation churn spreads
+	 * evenly across the pool.
+	 *
+	 * The live bits serve iteration, erase and debug checks. get() never reads them.
+	 *
+	 * init() sizes the pool once. A full pool returns a null handle from insert and
+	 * emplace. A pool before init() behaves the same, since its capacity is zero.
+	 *
+	 * The pool is neither thread-safe nor re-entrant. Its memory resource must outlive it.
 	 */
-	template <class Tag, class Hot = Tag, class Cold = void> class Pool
+	template <class Tag, class HotT = Tag, class ColdT = void> class Pool
 	{
-		struct EmptyCold{};
+		struct NoColdStorage
+		{
+		};
 
 	public:
-		static constexpr bool HAS_COLD = !std::is_void_v<Cold>;
+		static constexpr bool HAS_COLD_STORAGE = !std::is_void_v<ColdT>;
+		static constexpr u32 MAX_CAPACITY	   = 1u << 16; // every u16 index is addressable
 
-		using HandleType = Handle<Tag, u16>;
-		using HotType	 = Hot;
-		using ColdType	 = std::conditional_t<HAS_COLD, Cold, EmptyCold>;
+		using Hot  = HotT;
+		using Cold = std::conditional_t<HAS_COLD_STORAGE, ColdT, NoColdStorage>;
 
-		// Forward declaration of iterator
 		template <bool IsConst> class SlotIterator;
 
 		using Iterator		= SlotIterator<false>;
 		using ConstIterator = SlotIterator<true>;
 
+		static_assert(
+			std::is_nothrow_destructible_v<Hot> && std::is_nothrow_destructible_v<Cold>,
+			"Pool values must be nothrow-destructible");
+
 		explicit Pool(MemoryTag tag = MemoryTag::Unknown) noexcept;
-		Pool(std::pmr::memory_resource& resource, MemoryTag diagnostics_tag = MemoryTag::Unknown) noexcept;
+		Pool(std::pmr::memory_resource& resource, MemoryTag tag = MemoryTag::Unknown) noexcept;
 		~Pool() noexcept;
 
 		// No copy
@@ -48,41 +65,40 @@ namespace ember
 		Pool(Pool&& other) noexcept;
 		Pool& operator=(Pool&& other) noexcept;
 
-		template <class... Args> [[nodiscard]] EMBER_FINLINE HandleType emplace(Args&&... args) noexcept;
+		/// Allocates capacity slots, in [1, MAX_CAPACITY]. Runs once, before any insert.
+		/// A fresh pool hands out indices in ascending order from zero.
+		void init(u32 capacity) noexcept;
 
-		[[nodiscard]] EMBER_FINLINE HandleType insert(const Hot& value) noexcept;
-		[[nodiscard]] EMBER_FINLINE HandleType insert(Hot&& value) noexcept;
+		/// Constructs the HotType in-place in the next available slot
+		template <class... Args> [[nodiscard]] EMBER_FINLINE Handle<Tag> emplace(Args&&... args) noexcept;
+
+		/// Inserts (copies) the HotType in the next available slot
+		[[nodiscard]] EMBER_FINLINE Handle<Tag> insert(const Hot& value) noexcept;
+
+		/// Inserts (moves) the HotType in the next available slot
+		[[nodiscard]] EMBER_FINLINE Handle<Tag> insert(Hot&& value) noexcept;
 
 		template <class HotArg, class ColdArg>
-		[[nodiscard]] EMBER_FINLINE HandleType insert(HotArg&& hot, ColdArg&& cold) noexcept
-			requires(HAS_COLD);
+		[[nodiscard]] EMBER_FINLINE Handle<Tag> insert(HotArg&& hot, ColdArg&& cold) noexcept
+			requires(HAS_COLD_STORAGE);
 
-		[[nodiscard]] EMBER_FINLINE bool erase(HandleType handle) noexcept;
-		[[nodiscard]] EMBER_FINLINE bool contains(HandleType handle) const noexcept;
+		[[nodiscard]] EMBER_FINLINE bool erase(Handle<Tag> handle) noexcept;
+		[[nodiscard]] EMBER_FINLINE bool contains(Handle<Tag> handle) const noexcept;
 
-		[[nodiscard]] EMBER_FINLINE Hot* try_get(HandleType handle) noexcept;
-		[[nodiscard]] EMBER_FINLINE const Hot* try_get(HandleType handle) const noexcept;
+		/// Weak deref: nullptr when the handle is stale or null.
+		[[nodiscard]] EMBER_FINLINE Hot* get(Handle<Tag> handle) noexcept;
+		[[nodiscard]] EMBER_FINLINE const Hot* get(Handle<Tag> handle) const noexcept;
 
-		[[nodiscard]] EMBER_FINLINE Hot& get(HandleType handle) noexcept;
-		[[nodiscard]] EMBER_FINLINE const Hot& get(HandleType handle) const noexcept;
-
-		[[nodiscard]] EMBER_FINLINE ColdType* try_get_cold(HandleType handle) noexcept
-			requires(HAS_COLD);
-
-		[[nodiscard]] EMBER_FINLINE const ColdType* try_get_cold(HandleType handle) const noexcept
-			requires(HAS_COLD);
-
-		[[nodiscard]] EMBER_FINLINE ColdType& get_cold(HandleType handle) noexcept
-			requires(HAS_COLD);
-
-		[[nodiscard]] EMBER_FINLINE const ColdType& get_cold(HandleType handle) const noexcept
-			requires(HAS_COLD);
+		/// Weak deref: nullptr when the handle is stale or null.
+		[[nodiscard]] EMBER_FINLINE Cold* get_cold(Handle<Tag> handle) noexcept
+			requires(HAS_COLD_STORAGE);
+		[[nodiscard]] EMBER_FINLINE const Cold* get_cold(Handle<Tag> handle) const noexcept
+			requires(HAS_COLD_STORAGE);
 
 		[[nodiscard]] EMBER_FINLINE u32 size() const noexcept;
 		[[nodiscard]] EMBER_FINLINE u32 capacity() const noexcept;
 		[[nodiscard]] EMBER_FINLINE bool empty() const noexcept;
 
-		void reserve(u32 requested_capacity) noexcept;
 		void clear() noexcept;
 
 		[[nodiscard]] EMBER_FINLINE Iterator begin() noexcept;
@@ -91,90 +107,43 @@ namespace ember
 		[[nodiscard]] EMBER_FINLINE ConstIterator end() const noexcept;
 
 	private:
-		static constexpr u16 OCCUPIED	   = std::numeric_limits<u16>::max();
-		static constexpr u32 INVALID_INDEX = std::numeric_limits<u32>::max();
-		static constexpr u32 MAX_CAPACITY  = std::numeric_limits<u16>::max();
-		static constexpr u32 MIN_CAPACITY  = 16;
-
-		static constexpr size_t VALUE_ALIGNMENT =
-			alignof(HotType) > alignof(ColdType)
-				? alignof(HotType)
-				: alignof(ColdType);
-
-		static constexpr size_t BLOCK_ALIGNMENT =
-			VALUE_ALIGNMENT > EMBER_CACHE_LINE
-				? VALUE_ALIGNMENT
-				: EMBER_CACHE_LINE;
-
-		/**
-		 * Combined handle metadata and intrusive free-list node.
-		 *
-		 * state == OCCUPIED: the slot contains live Hot/Cold objects.
-		 * state != OCCUPIED: state is the next free index when another free
-		 * 	slot follows. The final free slot's state is unused.
-		 */
-		struct alignas(u32) Slot
-		{
-			u16 generation = 1;
-			u16 state  = 0;
-		};
+		static constexpr u32 INVALID_INDEX		= std::numeric_limits<u32>::max();
+		static constexpr size_t VALUE_ALIGNMENT = std::max(alignof(Hot), alignof(Cold));
+		static constexpr size_t BLOCK_ALIGNMENT = std::max(VALUE_ALIGNMENT, static_cast<size_t>(EMBER_CACHE_LINE));
 
 		/**
 		 * Physical allocation:
-		 * [Hot][Cold?][Slot metadata]
+		 * [Hot][Cold?][generations][free-index ring][live bits]
 		 */
 		struct Layout
 		{
-			size_t cold_offset	= 0;
-			size_t slots_offset = 0;
-			size_t total_size	= 0;
+			size_t cold_offset = 0;
+			size_t gens_offset = 0;
+			size_t free_offset = 0;
+			size_t live_offset = 0;
+			size_t total_size  = 0;
 		};
 
-		using ColdPointer = std::conditional_t<HAS_COLD, ColdType*, EmptyCold>;
+		[[nodiscard]] EMBER_FINLINE bool is_live(u32 index) const noexcept;
+		EMBER_FINLINE void set_live(u32 index) noexcept;
+		EMBER_FINLINE void clear_live(u32 index) noexcept;
 
-		static_assert(
-			std::is_nothrow_destructible_v<HotType> && std::is_nothrow_destructible_v<ColdType>,
-			"Pool values must be nothrow-destructible");
-
-		static_assert(
-			(std::is_trivially_copyable_v<HotType> || std::is_nothrow_move_constructible_v<HotType>) &&
-				(std::is_trivially_copyable_v<ColdType> || std::is_nothrow_move_constructible_v<ColdType>),
-			"Pool values must be trivially copyable or nothrow move-constructible");
-
-		static_assert(std::is_trivially_copyable_v<Slot>);
-
-		template <class... Args>
-		[[nodiscard]] EMBER_FINLINE HandleType emplace_no_grow(Args&&... args) noexcept;
-
-		template <class... Args>
-		[[nodiscard]] HandleType emplace_grow(Args&&... args) noexcept;
-
-		template <class HotArg, class ColdArg>
-		[[nodiscard]] EMBER_FINLINE HandleType insert_no_grow(HotArg&& hot, ColdArg&& cold) noexcept
-			requires(HAS_COLD);
-
-		template <class HotArg, class ColdArg>
-		[[nodiscard]] HandleType insert_grow(HotArg&& hot, ColdArg&& cold) noexcept
-			requires(HAS_COLD);
-
+		/// Pops the ring head. INVALID_INDEX when the pool is full or init() has not run.
+		/// The slot stays dead until publish_slot.
 		[[nodiscard]] EMBER_FINLINE u32 acquire_slot() noexcept;
-		[[nodiscard]] EMBER_FINLINE HandleType publish_slot(u32 index) noexcept;
-		[[nodiscard]] EMBER_FINLINE HandleType make_handle(u32 index) const noexcept;
+		[[nodiscard]] EMBER_FINLINE Handle<Tag> publish_slot(u32 index) noexcept;
+		[[nodiscard]] EMBER_FINLINE Handle<Tag> make_handle(u32 index) const noexcept;
 
-		static EMBER_FINLINE void advance_generation(Slot& slot) noexcept;
+		EMBER_FINLINE void free_push(u16 index) noexcept;
 
+		/// Housekeeping.
 		void retire(u32 index) noexcept;
 		void retire_all() noexcept;
-		void rebuild_free_list() noexcept;
+		void reset_free_ring() noexcept;
 
 		[[noreturn]] void fail_allocation(size_t requested_size) const noexcept;
-
 		[[nodiscard]] size_t carve(size_t& cursor, size_t count, size_t stride, size_t align) const noexcept;
-
 		[[nodiscard]] Layout make_layout(u32 capacity) const noexcept;
-
-		void relocate_values(Hot* new_hot, ColdType* new_cold) noexcept;
-		void reallocate(u32 new_capacity) noexcept;
 
 		void take_storage(Pool& other) noexcept;
 		void release() noexcept;
@@ -182,19 +151,20 @@ namespace ember
 
 		// Non-owning pointer to the PMR resource that backs this Pool
 		std::pmr::memory_resource* m_resource = nullptr;
-		MemoryTag m_tag = MemoryTag::Unknown;
+		MemoryTag m_tag						  = MemoryTag::Unknown;
 
-		void* m_block = nullptr;
+		void* m_block		= nullptr;
 		size_t m_block_size = 0;
 
-		Hot* m_hot = nullptr;
+		Hot* m_hot						   = nullptr;
+		[[no_unique_address]] Cold* m_cold = nullptr;
 
-		[[no_unique_address]] ColdPointer m_cold{};
-
-		Slot* m_slots = nullptr;
-		u32 m_free_head = INVALID_INDEX;
-		u32 m_size = 0;
-		u32 m_capacity = 0;
+		u16* m_generations = nullptr;
+		u16* m_free		   = nullptr;
+		u64* m_live		   = nullptr;
+		u32 m_free_head	   = 0;
+		u32 m_free_count   = 0;
+		u32 m_capacity	   = 0;
 	};
 }
 

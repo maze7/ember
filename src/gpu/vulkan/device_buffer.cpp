@@ -135,13 +135,13 @@ namespace ember::gpu
 	{
 		EMBER_GPU_GUARD();
 
-		vk::BufferHot* hot = m_backend->resources.buffers.try_get(handle);
+		vk::BufferHot* hot = m_backend->resources.buffers.get(handle);
 		if (hot == nullptr)
 			return;
 
 		// Erase-then-defer: the handle (and its bindless slot) dies immediately; the
 		// native object outlives every frame that can reference it.
-		m_backend->destroy_queue.destroy(hot->handle, m_backend->resources.buffers.get_cold(handle).allocation);
+		m_backend->destroy_queue.destroy(hot->handle, m_backend->resources.buffers.get_cold(handle)->allocation);
 		m_backend->destroy_queue.reset_slot(handle.index, vk::HeapArray::Buffer);
 		(void)m_backend->resources.buffers.erase(handle);
 	}
@@ -156,7 +156,7 @@ namespace ember::gpu
 		if (m_backend == nullptr)
 			return nullptr;
 
-		if (auto* cold = m_backend->resources.buffers.try_get_cold(handle))
+		if (auto* cold = m_backend->resources.buffers.get_cold(handle))
 			return cold->mapped;
 
 		return nullptr;
@@ -169,7 +169,7 @@ namespace ember::gpu
 		if (data.empty())
 			return;
 
-		const vk::BufferHot* hot = m_backend->resources.buffers.try_get(handle);
+		const vk::BufferHot* hot = m_backend->resources.buffers.get(handle);
 
 		if (hot == nullptr)
 		{
@@ -179,7 +179,7 @@ namespace ember::gpu
 			return;
 		}
 
-		const vk::BufferCold& cold = m_backend->resources.buffers.get_cold(handle);
+		const vk::BufferCold& cold = *m_backend->resources.buffers.get_cold(handle);
 		EMBER_ASSERT(offset + data.size() <= cold.size);
 
 		if (cold.mapped != nullptr)
@@ -199,7 +199,7 @@ namespace ember::gpu
 		if (m_backend == nullptr)
 			return 0;
 
-		if (const vk::BufferHot* hot = m_backend->resources.buffers.try_get(handle))
+		if (const vk::BufferHot* hot = m_backend->resources.buffers.get(handle))
 			return hot->address;
 
 		// Like update_buffer: asking for a dead buffer's address is always a bug

@@ -118,7 +118,7 @@ namespace ember::gpu
 		{
 			for (u32 i = 0; i < data.image_count; ++i)
 			{
-				if (const vk::TextureHot* hot = backend.resources.textures.try_get(data.images[i]))
+				if (const vk::TextureHot* hot = backend.resources.textures.get(data.images[i]))
 					backend.destroy_queue.destroy(hot->sampled_view);
 
 				backend.destroy_queue.destroy(data.present_semaphores[i]);
@@ -304,7 +304,7 @@ namespace ember::gpu
 			return {};
 		}
 
-		vk::SwapchainData& data	   = swapchains.get(handle);
+		vk::SwapchainData& data	   = *swapchains.get(handle);
 		data.window				   = def.window;
 		data.requested_mode		   = def.present_mode;
 		data.preferred_image_count = def.image_count;
@@ -353,7 +353,7 @@ namespace ember::gpu
 			return {};
 		}
 
-		vk::SwapchainData& data = m_backend->resources.swapchains.get(handle);
+		vk::SwapchainData& data = *m_backend->resources.swapchains.get(handle);
 
 		// Same-frame cache: only the first acquire per frame pays for anything.
 		const u64 frame_token = m_backend->frame.index + 1;
@@ -427,7 +427,7 @@ namespace ember::gpu
 		if (m_backend == nullptr)
 			return {};
 
-		if (auto* data = m_backend->resources.swapchains.try_get(handle))
+		if (auto* data = m_backend->resources.swapchains.get(handle))
 			return {data->extent.width, data->extent.height};
 
 		return {};
@@ -440,7 +440,7 @@ namespace ember::gpu
 
 		EMBER_ASSERT(m_backend->owner_thread == current_thread_id());
 
-		vk::SwapchainData* data = m_backend->resources.swapchains.try_get(handle);
+		vk::SwapchainData* data = m_backend->resources.swapchains.get(handle);
 
 		if (data == nullptr)
 			return;
