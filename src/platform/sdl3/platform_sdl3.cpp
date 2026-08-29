@@ -1,3 +1,4 @@
+#include "SDL3/SDL_video.h"
 #define SDL_MAIN_HANDLED
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -800,7 +801,17 @@ namespace ember
 			return {};
 		}
 
-		SDL_Window* native = SDL_CreateWindow(def.title, def.size.x, def.size.y, *flags);
+		SDL_PropertiesID props = SDL_CreateProperties();
+		SDL_DisplayID display  = SDL_GetPrimaryDisplay();
+		SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, def.title);
+		SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, def.size.x);
+		SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, def.size.y);
+		SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(display));
+		SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(display));
+		SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER, static_cast<Sint64>(flags.value_or(0)));
+
+		SDL_Window* native = SDL_CreateWindowWithProperties(props);
+		SDL_DestroyProperties(props);
 
 		if (native == nullptr)
 		{

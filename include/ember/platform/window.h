@@ -67,17 +67,11 @@ namespace ember
 	struct NativeWindow
 	{
 		WindowBackend backend = WindowBackend::None;
-		void* value = nullptr;
+		void* value			  = nullptr;
 
-		[[nodiscard]] explicit operator bool() const noexcept
-		{
-			return value != nullptr;
-		}
+		[[nodiscard]] explicit operator bool() const noexcept { return value != nullptr; }
 
 		/// Returns true if the NativeWindow is of type `query`
-		[[nodiscard]] bool is_type(WindowBackend query) const noexcept
-		{
-			return backend == query;
-		}
+		[[nodiscard]] bool is_type(WindowBackend query) const noexcept { return backend == query; }
 	};
 }
