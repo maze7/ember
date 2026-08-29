@@ -259,7 +259,10 @@ namespace ember::gpu
 		m_backend->destroy_queue.destroy(hot->storage_view);
 		m_backend->destroy_queue.destroy(hot->image, cold.allocation);
 		m_backend->destroy_queue.reset_slot(handle.index, vk::HeapArray::Sampled | vk::HeapArray::Storage);
-		(void)m_backend->resources.textures.erase(handle);
+
+		// Retire only: the drain that resets this slot's descriptor releases it, so
+		// the index cannot be reclaimed while an in-flight frame can still read it.
+		(void)m_backend->resources.textures.retire(handle);
 	}
 
 	bool Device::is_valid(TextureHandle handle) const noexcept

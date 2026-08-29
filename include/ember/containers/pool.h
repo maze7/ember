@@ -25,6 +25,10 @@ namespace ember
 	 * cycles through every free slot before revisiting one and generation churn spreads
 	 * evenly across the pool.
 	 *
+	 * erase() frees a slot in one step. When an index stays visible to work that
+	 * outlives the handle (GPU frames in flight), retire() ends the handle now and
+	 * release_slot() returns the storage later; size() counts live and retired alike.
+	 *
 	 * The live bits serve iteration, erase and debug checks. get() never reads them.
 	 *
 	 * init() sizes the pool once. A full pool returns a null handle from insert and
@@ -83,6 +87,16 @@ namespace ember
 			requires(HAS_COLD_STORAGE);
 
 		[[nodiscard]] EMBER_FINLINE bool erase(Handle<Tag> handle) noexcept;
+
+		/// Retires the slot: the handle dies and the values are destroyed now, but the
+		/// slot stays claimed until release_slot(). For resources whose index stays
+		/// visible to in-flight GPU work, retire at destroy and release at the fence.
+		[[nodiscard]] EMBER_FINLINE bool retire(Handle<Tag> handle) noexcept;
+
+		/// Returns a retired slot to the free ring. The caller proves the slot is no
+		/// longer referenced; nothing here can check that.
+		EMBER_FINLINE void release_slot(u16 index) noexcept;
+
 		[[nodiscard]] EMBER_FINLINE bool contains(Handle<Tag> handle) const noexcept;
 
 		/// Weak deref: nullptr when the handle is stale or null.
@@ -95,7 +109,12 @@ namespace ember
 		[[nodiscard]] EMBER_FINLINE const Cold* get_cold(Handle<Tag> handle) const noexcept
 			requires(HAS_COLD_STORAGE);
 
+		/// Occupied slots, live plus retired.
 		[[nodiscard]] EMBER_FINLINE u32 size() const noexcept;
+
+		/// Retired slots awaiting release_slot().
+		[[nodiscard]] EMBER_FINLINE u32 retired_count() const noexcept;
+
 		[[nodiscard]] EMBER_FINLINE u32 capacity() const noexcept;
 		[[nodiscard]] EMBER_FINLINE bool empty() const noexcept;
 
@@ -137,8 +156,8 @@ namespace ember
 		EMBER_FINLINE void free_push(u16 index) noexcept;
 
 		/// Housekeeping.
-		void retire(u32 index) noexcept;
-		void retire_all() noexcept;
+		void destroy_slot(u32 index) noexcept;
+		void destroy_all() noexcept;
 		void reset_free_ring() noexcept;
 
 		[[noreturn]] void fail_allocation(size_t requested_size) const noexcept;
@@ -164,6 +183,7 @@ namespace ember
 		u64* m_live		   = nullptr;
 		u32 m_free_head	   = 0;
 		u32 m_free_count   = 0;
+		u32 m_retired	   = 0;
 		u32 m_capacity	   = 0;
 	};
 }

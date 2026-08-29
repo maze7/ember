@@ -16,6 +16,8 @@ namespace ember::gpu
 
 namespace ember::gpu::vk
 {
+	struct ResourcePools;
+
 	/**
 	 * Deferred native destruction, keyed to the frame timeline.
 	 *
@@ -23,8 +25,8 @@ namespace ember::gpu::vk
 	 * drain() destroys the exact prefix proven complete.
 	 *
 	 * Heap-slot resets ride the same clock: a destroyed resource's descriptor flips to the fallback
-	 * in the same drain that frees the native object, so descriptor lifetime and object lifetime are
-	 * always in sync.
+	 * and its retired pool slot returns to the free ring in the same drain that frees the native
+	 * object, so descriptor, slot and object lifetime are always in sync.
 	 *
 	 * Values are minted monotonically, so entries arrive already sorted: the drain walks a prefix
 	 * and compacts lazily. Owner-thread only (asserted), lock free.
@@ -45,12 +47,13 @@ namespace ember::gpu::vk
 		void destroy(VkSwapchainKHR swapchain) noexcept;
 		void destroy(VkSurfaceKHR surface) noexcept;
 
-		/// Points `slot` back at the fallbacks in every array `heap_mask` names,
-		/// once every frame that could have read the old descriptor has retired.
+		/// Points `slot` back at the fallbacks in every array `heap_mask` names and
+		/// releases the retired pool slot, once every frame that could have read the
+		/// old descriptor has retired.
 		void reset_slot(u16 slot, HeapArray heap_mask) noexcept;
 
 		/// Destroys every entry whose value has provably completed.
-		void drain(const Context& ctx, DescriptorHeap& heap, u64 completed) noexcept;
+		void drain(const Context& ctx, DescriptorHeap& heap, ResourcePools& pools, u64 completed) noexcept;
 
 		/// Entries not yet destroyed; telemetry and teardown asserts.
 		[[nodiscard]] u32 pending() const noexcept { return m_entries.size() - m_head; }

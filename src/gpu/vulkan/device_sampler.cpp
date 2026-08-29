@@ -124,7 +124,7 @@ namespace ember::gpu
 
 		m_backend->destroy_queue.destroy(data->handle);
 		m_backend->destroy_queue.reset_slot(handle.index, vk::HeapArray::Sampler);
-		(void)m_backend->resources.samplers.erase(handle);
+		(void)m_backend->resources.samplers.retire(handle);
 	}
 
 	bool Device::is_valid(SamplerHandle handle) const noexcept

@@ -139,11 +139,11 @@ namespace ember::gpu
 		if (hot == nullptr)
 			return;
 
-		// Erase-then-defer: the handle (and its bindless slot) dies immediately; the
-		// native object outlives every frame that can reference it.
+		// Retire-then-defer: the handle dies immediately; the native object and the
+		// slot's reuse wait for every frame that can still reference the index.
 		m_backend->destroy_queue.destroy(hot->handle, m_backend->resources.buffers.get_cold(handle)->allocation);
 		m_backend->destroy_queue.reset_slot(handle.index, vk::HeapArray::Buffer);
-		(void)m_backend->resources.buffers.erase(handle);
+		(void)m_backend->resources.buffers.retire(handle);
 	}
 
 	bool Device::is_valid(BufferHandle handle) const noexcept

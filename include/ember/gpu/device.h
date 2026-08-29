@@ -40,6 +40,9 @@ namespace ember::gpu
 	 * Resource pool capacities. Fixed at device creation because a handle's index
 	 * is also its bindless slot (see gpu/common.h).
 	 *
+	 * A destroyed resource's slot stays claimed until its last frame retires, so
+	 * capacity covers live plus dying.
+	 *
 	 * Each must be <= 65535 (32 bit handles).
 	 *
 	 * Samplers additionally must be <= MAX_BINDLESS_SAMPLERS.

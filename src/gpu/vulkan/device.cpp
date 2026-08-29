@@ -284,7 +284,8 @@ namespace ember::gpu
 
 			// Idle means everything signaled: even entries stamped for a submit that never
 			// happened (an open frame at teardown) are safe now.
-			m_backend->destroy_queue.drain(m_backend->context, m_backend->descriptor_heap, UINT64_MAX);
+			m_backend->destroy_queue.drain(
+				m_backend->context, m_backend->descriptor_heap, m_backend->resources, UINT64_MAX);
 		}
 
 		Backend* dead = std::exchange(m_backend, nullptr);
@@ -359,7 +360,8 @@ namespace ember::gpu
 		// Idle proves every handed-out timeline value signalled, so batch and page
 		// recycling may reclaim everything the frame pacing hadn't caught up to yet.
 		m_backend->frame.completed = m_backend->frame.timeline_value;
-		m_backend->destroy_queue.drain(m_backend->context, m_backend->descriptor_heap, UINT64_MAX);
+		m_backend->destroy_queue.drain(
+			m_backend->context, m_backend->descriptor_heap, m_backend->resources, UINT64_MAX);
 	}
 
 	const DeviceCaps& Device::caps() const noexcept
@@ -426,7 +428,8 @@ namespace ember::gpu
 		EMBER_VK_CHECK(vkResetCommandPool(m_backend->context.device, frame.slots[slot].pool, 0));
 
 		// The graveyard rides the frame pacing and needs no extra queries.
-		m_backend->destroy_queue.drain(m_backend->context, m_backend->descriptor_heap, frame.completed);
+		m_backend->destroy_queue.drain(
+			m_backend->context, m_backend->descriptor_heap, m_backend->resources, frame.completed);
 
 		// Rebind the slot's slices: the wait above is what proved them reclaimable.
 		vk::staging_begin_frame(m_backend->staging, slot);

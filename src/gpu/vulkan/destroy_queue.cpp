@@ -7,6 +7,20 @@
 
 namespace ember::gpu::vk
 {
+	namespace
+	{
+		/// Destroy sites retire one resource kind per entry, so the mask names the pool.
+		void release_pool_slot(ResourcePools& pools, HeapArray mask, u16 slot) noexcept
+		{
+			if ((mask & (HeapArray::Sampled | HeapArray::Storage)) != HeapArray::None)
+				pools.textures.release_slot(slot);
+			else if ((mask & HeapArray::Sampler) != HeapArray::None)
+				pools.samplers.release_slot(slot);
+			else
+				pools.buffers.release_slot(slot);
+		}
+	}
+
 	void DestroyQueue::bind(const FrameState& frame) noexcept
 	{
 		EMBER_ASSERT(m_frame == nullptr);
@@ -125,7 +139,7 @@ namespace ember::gpu::vk
 		enqueue({.kind = Kind::HeapSlot, .heap_mask = heap_mask, .slot = slot});
 	}
 
-	void DestroyQueue::drain(const Context& ctx, DescriptorHeap& heap, u64 completed) noexcept
+	void DestroyQueue::drain(const Context& ctx, DescriptorHeap& heap, ResourcePools& pools, u64 completed) noexcept
 	{
 		EMBER_ASSERT(m_owner == current_thread_id());
 
@@ -173,6 +187,7 @@ namespace ember::gpu::vk
 
 				case Kind::HeapSlot:
 					heap.reset_slot(ctx, dead.slot, dead.heap_mask);
+					release_pool_slot(pools, dead.heap_mask, dead.slot);
 					break;
 			}
 		}

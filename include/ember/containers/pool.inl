@@ -166,20 +166,41 @@ namespace ember
 	template <class Tag, class Hot, class Cold>
 	EMBER_FINLINE bool Pool<Tag, Hot, Cold>::erase(Handle<Tag> handle) noexcept
 	{
+		if (!retire(handle))
+			return false;
+
+		release_slot(handle.index);
+		return true;
+	}
+
+	template <class Tag, class Hot, class Cold>
+	EMBER_FINLINE bool Pool<Tag, Hot, Cold>::retire(Handle<Tag> handle) noexcept
+	{
 		if (handle.index >= m_capacity) [[unlikely]]
 			return false;
 
 		const u32 index = static_cast<u32>(handle.index);
 
-		// The live test keeps a generation-matching garbage handle from pushing
-		// a free index twice and corrupting the ring.
+		// The live test keeps a generation-matching garbage handle from retiring
+		// a slot twice and double-counting it.
 		if (m_generations[index] != handle.generation || !is_live(index))
 			return false;
 
-		retire(index);
-		free_push(handle.index);
+		destroy_slot(index);
+		++m_retired;
 
 		return true;
+	}
+
+	template <class Tag, class Hot, class Cold>
+	EMBER_FINLINE void Pool<Tag, Hot, Cold>::release_slot(u16 index) noexcept
+	{
+		EMBER_ASSERT(index < m_capacity);
+		EMBER_ASSERT(!is_live(index) && "release of a live slot");
+		EMBER_ASSERT(m_retired != 0 && "release without a matching retire");
+
+		--m_retired;
+		free_push(index);
 	}
 
 	template <class Tag, class Hot, class Cold>
@@ -250,6 +271,11 @@ namespace ember
 		return m_capacity - m_free_count;
 	}
 
+	template <class Tag, class Hot, class Cold> EMBER_FINLINE u32 Pool<Tag, Hot, Cold>::retired_count() const noexcept
+	{
+		return m_retired;
+	}
+
 	template <class Tag, class Hot, class Cold> EMBER_FINLINE u32 Pool<Tag, Hot, Cold>::capacity() const noexcept
 	{
 		return m_capacity;
@@ -262,8 +288,9 @@ namespace ember
 
 	template <class Tag, class Hot, class Cold> void Pool<Tag, Hot, Cold>::clear() noexcept
 	{
-		retire_all();
+		destroy_all();
 		reset_free_ring();
+		m_retired = 0;
 	}
 
 	template <class Tag, class Hot, class Cold> EMBER_FINLINE auto Pool<Tag, Hot, Cold>::begin() noexcept -> Iterator
@@ -353,7 +380,7 @@ namespace ember
 		return {static_cast<u16>(index), m_generations[index]};
 	}
 
-	template <class Tag, class Hot, class Cold> void Pool<Tag, Hot, Cold>::retire(u32 index) noexcept
+	template <class Tag, class Hot, class Cold> void Pool<Tag, Hot, Cold>::destroy_slot(u32 index) noexcept
 	{
 		EMBER_ASSERT(index < m_capacity);
 		EMBER_ASSERT(is_live(index));
@@ -372,12 +399,12 @@ namespace ember
 		std::destroy_at(m_hot + index);
 	}
 
-	template <class Tag, class Hot, class Cold> void Pool<Tag, Hot, Cold>::retire_all() noexcept
+	template <class Tag, class Hot, class Cold> void Pool<Tag, Hot, Cold>::destroy_all() noexcept
 	{
 		for (u32 index = 0; index < m_capacity; ++index)
 		{
 			if (is_live(index))
-				retire(index);
+				destroy_slot(index);
 		}
 	}
 
@@ -452,13 +479,14 @@ namespace ember
 		m_live		  = std::exchange(other.m_live, nullptr);
 		m_free_head	  = std::exchange(other.m_free_head, 0);
 		m_free_count  = std::exchange(other.m_free_count, 0);
+		m_retired	  = std::exchange(other.m_retired, 0);
 		m_capacity	  = std::exchange(other.m_capacity, 0);
 	}
 
 	template <class Tag, class Hot, class Cold> void Pool<Tag, Hot, Cold>::release() noexcept
 	{
 		if constexpr (!std::is_trivially_destructible_v<Hot> || !std::is_trivially_destructible_v<Cold>)
-			retire_all();
+			destroy_all();
 
 		if (m_block != nullptr)
 			m_resource->deallocate(m_block, m_block_size, BLOCK_ALIGNMENT);
@@ -477,6 +505,7 @@ namespace ember
 		m_live		  = nullptr;
 		m_free_head	  = 0;
 		m_free_count  = 0;
+		m_retired	  = 0;
 		m_capacity	  = 0;
 	}
 }

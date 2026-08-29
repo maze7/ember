@@ -33,6 +33,7 @@ namespace
 	struct GenerationTag;
 	struct RingTag;
 	struct StressTag;
+	struct RetireTag;
 	struct NonDefaultColdTag;
 	struct OverflowTag;
 
@@ -401,6 +402,106 @@ namespace
 		EXPECT_FALSE(values.contains(original));
 		EXPECT_TRUE(values.contains(replacement));
 		EXPECT_EQ(*values.get(replacement), 22);
+	}
+
+	TEST(Pool, RetiredSlotIsNotReusedUntilReleased)
+	{
+		BasicPool values;
+		values.init(1);
+
+		const auto first = values.insert(1);
+
+		ASSERT_TRUE(values.retire(first));
+
+		// The handle dies now; the storage stays claimed.
+		EXPECT_FALSE(values.contains(first));
+		EXPECT_EQ(values.get(first), nullptr);
+		EXPECT_EQ(values.size(), 1u);
+		EXPECT_EQ(values.retired_count(), 1u);
+		EXPECT_EQ(values.begin(), values.end());
+		EXPECT_TRUE(values.insert(2).is_null());
+
+		values.release_slot(first.index);
+
+		EXPECT_EQ(values.retired_count(), 0u);
+
+		const auto second = values.insert(3);
+
+		ASSERT_FALSE(second.is_null());
+		EXPECT_EQ(second.index, first.index);
+		EXPECT_NE(second.generation, first.generation);
+		EXPECT_EQ(*values.get(second), 3);
+	}
+
+	TEST(Pool, RetireRejectsNullStaleDoubleAndOutOfRangeHandles)
+	{
+		BasicPool values;
+		values.init(2);
+
+		EXPECT_FALSE(values.retire(BasicHandle{}));
+
+		const auto live = values.insert(5);
+
+		ASSERT_TRUE(values.retire(live));
+
+		EXPECT_FALSE(values.retire(live));
+		EXPECT_EQ(values.retired_count(), 1u);
+
+		const BasicHandle out_of_range{
+			static_cast<u16>(values.capacity()),
+			1,
+		};
+
+		EXPECT_FALSE(values.retire(out_of_range));
+
+		values.release_slot(live.index);
+
+		EXPECT_EQ(values.retired_count(), 0u);
+	}
+
+	TEST(Pool, RetireDestroysValuesImmediately)
+	{
+		TrackedValue::reset();
+
+		Pool<RetireTag, TrackedValue> values;
+		values.init(2);
+
+		const auto handle = values.emplace(7);
+
+		EXPECT_EQ(TrackedValue::live, 1);
+
+		ASSERT_TRUE(values.retire(handle));
+
+		// Destructors run at retire; release only returns the storage.
+		EXPECT_EQ(TrackedValue::live, 0);
+		EXPECT_EQ(TrackedValue::destructions, 1);
+
+		values.release_slot(handle.index);
+
+		EXPECT_EQ(TrackedValue::live, 0);
+		EXPECT_EQ(TrackedValue::destructions, 1);
+	}
+
+	TEST(Pool, ClearResetsRetiredSlots)
+	{
+		BasicPool values;
+		values.init(2);
+
+		const auto first = values.insert(1);
+		(void)values.insert(2);
+
+		ASSERT_TRUE(values.retire(first));
+		EXPECT_EQ(values.retired_count(), 1u);
+
+		values.clear();
+
+		EXPECT_TRUE(values.empty());
+		EXPECT_EQ(values.retired_count(), 0u);
+
+		// Every slot is allocatable again.
+		EXPECT_FALSE(values.insert(3).is_null());
+		EXPECT_FALSE(values.insert(4).is_null());
+		EXPECT_TRUE(values.insert(5).is_null());
 	}
 
 	TEST(Pool, FreeRingIsFifo)
@@ -1083,6 +1184,33 @@ namespace
 
 				(void)values.erase(handle);
 				(void)values.get(forged);
+			},
+			"assert");
+	}
+
+	TEST(PoolDeathTest, ReleaseWithoutRetireIsFatal)
+	{
+		EXPECT_DEATH(
+			{
+				BasicPool values;
+				values.init(1);
+				values.release_slot(0);
+			},
+			"assert");
+	}
+
+	TEST(PoolDeathTest, ReleaseOfALiveSlotIsFatal)
+	{
+		EXPECT_DEATH(
+			{
+				BasicPool values;
+				values.init(2);
+
+				const auto live	   = values.insert(1);
+				const auto retired = values.insert(2);
+
+				(void)values.retire(retired);
+				values.release_slot(live.index);
 			},
 			"assert");
 	}
