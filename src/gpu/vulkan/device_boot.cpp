@@ -19,24 +19,30 @@ namespace ember::gpu
 		 * The chain wires itself at construction and points into its own members, so
 		 * copies are deleted. check_required() and enable_required() walk the same
 		 * REQUIRED_* tables, which keeps the adapter check and the device enable in sync.
-		 *
-		 * Optional feature bits stay with the caller.
 		 */
 		class FeatureChain
 		{
 		public:
+			struct ChainedExtensions
+			{
+				bool mesh_shaders		   = false;
+				bool swapchain_maintenance = false;
+			};
 			/**
 			 * Extension structs join the chain only when the adapter offers the extension.
 			 * A chained feature struct without its extension enabled is a validation error at
 			 * device creation.
 			 */
-			FeatureChain() noexcept
+			FeatureChain(ChainedExtensions exts) noexcept : m_mesh_chained(exts.mesh_shaders)
 			{
 				auto* tail = reinterpret_cast<VkBaseOutStructure*>(&m_features2);
 
 				tail = append(tail, &m_vulkan11);
 				tail = append(tail, &m_vulkan12);
 				tail = append(tail, &m_vulkan13);
+
+				if (m_mesh_chained)
+					tail = append(tail, &m_mesh);
 			}
 
 			/** A wired chain points into itself; a copy would point into the original. */
@@ -66,6 +72,7 @@ namespace ember::gpu
 				enable(m_vulkan13, REQUIRED_13);
 			}
 
+			[[nodiscard]] VkPhysicalDeviceFeatures2* head() noexcept { return &m_features2; }
 			[[nodiscard]] const VkPhysicalDeviceFeatures2* head() const noexcept { return &m_features2; }
 
 			// Feature bits, named after their REQUIRED_* tables. Mutable on purpose.
@@ -79,6 +86,17 @@ namespace ember::gpu
 			[[nodiscard]] const VkPhysicalDeviceVulkan12Features& vulkan12() const noexcept { return m_vulkan12; }
 			[[nodiscard]] const VkPhysicalDeviceVulkan13Features& vulkan13() const noexcept { return m_vulkan13; }
 
+			[[nodiscard]] bool mesh_shaders_supported() const noexcept
+			{
+				return m_mesh_chained && supported(m_mesh, MESH_SHADERS);
+			}
+
+			void enable_mesh_shaders() noexcept
+			{
+				EMBER_ASSERT(m_mesh_chained);
+				enable(m_mesh, MESH_SHADERS);
+			}
+
 		private:
 			/// A required feature bit and its name for logging.
 			template <typename S> struct FeatureRef
@@ -87,10 +105,11 @@ namespace ember::gpu
 				const char* name;
 			};
 
-			using Features10 = VkPhysicalDeviceFeatures;
-			using Features11 = VkPhysicalDeviceVulkan11Features;
-			using Features12 = VkPhysicalDeviceVulkan12Features;
-			using Features13 = VkPhysicalDeviceVulkan13Features;
+			using Features10   = VkPhysicalDeviceFeatures;
+			using Features11   = VkPhysicalDeviceVulkan11Features;
+			using Features12   = VkPhysicalDeviceVulkan12Features;
+			using Features13   = VkPhysicalDeviceVulkan13Features;
+			using FeaturesMesh = VkPhysicalDeviceMeshShaderFeaturesEXT;
 
 			// Stringizes the feature name
 #define EMBER_FEATURE(S, m)                                                                                            \
@@ -153,6 +172,13 @@ namespace ember::gpu
 				EMBER_FEATURE(Features13, maintenance4),
 			};
 
+			/// VK_EXT_mesh_shader. Optional; a missing extension clears caps.mesh_shaders
+			/// rather than rejecting the adapter. Pipelines need both stages.
+			static constexpr FeatureRef<FeaturesMesh> MESH_SHADERS[] = {
+				EMBER_FEATURE(FeaturesMesh, taskShader),
+				EMBER_FEATURE(FeaturesMesh, meshShader),
+			};
+
 #undef EMBER_FEATURE
 
 			[[nodiscard]] static VkBaseOutStructure* append(VkBaseOutStructure* tail, void* next) noexcept
@@ -183,6 +209,18 @@ namespace ember::gpu
 				return ok;
 			}
 
+			template <typename S, size_t N>
+			[[nodiscard]] static bool supported(const S& available, const FeatureRef<S> (&features)[N]) noexcept
+			{
+				for (const FeatureRef<S>& feature : features)
+				{
+					if (available.*feature.flag != VK_TRUE)
+						return false;
+				}
+
+				return true;
+			}
+
 			template <typename S, size_t N> static void enable(S& enabled, const FeatureRef<S> (&required)[N]) noexcept
 			{
 				for (const FeatureRef<S>& feature : required)
@@ -193,6 +231,10 @@ namespace ember::gpu
 			VkPhysicalDeviceVulkan11Features m_vulkan11{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
 			VkPhysicalDeviceVulkan12Features m_vulkan12{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
 			VkPhysicalDeviceVulkan13Features m_vulkan13{.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+			VkPhysicalDeviceMeshShaderFeaturesEXT m_mesh{
+				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_EXT};
+
+			bool m_mesh_chained = false;
 		};
 
 		/// Convenience wrapper for Vulkan's count-then-fetch dance.
@@ -579,11 +621,11 @@ namespace ember::gpu
 				return false;
 			}
 
-			out.mesh_shader	  = has_extension(extensions, VK_EXT_MESH_SHADER_EXTENSION_NAME);
-			out.memory_budget = has_extension(extensions, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+			const bool mesh_extension = has_extension(extensions, VK_EXT_MESH_SHADER_EXTENSION_NAME);
+			out.memory_budget		  = has_extension(extensions, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
 
 			// Features: reject on missing required ones, logging every gap in a single pass.
-			FeatureChain available{};
+			FeatureChain available{{.mesh_shaders = true}};
 			available.query(handle);
 
 			if (!available.check_required(name))
@@ -593,6 +635,7 @@ namespace ember::gpu
 			out.wireframe	   = available.features10().fillModeNonSolid == VK_TRUE;
 			out.indirect_count = available.vulkan12().drawIndirectCount == VK_TRUE;
 			out.sampler_minmax = available.vulkan12().samplerFilterMinmax == VK_TRUE;
+			out.mesh_shader	   = available.mesh_shaders_supported();
 
 			// Queues. The main family must do graphics+compute (universal on desktop) and, when a
 			// window system exists, present: a separate present queue would buy queue-ownership
@@ -765,7 +808,7 @@ namespace ember::gpu
 
 			// Required features come from the same tables that vetted the adapter;
 			// optional availability was recorded in AdapterInfo by query_adapter.
-			FeatureChain enabled{};
+			FeatureChain enabled{{.mesh_shaders = adapter.mesh_shader}};
 			enabled.enable_required();
 
 			if (adapter.indirect_count)
@@ -785,6 +828,12 @@ namespace ember::gpu
 
 			if (adapter.memory_budget)
 				extensions[extension_count++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+
+			if (adapter.mesh_shader)
+			{
+				enabled.enable_mesh_shaders();
+				extensions[extension_count++] = VK_EXT_MESH_SHADER_EXTENSION_NAME;
+			}
 
 			VkDeviceCreateInfo info{
 				.sType					 = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -1059,6 +1108,12 @@ namespace ember::gpu
 				return false;
 
 			fill_caps(ctx.caps, adapter);
+			ctx.all_shader_stages = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+									VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+
+			if (ctx.caps.mesh_shaders)
+				ctx.all_shader_stages |=
+					VK_PIPELINE_STAGE_2_TASK_SHADER_BIT_EXT | VK_PIPELINE_STAGE_2_MESH_SHADER_BIT_EXT;
 
 			if (!create_frame_resources(ctx, frame))
 				return false;

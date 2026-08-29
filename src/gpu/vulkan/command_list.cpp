@@ -16,7 +16,7 @@ namespace ember::gpu
 			VkImageLayout layout		 = VK_IMAGE_LAYOUT_UNDEFINED;
 		};
 
-		[[nodiscard]] constexpr StateInfo state_info(TextureState state) noexcept
+		[[nodiscard]] StateInfo state_info(TextureState state, VkPipelineStageFlags2 shader_stages) noexcept
 		{
 			switch (state)
 			{
@@ -40,10 +40,7 @@ namespace ember::gpu
 						VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
 
 				case TextureState::ShaderRead:
-					return {
-						VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-						VK_ACCESS_2_SHADER_READ_BIT,
-						VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+					return {shader_stages, VK_ACCESS_2_SHADER_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
 				case TextureState::CopySrc:
 					return {
@@ -95,9 +92,10 @@ namespace ember::gpu
 				continue;
 			}
 
-			const vk::TextureCold& cold = *m_backend->resources.textures.get_cold(barrier.texture);
-			const StateInfo src			= state_info(barrier.before);
-			const StateInfo dst			= state_info(barrier.after);
+			const vk::TextureCold& cold				  = *m_backend->resources.textures.get_cold(barrier.texture);
+			const VkPipelineStageFlags2 shader_stages = m_backend->context.all_shader_stages;
+			const StateInfo src						  = state_info(barrier.before, shader_stages);
+			const StateInfo dst						  = state_info(barrier.after, shader_stages);
 
 			native[count++] = {
 				.sType		   = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,

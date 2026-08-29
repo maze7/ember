@@ -55,6 +55,10 @@ namespace ember::gpu
 		u32 frames_in_flight = 0; // clamped to [1, MAX_FRAMES_IN_FLIGHT] by boot()
 
 		bool debug_utils = false; // set_name / pass labels are callable (extension enabled)
+
+		/// Every enabled stage that can read resources. Sync2 masks may only name
+		/// enabled stages, so task/mesh join only when mesh shaders booted.
+		VkPipelineStageFlags2 all_shader_stages = 0;
 	};
 
 	struct FrameSlot
