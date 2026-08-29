@@ -5,6 +5,7 @@
 #include <ember/gpu/common.h>
 
 #include <type_traits>
+#include <utility>
 
 namespace ember::gpu
 {
@@ -80,12 +81,26 @@ namespace ember::gpu
 	 * Device::submit() seals it; the render area, viewport and scissor come from the attachments,
 	 * flipped so clip space is Y up on every backend.
 	 *
-	 * A CommandList is a view over device state, cheap to copy; a submitted or default
-	 * constructed list ignores every call.
+	 * Move-only: submit() consumes the list, so no copy can keep recording into a
+	 * sealed command buffer. A default-constructed, moved-from or submitted list
+	 * ignores every call.
 	 */
 	class CommandList
 	{
 	public:
+		CommandList() = default;
+
+		CommandList(const CommandList&)			   = delete;
+		CommandList& operator=(const CommandList&) = delete;
+
+		CommandList(CommandList&& other) noexcept : m_backend(std::exchange(other.m_backend, nullptr)) {}
+
+		CommandList& operator=(CommandList&& other) noexcept
+		{
+			m_backend = std::exchange(other.m_backend, nullptr);
+			return *this;
+		}
+
 		void barrier(Span<const TextureBarrier> barriers) noexcept;
 		void barrier(const TextureBarrier& single) noexcept { barrier({&single, 1}); }
 

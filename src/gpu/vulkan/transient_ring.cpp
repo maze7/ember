@@ -68,6 +68,10 @@ namespace ember::gpu::vk
 
 			set_name(backend.context, VK_OBJECT_TYPE_BUFFER, reinterpret_cast<u64>(buffer), name);
 
+			// Transient memory is reachable by handle index like any storage buffer;
+			// an unwritten slot still holds the boot fallback and reads zeros.
+			backend.descriptor_heap.write_buffer(backend.context, handle.index, buffer, size);
+
 			out = {
 				.handle		= handle,
 				.allocation = allocation,
@@ -135,12 +139,9 @@ namespace ember::gpu::vk
 		if (!ring.coherent)
 			EMBER_WARN("gpu: transient memory is not host-coherent; end_frame flushes explicitly");
 
-		// The ring serves Storage data, so it takes a bindless slot like any other
-		// storage buffer; set 1's constant descriptors point at it once.
+		// Set 1's constant descriptors point at the ring once; draws vary dynamic offsets.
 		{
 			const BufferHot& hot = *backend.resources.buffers.get(ring.handle);
-			backend.descriptor_heap.write_buffer(
-				backend.context, ring.handle.index, hot.handle, slice * backend.context.frames_in_flight);
 			backend.descriptor_heap.bind_constants(
 				backend.context, hot.handle, backend.context.caps.max_constant_block_bytes);
 		}
