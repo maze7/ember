@@ -757,22 +757,30 @@ namespace ember::gpu
 		}
 
 		Recording& recording = *m_recording;
+		EMBER_ASSERT(recording.zone_depth < MAX_GPU_ZONES && "zone nesting exceeds the per frame budget");
+
+		u8 claimed = Recording::ZONE_UNTIMED;
 
 		// Past the cap the zone still labels and nests; it just goes untimed.
 		if (m_backend->frame.timestamps != VK_NULL_HANDLE && recording.zone_count < MAX_GPU_ZONES)
 		{
+			claimed = static_cast<u8>(recording.zone_count++);
+
 			const u32 slot	= static_cast<u32>(m_backend->frame.index % m_backend->context.frames_in_flight);
-			const u32 query = slot * MAX_GPU_ZONES * 2 + recording.zone_count * 2;
+			const u32 query = slot * MAX_GPU_ZONES * 2 + claimed * 2;
 
 			vkCmdWriteTimestamp2(
 				recording.commands, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, m_backend->frame.timestamps, query);
 
-			recording.zones[recording.zone_count] = {
+			recording.zones[claimed] = {
 				.name  = name,
 				.color = color,
 				.depth = recording.zone_depth,
 			};
 		}
+
+		if (recording.zone_depth < MAX_GPU_ZONES)
+			recording.zone_stack[recording.zone_depth] = claimed;
 
 		++recording.zone_depth;
 	}
@@ -787,16 +795,18 @@ namespace ember::gpu
 
 		--recording.zone_depth;
 
-		// Mirrors begin_zone's cap test: only zones that wrote a begin write an end.
-		if (m_backend->frame.timestamps != VK_NULL_HANDLE && recording.zone_count < MAX_GPU_ZONES)
+		// Close the zone this depth opened; untimed zones wrote no begin to pair with.
+		if (recording.zone_depth < MAX_GPU_ZONES)
 		{
-			const u32 slot	= static_cast<u32>(m_backend->frame.index % m_backend->context.frames_in_flight);
-			const u32 query = slot * MAX_GPU_ZONES * 2 + recording.zone_count * 2 + 1;
+			const u8 claimed = recording.zone_stack[recording.zone_depth];
+			if (claimed != Recording::ZONE_UNTIMED)
+			{
+				const u32 slot	= static_cast<u32>(m_backend->frame.index % m_backend->context.frames_in_flight);
+				const u32 query = slot * MAX_GPU_ZONES * 2 + claimed * 2 + 1;
 
-			vkCmdWriteTimestamp2(
-				recording.commands, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, m_backend->frame.timestamps, query);
-
-			++recording.zone_count;
+				vkCmdWriteTimestamp2(
+					recording.commands, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, m_backend->frame.timestamps, query);
+			}
 		}
 
 		if (m_backend->context.debug_utils)

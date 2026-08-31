@@ -98,6 +98,10 @@ namespace ember::gpu
 		Zone zones[MAX_GPU_ZONES]{};
 		u32 zone_count = 0;
 		u8 zone_depth  = 0;
+
+		/// Open zone indices by depth; ZONE_UNTIMED marks a zone that wrote no begin.
+		static constexpr u8 ZONE_UNTIMED = 0xFF;
+		u8 zone_stack[MAX_GPU_ZONES]{};
 	};
 
 	struct FrameSlot
