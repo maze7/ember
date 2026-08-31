@@ -163,6 +163,21 @@ namespace ember::gpu
 				recording.commands, recording.index_buffer, recording.index_offset, recording.index_type);
 			recording.index_dirty = false;
 		}
+
+		/// The public contract is top left origin with positive height on every
+		/// backend. The negative height here is what makes clip space Y up over
+		/// Vulkan; no caller ever sees the flip.
+		[[nodiscard]] VkViewport flip_viewport(const Viewport& viewport) noexcept
+		{
+			return {
+				.x		  = viewport.x,
+				.y		  = viewport.y + viewport.height,
+				.width	  = viewport.width,
+				.height	  = -viewport.height,
+				.minDepth = viewport.min_depth,
+				.maxDepth = viewport.max_depth,
+			};
+		}
 	}
 
 	void CommandList::barrier(Span<const TextureBarrier> textures, Span<const BufferBarrier> buffers) noexcept
@@ -362,16 +377,10 @@ namespace ember::gpu
 
 		vkCmdBeginRendering(cmd, &rendering);
 
-		// Negative height flips clip space to Y up, matching D3D12, so meshes, winding
-		// and projection math stay identical across backends.
-		const VkViewport viewport{
-			.x		  = 0.0f,
-			.y		  = static_cast<f32>(extent.height),
-			.width	  = static_cast<f32>(extent.width),
-			.height	  = -static_cast<f32>(extent.height),
-			.minDepth = 0.0f,
-			.maxDepth = 1.0f,
-		};
+		const VkViewport viewport = flip_viewport({
+			.width	= static_cast<f32>(extent.width),
+			.height = static_cast<f32>(extent.height),
+		});
 		vkCmdSetViewport(cmd, 0, 1, &viewport);
 
 		const VkRect2D scissor{{0, 0}, {extent.width, extent.height}};
@@ -387,6 +396,36 @@ namespace ember::gpu
 
 		vkCmdEndRendering(recording_cmd(*m_backend));
 		m_recording->inside_pass = false;
+	}
+
+	void CommandList::set_viewport(const Viewport& viewport) noexcept
+	{
+		if (m_backend == nullptr)
+			return;
+
+		EMBER_ASSERT(m_recording->inside_pass && "viewport overrides apply inside a render pass");
+		EMBER_ASSERT(viewport.width > 0.0f && viewport.height > 0.0f);
+
+		const VkViewport native = flip_viewport(viewport);
+		vkCmdSetViewport(m_recording->commands, 0, 1, &native);
+	}
+
+	void CommandList::set_scissor(const Rect2D& scissor) noexcept
+	{
+		if (m_backend == nullptr)
+			return;
+
+		EMBER_ASSERT(m_recording->inside_pass && "scissor overrides apply inside a render pass");
+		EMBER_ASSERT(scissor.x >= 0 && scissor.y >= 0);
+
+		// Scissor rects live in framebuffer coordinates on every backend; the
+		// viewport flip does not touch them.
+		const VkRect2D native{
+			.offset = {scissor.x, scissor.y},
+			.extent = {scissor.width, scissor.height},
+		};
+
+		vkCmdSetScissor(m_recording->commands, 0, 1, &native);
 	}
 
 	void CommandList::push(const void* data, u32 size) noexcept

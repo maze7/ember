@@ -124,8 +124,8 @@ namespace ember::gpu
 	{
 		u32 index_count	   = 0;
 		u32 instance_count = 0;
-		u32 first_index	   = 0;
-		i32 base_index	   = 0;
+		u32 first_vertex   = 0;
+		i32 base_vertex	   = 0;
 		u32 first_instance = 0;
 	};
 	static_assert(sizeof(DrawIndexedIndirectArgs) == 20);
@@ -175,6 +175,9 @@ namespace ember::gpu
 
 		void begin_rendering(const RenderingDef& def) noexcept;
 		void end_rendering() noexcept;
+
+		void set_viewport(const Viewport& viewport) noexcept;
+		void set_scissor(const Rect2D& scissor) noexcept;
 
 		void set_pipeline(GraphicsPipelineHandle pipeline) noexcept;
 		void set_pipeline(ComputePipelineHandle pipeline) noexcept;

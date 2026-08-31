@@ -128,13 +128,12 @@ namespace ember::gpu
 		f32 timestamp_period_ns = 0.0f; // ticks -> ns for GPU zones
 		bool timestamps			= false;
 
-		bool wireframe			   = false; // FillMode::Wireframe
-		bool indirect_count		   = false; // draw_*_indirect_count
-		bool mesh_shaders		   = false;
-		bool sampler_minmax		   = false; // ReductionMode::Min/Max (Hi-Z)
-		bool ray_tracing		   = false; // reserved
-		bool buffer_device_address = false;
-		bool memory_budget		   = false;
+		bool wireframe		= false; // FillMode::Wireframe
+		bool indirect_count = false; // draw_*_indirect_count
+		bool mesh_shaders	= false;
+		bool sampler_minmax = false; // ReductionMode::Min/Max (Hi-Z)
+		bool ray_tracing	= false; // reserved
+		bool memory_budget	= false;
 	};
 
 	struct FrameInfo
@@ -248,8 +247,6 @@ namespace ember::gpu
 		void update_texture(TextureHandle handle, u32 mip, u32 layer, Span<const u8> data) noexcept;
 
 		FrameInfo begin_frame() noexcept;
-		// void submit(CommandList& list) noexcept;
-		// void submit(Span<CommandList* const> lists) noexcept;
 		void end_frame() noexcept;
 
 		/// Blocks until the GPU is idle and drains every deferred deletion.l Never call it per frame.
