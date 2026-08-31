@@ -15,20 +15,18 @@
 [[vk::binding(2, 0)]] TextureCube    ember_textures_cube[];
 [[vk::binding(3, 0)]] Texture3D      ember_textures_3d[];
 
-// Storage images. Each descriptor holds its texture's own view type; this 2D alias
-// covers elements whose texture is 2D, which is every storage writer today. Typed
-// aliases of binding 4 join beside it when 3D or array writers appear.
-[[vk::binding(4, 0)]] RWTexture2D<float4> ember_storage_2d[];
+// Storage arrays split by view dimensionality so every slot, including reset
+// ones, holds a descriptor matching the declared type. Cube storage lives in
+// the 2D array binding.
+[[vk::binding(4, 0)]] RWTexture2D<float4>      ember_storage_2d[];
+[[vk::binding(5, 0)]] RWTexture2DArray<float4> ember_storage_2d_array[];
+[[vk::binding(6, 0)]] RWTexture3D<float4>      ember_storage_3d[];
 
-[[vk::binding(5, 0)]] SamplerState ember_samplers[];
+[[vk::binding(7, 0)]] SamplerState ember_samplers[];
 
-// Raw view of every storage buffer. Typed access declares an alias below.
-[[vk::binding(6, 0)]] ByteAddressBuffer ember_buffers[];
+[[vk::binding(8, 0)]] ByteAddressBuffer ember_buffers[];
 
-// StructuredBuffer<T> aliased over binding 6. Aliasing one binding is legal because
-// every descriptor there is a storage buffer; each element must still be read
-// through a type matching what the C++ side put in that slot.
-#define EMBER_BUFFER_ALIAS(T, name) [[vk::binding(6, 0)]] StructuredBuffer<T> name[];
+#define EMBER_BUFFER_ALIAS(T, name) [[vk::binding(8, 0)]] StructuredBuffer<T> name[];
 
 // Accessors stay macros so NonUniformResourceIndex lands textually on the descriptor
 // access; a function parameter can lose the qualifier to inlining.

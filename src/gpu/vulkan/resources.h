@@ -5,6 +5,7 @@
 #include <ember/gpu/device.h>
 #include <ember/gpu/swapchain.h>
 #include <ember/memory/common.h>
+#include <ember/memory/memory.h>
 #include <ember/platform/window.h>
 #include <gpu/vulkan/common.h>
 #include <vk_mem_alloc.h>
@@ -49,6 +50,20 @@ namespace ember::gpu::vk
 
 		// False for swapchain images.
 		bool owns_image = true;
+
+		TextureType type = TextureType::Texture2D;
+
+		/// Internal subresource entries carry their parent here; user handles never do.
+		TextureHandle parent{};
+
+		/// Hidden per mip storage entries, mips 1 and deeper. Slot 0 of the chain is
+		/// the texture's own bindless slot.
+		TextureHandle mip_storage[MAX_MIP_LEVELS]{};
+
+		/// Single slice attachment views, mip major, for render targets with more
+		/// than one subresource. Empty otherwise; begin_rendering falls back to the
+		/// whole view.
+		Vector<VkImageView> attachment_views{&memory::heap(MemoryTag::Graphics)};
 	};
 
 	struct SamplerData

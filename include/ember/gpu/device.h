@@ -46,6 +46,8 @@ namespace ember::gpu
 	 * Each must be <= 65535 (32 bit handles).
 	 *
 	 * Samplers additionally must be <= MAX_BINDLESS_SAMPLERS.
+	 *
+	 * Storage textures claim one internal slot per mip past the first.
 	 */
 	struct DeviceLimits
 	{
@@ -217,6 +219,13 @@ namespace ember::gpu
 		[[nodiscard]] TextureHandle acquire(SwapchainHandle handle) noexcept;
 		[[nodiscard]] Extent2D swapchain_extent(SwapchainHandle handle) const noexcept;
 		[[nodiscard]] TextureFormat swapchain_format(SwapchainHandle handle) const noexcept;
+
+		/**
+		 * The bindless index of one mip's storage descriptor. Mip 0 is the handle's
+		 * own index; deeper mips resolve to internal per mip entries created with
+		 * the texture. Stale handles return slot 0, the fallback.
+		 */
+		[[nodiscard]] u32 storage_index(TextureHandle handle, u32 mip) const noexcept;
 
 		[[nodiscard]] void* mapped(BufferHandle handle) noexcept;
 

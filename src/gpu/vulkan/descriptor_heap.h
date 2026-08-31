@@ -53,7 +53,7 @@ namespace ember::gpu::vk
 			BufferHandle buffer{};
 
 			VkImageView sampled_views[SAMPLED_ARRAY_COUNT] = {};
-			VkImageView storage_view					   = VK_NULL_HANDLE;
+			VkImageView storage_views[STORAGE_ARRAY_COUNT] = {};
 			VkSampler sampler_vk						   = VK_NULL_HANDLE;
 			VkBuffer buffer_vk							   = VK_NULL_HANDLE;
 		};
@@ -81,7 +81,7 @@ namespace ember::gpu::vk
 		// descriptor must state the layout the image is in when a shader reads it.
 		void
 		write_sampled(const Context& ctx, u32 slot, VkImageView view, VkImageLayout layout, TextureType type) noexcept;
-		void write_storage(const Context& ctx, u32 slot, VkImageView view) noexcept;
+		void write_storage(const Context& ctx, u32 slot, VkImageView view, TextureType type) noexcept;
 		void write_sampler(const Context& ctx, u32 slot, VkSampler sampler) noexcept;
 		void write_buffer(const Context& ctx, u32 slot, VkBuffer buffer, u64 size) noexcept;
 

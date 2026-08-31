@@ -3,6 +3,8 @@
 #include <gpu/vulkan/backend.h>
 #include <gpu/vulkan/formats.h>
 
+#include <algorithm>
+
 namespace ember::gpu
 {
 	namespace
@@ -205,6 +207,7 @@ namespace ember::gpu
 				.mip_count	 = def.mip_count,
 				.layer_count = def.layers,
 				.layout		 = steady,
+				.type		 = def.type,
 			});
 
 		if (handle.is_null())
@@ -219,7 +222,102 @@ namespace ember::gpu
 		if ((def.usage & TextureUsage::Sampled) != TextureUsage::None)
 			m_backend->descriptor_heap.write_sampled(m_backend->context, handle.index, view, steady, def.type);
 		if ((def.usage & TextureUsage::Storage) != TextureUsage::None)
-			m_backend->descriptor_heap.write_storage(m_backend->context, handle.index, storage_view);
+			m_backend->descriptor_heap.write_storage(m_backend->context, handle.index, storage_view, def.type);
+
+		vk::TextureCold& cold = *m_backend->resources.textures.get_cold(handle);
+
+		// Deep mips get their own storage entries so shaders can write any level by
+		// index. Hidden pool slots: created with the texture, destroyed with it,
+		// never handed out as user handles.
+		if ((def.usage & TextureUsage::Storage) != TextureUsage::None)
+		{
+			for (u32 mip = 1; mip < def.mip_count; ++mip)
+			{
+				VkImageViewCreateInfo mip_info = view_info;
+				mip_info.viewType =
+					def.type == TextureType::TextureCube ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : view_info.viewType;
+				mip_info.subresourceRange.baseMipLevel = mip;
+				mip_info.subresourceRange.levelCount   = 1;
+
+				VkImageView mip_view = VK_NULL_HANDLE;
+				if (vkCreateImageView(m_backend->context.device, &mip_info, nullptr, &mip_view) != VK_SUCCESS)
+				{
+					EMBER_ERROR("gpu: texture '{}' mip {} storage view creation failed", def.name, mip);
+					destroy(handle);
+					return {};
+				}
+
+				const TextureHandle entry = m_backend->resources.textures.insert(
+					vk::TextureHot{.image = image, .storage_view = mip_view},
+					vk::TextureCold{
+						.extent =
+							{
+								std::max(def.extent.width >> mip, 1u),
+								std::max(def.extent.height >> mip, 1u),
+								std::max(def.extent.depth >> mip, 1u),
+							},
+						.format		= info.vk,
+						.api_format = def.format,
+						.layout		= steady,
+						.owns_image = false,
+						.type		= def.type,
+						.parent		= handle,
+					});
+
+				if (entry.is_null())
+				{
+					EMBER_ERROR("gpu: texture pool exhausted on '{}' mip {}", def.name, mip);
+					vkDestroyImageView(m_backend->context.device, mip_view, nullptr);
+					destroy(handle);
+					return {};
+				}
+
+				cold.mip_storage[mip] = entry;
+				m_backend->descriptor_heap.write_storage(m_backend->context, entry.index, mip_view, def.type);
+			}
+		}
+
+		// Render targets with more than one subresource carry single slice views for
+		// begin_rendering to pick by (mip, layer). Bounded so a config mistake fails
+		// at creation with a message.
+		const bool target =
+			(def.usage & (TextureUsage::ColorTarget | TextureUsage::DepthStencilTarget)) != TextureUsage::None;
+
+		if (target && (def.mip_count > 1 || def.layers > 1))
+		{
+			if (def.mip_count * def.layers > 128)
+			{
+				EMBER_ERROR(
+					"gpu: texture '{}' attachment matrix {}x{} exceeds 128 slices", def.name, def.mip_count, def.layers);
+				destroy(handle);
+				return {};
+			}
+
+			cold.attachment_views.reserve(def.mip_count * def.layers);
+
+			for (u32 mip = 0; mip < def.mip_count; ++mip)
+			{
+				for (u32 layer = 0; layer < def.layers; ++layer)
+				{
+					VkImageViewCreateInfo slice_info		   = view_info;
+					slice_info.viewType						   = VK_IMAGE_VIEW_TYPE_2D;
+					slice_info.subresourceRange.baseMipLevel   = mip;
+					slice_info.subresourceRange.levelCount	   = 1;
+					slice_info.subresourceRange.baseArrayLayer = layer;
+					slice_info.subresourceRange.layerCount	   = 1;
+
+					VkImageView slice = VK_NULL_HANDLE;
+					if (vkCreateImageView(m_backend->context.device, &slice_info, nullptr, &slice) != VK_SUCCESS)
+					{
+						EMBER_ERROR("gpu: texture '{}' attachment view creation failed", def.name);
+						destroy(handle);
+						return {};
+					}
+
+					cold.attachment_views.push_back(slice);
+				}
+			}
+		}
 
 		// Data lands and/or the image transitions into its steady layout; either way
 		// every texture leaves creation resting in a known layout.
@@ -249,11 +347,28 @@ namespace ember::gpu
 			return;
 
 		const vk::TextureCold& cold = *m_backend->resources.textures.get_cold(handle);
+
+		EMBER_ASSERT(cold.parent.is_null() && "internal subresource entries die with their texture");
+
 		if (!cold.owns_image)
 		{
 			EMBER_ASSERT(false && "backbuffers are destroyed through their swapchain");
 			return;
 		}
+
+		// Internal subresources ride the same clock as the texture itself.
+		for (const TextureHandle entry : cold.mip_storage)
+		{
+			if (entry.is_null())
+				continue;
+
+			m_backend->destroy_queue.destroy(m_backend->resources.textures.get(entry)->storage_view);
+			m_backend->destroy_queue.reset_slot(entry.index, vk::HeapArray::Storage);
+			(void)m_backend->resources.textures.retire(entry);
+		}
+
+		for (const VkImageView slice : cold.attachment_views)
+			m_backend->destroy_queue.destroy(slice);
 
 		m_backend->destroy_queue.destroy(hot->sampled_view);
 		m_backend->destroy_queue.destroy(hot->storage_view);
@@ -313,5 +428,23 @@ namespace ember::gpu
 			mip,
 			layer,
 			data);
+	}
+
+	u32 Device::storage_index(TextureHandle handle, u32 mip) const noexcept
+	{
+		if (m_backend == nullptr)
+			return 0;
+
+		const vk::TextureCold* cold = m_backend->resources.textures.get_cold(handle);
+		if (cold == nullptr)
+			return 0; // slot 0 is the fallback; a stale handle degrades instead of faulting
+
+		EMBER_ASSERT(mip < cold->mip_count);
+
+		if (mip == 0)
+			return handle.index;
+
+		EMBER_ASSERT(!cold->mip_storage[mip].is_null() && "texture was not created with Storage usage");
+		return cold->mip_storage[mip].index;
 	}
 }

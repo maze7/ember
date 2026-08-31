@@ -89,6 +89,8 @@ namespace ember::gpu
 	struct ColorAttachment
 	{
 		TextureHandle texture{};
+		u32 mip		  = 0;
+		u32 layer	  = 0;
 		LoadOp load	  = LoadOp::Clear;
 		StoreOp store = StoreOp::Store;
 		ClearColor clear{};
@@ -97,6 +99,8 @@ namespace ember::gpu
 	struct DepthAttachment
 	{
 		TextureHandle texture{}; // null = no depth
+		u32 mip			= 0;
+		u32 layer		= 0;
 		LoadOp load		= LoadOp::Clear;
 		StoreOp store	= StoreOp::Store;
 		f32 clear_depth = 0.0f; // reverse Z: zero is the far plane

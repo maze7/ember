@@ -83,6 +83,23 @@ namespace ember::gpu
 		Span<const u8> initial_data = {};
 	};
 
+	/// Which storage array a texture's write descriptors live in. Cube storage
+	/// views are 2D arrays, matching D3D12's RWTexture2DArray rule for cube UAVs.
+	[[nodiscard]] constexpr u32 storage_array(TextureType type) noexcept
+	{
+		switch (type)
+		{
+			case TextureType::Texture2D:
+				return 0;
+			case TextureType::Texture2DArray:
+			case TextureType::TextureCube:
+				return 1;
+			case TextureType::Texture3D:
+				return 2;
+		}
+		return 0;
+	}
+
 	/// Returns true if the provided format is a supported Depth format
 	[[nodiscard]] constexpr bool is_depth_format(TextureFormat format) noexcept
 	{

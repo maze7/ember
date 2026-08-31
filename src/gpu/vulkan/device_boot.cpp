@@ -622,7 +622,7 @@ namespace ember::gpu
 			out.memory_budget		  = has_extension(extensions, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
 
 			// Features: reject on missing required ones, logging every gap in a single pass.
-			FeatureChain available{{.mesh_shaders = true}};
+			FeatureChain available{{.mesh_shaders = mesh_extension}};
 			available.query(handle);
 
 			if (!available.check_required(name))
@@ -709,14 +709,16 @@ namespace ember::gpu
 				props12.maxDescriptorSetUpdateAfterBindSampledImages,
 				limits.max_textures * SAMPLED_ARRAY_COUNT,
 				"sampled images");
-			heap_ok &=
-				check_uab(props12.maxDescriptorSetUpdateAfterBindStorageImages, limits.max_textures, "storage images");
+			heap_ok &= check_uab(
+				props12.maxDescriptorSetUpdateAfterBindStorageImages,
+				limits.max_textures * STORAGE_ARRAY_COUNT,
+				"storage images");
 			heap_ok &=
 				check_uab(props12.maxDescriptorSetUpdateAfterBindStorageBuffers, limits.max_buffers, "storage buffers");
 			heap_ok &= check_uab(props12.maxDescriptorSetUpdateAfterBindSamplers, limits.max_samplers, "samplers");
 			heap_ok &= check_uab(
 				props12.maxPerStageUpdateAfterBindResources,
-				limits.max_textures * (SAMPLED_ARRAY_COUNT + 1u) + limits.max_buffers,
+				limits.max_textures * (SAMPLED_ARRAY_COUNT + STORAGE_ARRAY_COUNT) + limits.max_buffers,
 				"per-stage resources");
 
 			if (!heap_ok)
@@ -885,7 +887,6 @@ namespace ember::gpu
 
 			// Assignment, not designated init: VMA's member order is not stable across versions.
 			VmaAllocatorCreateInfo info{};
-			info.flags			  = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 			info.physicalDevice	  = ctx.adapter;
 			info.device			  = ctx.device;
 			info.instance		  = ctx.instance;
@@ -1167,8 +1168,9 @@ namespace ember::gpu
 				platform::vk::release_loader();
 
 			// Leave no dangling handles behind for a stray late reader.
+			// The spelled type keeps GCC 12 happy; it rejects a bare {} here.
 			ctx			  = {};
-			backend.frame = {};
+			backend.frame = FrameState{};
 		}
 	}
 }

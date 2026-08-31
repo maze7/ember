@@ -6,6 +6,8 @@
 #include <gpu/vulkan/formats.h>
 #include <vulkan/vulkan_core.h>
 
+#include <algorithm>
+
 namespace ember::gpu
 {
 	namespace
@@ -167,6 +169,21 @@ namespace ember::gpu
 		/// The public contract is top left origin with positive height on every
 		/// backend. The negative height here is what makes clip space Y up over
 		/// Vulkan; no caller ever sees the flip.
+		/// Single mip, single layer textures attach through their whole view; anything
+		/// larger goes through the slice matrix its creation built.
+		[[nodiscard]] VkImageView
+		attachment_view(const vk::TextureHot& hot, const vk::TextureCold& cold, u32 mip, u32 layer) noexcept
+		{
+			if (cold.attachment_views.empty())
+			{
+				EMBER_ASSERT(mip == 0 && layer == 0);
+				return hot.sampled_view;
+			}
+
+			EMBER_ASSERT(mip < cold.mip_count && layer < cold.layer_count);
+			return cold.attachment_views[mip * cold.layer_count + layer];
+		}
+
 		[[nodiscard]] VkViewport flip_viewport(const Viewport& viewport) noexcept
 		{
 			return {
@@ -334,11 +351,17 @@ namespace ember::gpu
 		{
 			const ColorAttachment& attachment = def.colors[i];
 			const vk::TextureHot& hot		  = *m_backend->resources.textures.get(attachment.texture);
-			extent							  = m_backend->resources.textures.get_cold(attachment.texture)->extent;
+			const vk::TextureCold& cold		  = *m_backend->resources.textures.get_cold(attachment.texture);
+
+			extent = {
+				std::max(cold.extent.width >> attachment.mip, 1u),
+				std::max(cold.extent.height >> attachment.mip, 1u),
+				1,
+			};
 
 			colors[i] = {
 				.sType		 = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-				.imageView	 = hot.sampled_view,
+				.imageView	 = attachment_view(hot, cold, attachment.mip, attachment.layer),
 				.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 				.loadOp		 = to_vk_load(attachment.load),
 				.storeOp	 = to_vk_store(attachment.store),
@@ -353,12 +376,18 @@ namespace ember::gpu
 
 		if (has_depth)
 		{
-			const vk::TextureHot& hot = *m_backend->resources.textures.get(def.depth.texture);
-			extent					  = m_backend->resources.textures.get_cold(def.depth.texture)->extent;
+			const vk::TextureHot& hot	= *m_backend->resources.textures.get(def.depth.texture);
+			const vk::TextureCold& cold = *m_backend->resources.textures.get_cold(def.depth.texture);
+
+			extent = {
+				std::max(cold.extent.width >> def.depth.mip, 1u),
+				std::max(cold.extent.height >> def.depth.mip, 1u),
+				1,
+			};
 
 			depth = {
 				.sType		 = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
-				.imageView	 = hot.sampled_view,
+				.imageView	 = attachment_view(hot, cold, def.depth.mip, def.depth.layer),
 				.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 				.loadOp		 = to_vk_load(def.depth.load),
 				.storeOp	 = to_vk_store(def.depth.store),

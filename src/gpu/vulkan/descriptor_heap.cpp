@@ -58,12 +58,20 @@ namespace ember::gpu::vk
 			 nullptr},
 			{BINDING_SAMPLED_CUBE, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_capacity, VK_SHADER_STAGE_ALL, nullptr},
 			{BINDING_SAMPLED_3D, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_capacity, VK_SHADER_STAGE_ALL, nullptr},
-			{BINDING_STORAGE_IMAGES, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, texture_capacity, VK_SHADER_STAGE_ALL, nullptr},
+			{BINDING_STORAGE_2D, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, texture_capacity, VK_SHADER_STAGE_ALL, nullptr},
+			{BINDING_STORAGE_2D_ARRAY,
+			 VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			 texture_capacity,
+			 VK_SHADER_STAGE_ALL,
+			 nullptr},
+			{BINDING_STORAGE_3D, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, texture_capacity, VK_SHADER_STAGE_ALL, nullptr},
 			{BINDING_SAMPLERS, VK_DESCRIPTOR_TYPE_SAMPLER, sampler_capacity, VK_SHADER_STAGE_ALL, nullptr},
 			{BINDING_STORAGE_BUFFERS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buffer_capacity, VK_SHADER_STAGE_ALL, nullptr},
 		};
 
 		const VkDescriptorBindingFlags binding_flags[] = {
+			BINDLESS_FLAGS,
+			BINDLESS_FLAGS,
 			BINDLESS_FLAGS,
 			BINDLESS_FLAGS,
 			BINDLESS_FLAGS,
@@ -138,7 +146,7 @@ namespace ember::gpu::vk
 
 		const VkDescriptorPoolSize pool_sizes[] = {
 			{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_capacity * SAMPLED_ARRAY_COUNT},
-			{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, texture_capacity},
+			{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, texture_capacity * STORAGE_ARRAY_COUNT},
 			{VK_DESCRIPTOR_TYPE_SAMPLER, sampler_capacity},
 			{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, buffer_capacity},
 			{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, CONSTANT_BUFFER_SLOTS},
@@ -213,13 +221,13 @@ namespace ember::gpu::vk
 			layout);
 	}
 
-	void DescriptorHeap::write_storage(const Context& ctx, u32 slot, VkImageView view) noexcept
+	void DescriptorHeap::write_storage(const Context& ctx, u32 slot, VkImageView view, TextureType type) noexcept
 	{
 		EMBER_ASSERT(slot < m_texture_capacity);
 		write_image(
 			ctx,
 			m_set,
-			BINDING_STORAGE_IMAGES,
+			BINDING_STORAGE_2D + storage_array(type),
 			slot,
 			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			view,
@@ -280,7 +288,18 @@ namespace ember::gpu::vk
 		}
 
 		if ((mask & HeapArray::Storage) != HeapArray::None)
-			write_storage(ctx, slot, m_fallbacks.storage_view);
+		{
+			for (u32 i = 0; i < STORAGE_ARRAY_COUNT; ++i)
+				write_image(
+					ctx,
+					m_set,
+					BINDING_STORAGE_2D + i,
+					slot,
+					VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+					m_fallbacks.storage_views[i],
+					VK_NULL_HANDLE,
+					VK_IMAGE_LAYOUT_GENERAL);
+		}
 		if ((mask & HeapArray::Sampler) != HeapArray::None)
 			write_sampler(ctx, slot, m_fallbacks.sampler_vk);
 		if ((mask & HeapArray::Buffer) != HeapArray::None)
@@ -337,11 +356,12 @@ namespace ember::gpu::vk
 				{VK_NULL_HANDLE, m_fallbacks.sampled_views[i], VK_IMAGE_LAYOUT_GENERAL},
 				m_texture_capacity);
 
-		fill(
-			BINDING_STORAGE_IMAGES,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			{VK_NULL_HANDLE, m_fallbacks.storage_view, VK_IMAGE_LAYOUT_GENERAL},
-			m_texture_capacity);
+		for (u32 i = 0; i < STORAGE_ARRAY_COUNT; ++i)
+			fill(
+				BINDING_STORAGE_2D + i,
+				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				{VK_NULL_HANDLE, m_fallbacks.storage_views[i], VK_IMAGE_LAYOUT_GENERAL},
+				m_texture_capacity);
 		fill(
 			BINDING_SAMPLERS,
 			VK_DESCRIPTOR_TYPE_SAMPLER,
@@ -450,7 +470,11 @@ namespace ember::gpu::vk
 			fb.sampled_views[i]	  = hot.sampled_view;
 		}
 
-		fb.storage_view = backend.resources.textures.get(fb.texture[0])->storage_view;
+		// One typed fallback per storage array; every boot fallback carries Storage
+		// usage, so the views already exist. FALLBACKS order: 2d, 2d_array, cube, 3d.
+		fb.storage_views[0] = backend.resources.textures.get(fb.texture[0])->storage_view;
+		fb.storage_views[1] = backend.resources.textures.get(fb.texture[1])->storage_view;
+		fb.storage_views[2] = backend.resources.textures.get(fb.texture[3])->storage_view;
 
 		static constexpr u8 ZERO[256] = {};
 

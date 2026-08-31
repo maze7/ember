@@ -59,10 +59,13 @@ namespace ember
 	inline constexpr u32 BINDING_SAMPLED_2D_ARRAY = 1;
 	inline constexpr u32 BINDING_SAMPLED_CUBE	  = 2;
 	inline constexpr u32 BINDING_SAMPLED_3D		  = 3;
-	inline constexpr u32 BINDING_STORAGE_IMAGES	  = 4;
-	inline constexpr u32 BINDING_SAMPLERS		  = 5;
-	inline constexpr u32 BINDING_STORAGE_BUFFERS  = 6;
+	inline constexpr u32 BINDING_STORAGE_2D		  = 4;
+	inline constexpr u32 BINDING_STORAGE_2D_ARRAY = 5;
+	inline constexpr u32 BINDING_STORAGE_3D		  = 6;
+	inline constexpr u32 BINDING_SAMPLERS		  = 7;
+	inline constexpr u32 BINDING_STORAGE_BUFFERS  = 8;
 	inline constexpr u32 SAMPLED_ARRAY_COUNT	  = 4; // one per TextureType
+	inline constexpr u32 STORAGE_ARRAY_COUNT	  = 3; // cube storage views are 2D arrays
 
 #if defined(EMBER_DEBUG)
 	inline constexpr bool GPU_VALIDATION_DEFAULT = true;

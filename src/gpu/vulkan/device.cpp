@@ -332,6 +332,11 @@ namespace ember::gpu
 		{
 			const TextureHandle handle = it.handle();
 			++it;
+
+			// Internal subresource entries die with their owning texture.
+			if (!textures.get_cold(handle)->parent.is_null())
+				continue;
+
 			EMBER_WARN("gpu: texture leaked at device destruction");
 			destroy(handle);
 		}
