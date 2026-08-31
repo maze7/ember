@@ -13,8 +13,7 @@ namespace ember::gpu::vk
 		/// rings, and buffers pay nothing for extra usage bits on our targets.
 		constexpr VkBufferUsageFlags TRANSIENT_USAGE =
 			VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
-			VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
 
 		/// Host-visible, persitently mapped, pool-registered. On ReBAR/SAM adapters the memory prefers VRAM
 		/// (the CPU writes across the bus once; the GPU reads it hot every draw). Pre-ReBAR we deliberately
@@ -47,13 +46,8 @@ namespace ember::gpu::vk
 				return false;
 			}
 
-			VkBufferDeviceAddressInfo address_info{
-				.sType	= VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-				.buffer = buffer,
-			};
-
 			BufferHandle handle = backend.resources.buffers.insert(
-				BufferHot{.handle = buffer, .address = vkGetBufferDeviceAddress(backend.context.device, &address_info)},
+				BufferHot{.handle = buffer},
 				BufferCold{.allocation = allocation, .size = size, .mapped = result.pMappedData});
 
 			if (handle.is_null())
@@ -124,9 +118,13 @@ namespace ember::gpu::vk
 			slice = max_slice;
 		}
 
+		// Constant descriptors span a fixed window past any dynamic offset
+		// (bind_constants). The slack keeps offset + window inside the buffer for
+		// allocations at the end of the last slice; the allocator never hands it out.
+		const u64 ring_bytes = slice * backend.context.frames_in_flight + backend.context.caps.max_constant_block_bytes;
+
 		TransientPage as_page{};
-		if (!create_transient_buffer(
-				backend, slice * backend.context.frames_in_flight, "ember.transient_ring", as_page))
+		if (!create_transient_buffer(backend, ring_bytes, "ember.transient_ring", as_page))
 			return false;
 
 		ring.handle		 = as_page.handle;

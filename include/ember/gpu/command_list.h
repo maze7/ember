@@ -186,6 +186,20 @@ namespace ember::gpu
 			push(&data, sizeof(T));
 		}
 
+		/**
+		 * Fills constant slot `slot` for the draws and dispatches that follow: allocates
+		 * transient space, copies `data`, rebinds the slot's dynamic offset at the next
+		 * draw or dispatch. Slots persist until overwritten.
+		 *
+		 * Slot use by frequency is the convention: 0 per frame, 1 per pass, 2 per draw.
+		 */
+		template <typename T> void set_constants(u32 slot, const T& data) noexcept
+		{
+			static_assert(std::is_trivially_copyable_v<T>, "constants are raw bytes");
+			static_assert(sizeof(T) <= 16384, "constant blocks stay within the spec floor every adapter guarantees");
+			set_constants_raw(slot, &data, sizeof(T));
+		}
+
 		void set_index_buffer(BufferHandle buffer, IndexFormat format = IndexFormat::U32, u64 offset = 0) noexcept;
 
 		void draw(u32 vertex_count, u32 instance_count = 1, u32 first_vertex = 0, u32 first_instance = 0) noexcept;
@@ -233,6 +247,7 @@ namespace ember::gpu
 		friend class Device;
 
 		void push(const void* data, u32 size) noexcept;
+		void set_constants_raw(u32 slot, const void* data, u32 size) noexcept;
 
 		Backend* m_backend	   = nullptr;
 		Recording* m_recording = nullptr;

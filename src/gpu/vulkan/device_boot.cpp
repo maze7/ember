@@ -160,9 +160,6 @@ namespace ember::gpu
 				EMBER_FEATURE(Features12, shaderStorageBufferArrayNonUniformIndexing),
 				EMBER_FEATURE(Features12, shaderStorageImageArrayNonUniformIndexing),
 				EMBER_FEATURE(Features12, scalarBlockLayout),
-				/// GPU-driven rendering reads vertices and draw records through device
-				/// addresses, and D3D12 requires GPUVAs.
-				EMBER_FEATURE(Features12, bufferDeviceAddress),
 			};
 
 			static constexpr FeatureRef<Features13> REQUIRED_13[] = {

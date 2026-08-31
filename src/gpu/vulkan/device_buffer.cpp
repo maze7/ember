@@ -52,10 +52,6 @@ namespace ember::gpu
 			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 		};
 
-		// bufferDeviceAddress is in REQUIRED_12 (GPU-driven vertex pulling and
-		// draw-record buffers), so every buffer gets an address unconditionally.
-		buffer_info.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-
 		VmaAllocationCreateInfo alloc_info{};
 		alloc_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 
@@ -86,15 +82,8 @@ namespace ember::gpu
 			return {};
 		}
 
-		const VkBufferDeviceAddressInfo address_info{
-			.sType	= VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-			.buffer = buffer,
-		};
-
-		const VkDeviceAddress address = vkGetBufferDeviceAddress(m_backend->context.device, &address_info);
-
 		BufferHandle handle = m_backend->resources.buffers.insert(
-			vk::BufferHot{.handle = buffer, .address = address},
+			vk::BufferHot{.handle = buffer},
 			vk::BufferCold{.allocation = allocation, .size = def.size, .mapped = result.pMappedData});
 
 		if (handle.is_null())
@@ -192,19 +181,5 @@ namespace ember::gpu
 		}
 
 		vk::staging_upload(*m_backend, hot->handle, offset, data);
-	}
-
-	u64 Device::buffer_address(BufferHandle handle) const noexcept
-	{
-		if (m_backend == nullptr)
-			return 0;
-
-		if (const vk::BufferHot* hot = m_backend->resources.buffers.get(handle))
-			return hot->address;
-
-		// Like update_buffer: asking for a dead buffer's address is always a bug
-		// upstream, and asserting here beats a GPU fault three frames later.
-		EMBER_ASSERT(false && "buffer_address on a stale handle");
-		return 0;
 	}
 }

@@ -633,4 +633,37 @@ namespace ember::gpu
 
 		vkCmdFillBuffer(m_recording->commands, native, offset, size, value);
 	}
+
+	void CommandList::set_constants_raw(u32 slot, const void* data, u32 size) noexcept
+	{
+		if (m_backend == nullptr)
+			return;
+
+		EMBER_ASSERT(slot < CONSTANT_BUFFER_SLOTS);
+
+		Backend& backend = *m_backend;
+
+		const TransientAllocation allocation =
+			backend.transient.allocate(size, backend.context.caps.constant_buffer_offset_alignment);
+
+		if (!allocation.valid())
+		{
+			EMBER_ERROR("gpu: constant allocation failed; slot {} keeps its previous data", slot);
+			return;
+		}
+
+		// Set 1's descriptors address the primary ring and nothing else, so an
+		// allocation that spilled to an overflow page cannot be bound as constants.
+		if (allocation.buffer != backend.transient_ring.handle)
+		{
+			EMBER_ERROR("gpu: constants landed on an overflow page; raise DeviceDef::transient_ring_bytes");
+			return;
+		}
+
+		std::memcpy(allocation.cpu, data, size);
+
+		m_recording->constant_offsets[slot]	  = allocation.offset;
+		m_recording->constants_dirty_graphics = true;
+		m_recording->constants_dirty_compute  = true;
+	}
 }

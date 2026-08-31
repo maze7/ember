@@ -52,3 +52,9 @@
 #define EMBER_STORAGE_2D_NU(i)  ember_storage_2d[NonUniformResourceIndex(i)]
 #define EMBER_SAMPLER_NU(i)     ember_samplers[NonUniformResourceIndex(i)]
 #define EMBER_BUFFER_NU(i)      ember_buffers[NonUniformResourceIndex(i)]
+
+// Set 1: three constant slots with dynamic offsets, the data path for CPU issued
+// draws. Slot use by frequency is the convention: 0 per frame, 1 per pass, 2 per
+// draw. Declare a typed block for each slot the shader reads; CommandList
+// set_constants fills it from the transient ring.
+#define EMBER_CONSTANTS(slot, T, name) [[vk::binding(slot, 1)]] ConstantBuffer<T> name;
