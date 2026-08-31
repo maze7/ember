@@ -2,6 +2,7 @@
 
 #include <ember/containers/span.h>
 #include <ember/core/common.h>
+#include <ember/gpu/buffer.h>
 #include <ember/gpu/common.h>
 
 #include <type_traits>
@@ -10,6 +11,7 @@
 namespace ember::gpu
 {
 	struct Backend;
+	struct Recording;
 
 	/**
 	 * Where a texture's memory sits for the next stretch of GPU work. One state names a
@@ -21,6 +23,7 @@ namespace ember::gpu
 		RenderTarget, //
 		DepthTarget,  //
 		ShaderRead,	  //
+		ShaderWrite,  // storage image access, any shader stage
 		CopySrc,	  //
 		CopyDst,	  //
 		Present,	  // only legal as `after`; the presentation engine takes over from here
@@ -31,6 +34,35 @@ namespace ember::gpu
 		TextureHandle texture{};
 		TextureState before = TextureState::Undefined;
 		TextureState after	= TextureState::Undefined;
+
+		/// Whole image by default. Narrow when levels move independently, the
+		/// mip pyramid downsample being the canonical case.
+		u32 base_mip	= 0;
+		u32 mip_count	= ALL_MIPS;
+		u32 base_layer	= 0;
+		u32 layer_count = ALL_LAYERS;
+	};
+
+	/**
+	 * Where a buffer's bytes sit for the next stretch of GPU work. Buffers have no
+	 * layouts, so a state is purely the (stage, access) scope to synchronize against;
+	 * on first use an `before` is safe because there is nothing earlier to wait for.
+	 */
+	enum class BufferState : u8
+	{
+		ShaderRead,
+		ShaderWrite,
+		IndexBuffer,
+		IndirectArgument,
+		CopySrc,
+		CopyDst,
+	};
+
+	struct BufferBarrier
+	{
+		BufferHandle buffer{};
+		BufferState before = BufferState::ShaderRead;
+		BufferState after  = BufferState::ShaderRead;
 	};
 
 	enum class LoadOp : u8
@@ -76,6 +108,37 @@ namespace ember::gpu
 		DepthAttachment depth{};
 	};
 
+	/// Bit-identical to VkDrawIndirectCommand and D3D12_DRAW_ARGUMENTS: one buffer layout
+	/// serves every backend and can be baked into cooked data.
+	struct DrawIndirectArgs
+	{
+		u32 vertex_count   = 0;
+		u32 instance_count = 0;
+		u32 first_vertex   = 0;
+		u32 first_instance = 0;
+	};
+	static_assert(sizeof(DrawIndirectArgs) == 16);
+
+	/// Bit-identical to VkDrawIndexedIndirectCommand and D3D12_DRAW_INDEXED_ARGUMENTS.
+	struct DrawIndexedIndirectArgs
+	{
+		u32 index_count	   = 0;
+		u32 instance_count = 0;
+		u32 first_index	   = 0;
+		i32 base_index	   = 0;
+		u32 first_instance = 0;
+	};
+	static_assert(sizeof(DrawIndexedIndirectArgs) == 20);
+
+	/// Bit-identical to VkDispatchIndirectCommand and D3D12_DISPATCH_ARGUMENTS.
+	struct DispatchIndirectArgs
+	{
+		u32 x = 1;
+		u32 y = 1;
+		u32 z = 1;
+	};
+	static_assert(sizeof(DispatchIndirectArgs) == 12);
+
 	/**
 	 * Records GPU work inside a frame. Device::begin_command_list() hands one out,
 	 * Device::submit() seals it; the render area, viewport and scissor come from the attachments,
@@ -93,21 +156,28 @@ namespace ember::gpu
 		CommandList(const CommandList&)			   = delete;
 		CommandList& operator=(const CommandList&) = delete;
 
-		CommandList(CommandList&& other) noexcept : m_backend(std::exchange(other.m_backend, nullptr)) {}
+		CommandList(CommandList&& other) noexcept
+			: m_backend(std::exchange(other.m_backend, nullptr)), m_recording(std::exchange(other.m_recording, nullptr))
+		{
+		}
 
 		CommandList& operator=(CommandList&& other) noexcept
 		{
-			m_backend = std::exchange(other.m_backend, nullptr);
+			m_backend	= std::exchange(other.m_backend, nullptr);
+			m_recording = std::exchange(other.m_recording, nullptr);
 			return *this;
 		}
 
-		void barrier(Span<const TextureBarrier> barriers) noexcept;
+		void barrier(Span<const TextureBarrier> barriers, Span<const BufferBarrier> buffers = {}) noexcept;
 		void barrier(const TextureBarrier& single) noexcept { barrier({&single, 1}); }
+		void barrier(const BufferBarrier& single) noexcept { barrier({}, {&single, 1}); }
+		void memory_barrier() noexcept;
 
 		void begin_rendering(const RenderingDef& def) noexcept;
 		void end_rendering() noexcept;
 
 		void set_pipeline(GraphicsPipelineHandle pipeline) noexcept;
+		void set_pipeline(ComputePipelineHandle pipeline) noexcept;
 
 		template <typename T> void set_push_constants(const T& data) noexcept
 		{
@@ -116,13 +186,55 @@ namespace ember::gpu
 			push(&data, sizeof(T));
 		}
 
+		void set_index_buffer(BufferHandle buffer, IndexFormat format = IndexFormat::U32, u64 offset = 0) noexcept;
+
 		void draw(u32 vertex_count, u32 instance_count = 1, u32 first_vertex = 0, u32 first_instance = 0) noexcept;
+		void draw_indexed(
+			u32 index_count,
+			u32 instance_count = 1,
+			u32 first_index	   = 0,
+			i32 base_vertex	   = 0,
+			u32 first_instance = 0) noexcept;
+
+		/// Records are tightly packed unless `stride` says otherwise. A wider stride carries
+		/// per draw payload beside the args.
+		void
+		draw_indirect(BufferHandle args, u64 offset, u32 draw_count, u32 stride = sizeof(DrawIndirectArgs)) noexcept;
+		void draw_indexed_indirect(
+			BufferHandle args, u64 offset, u32 draw_count, u32 stride = sizeof(DrawIndexedIndirectArgs)) noexcept;
+
+		/// GPU decides the draw count; `max_draw_count` bounds what the args buffer
+		/// can hold. Requires caps.indirect_count.
+		void draw_indirect_count(
+			BufferHandle args,
+			u64 offset,
+			BufferHandle count,
+			u64 count_offset,
+			u32 max_draw_count,
+			u32 stride = sizeof(DrawIndirectArgs)) noexcept;
+		void draw_indexed_indirect_count(
+			BufferHandle args,
+			u64 offset,
+			BufferHandle count,
+			u64 count_offset,
+			u32 max_draw_count,
+			u32 stride = sizeof(DrawIndexedIndirectArgs)) noexcept;
+
+		// Compute and copies record outside render passes.
+		void dispatch(u32 x, u32 y = 1, u32 z = 1) noexcept;
+		void dispatch_indirect(BufferHandle args, u64 offset) noexcept;
+
+		void copy_buffer(BufferHandle src, u64 src_offset, BufferHandle dst, u64 dst_offset, u64 size) noexcept;
+
+		/// Offset and size are multiples of 4 (fill writes whole u32 words).
+		void fill_buffer(BufferHandle dst, u64 offset, u64 size, u32 value) noexcept;
 
 	private:
 		friend class Device;
 
 		void push(const void* data, u32 size) noexcept;
 
-		Backend* m_backend = nullptr;
+		Backend* m_backend	   = nullptr;
+		Recording* m_recording = nullptr;
 	};
 }

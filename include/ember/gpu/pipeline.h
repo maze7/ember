@@ -86,6 +86,12 @@ namespace ember::gpu
 		PrimitiveTopology topology = PrimitiveTopology::TriangleList;
 	};
 
+	struct ComputePipelineDef
+	{
+		const char* name = "compute";
+		ShaderStageDef shader = {};
+	};
+
 	[[nodiscard]] constexpr bool is_valid(const ShaderStageDef& stage) noexcept
 	{
 		// SPIR-V is a stream of 32 bit words.
@@ -117,5 +123,10 @@ namespace ember::gpu
 			return false;
 
 		return true;
+	}
+
+	[[nodiscard]] constexpr bool is_valid(const ComputePipelineDef& def) noexcept
+	{
+		return def.name != nullptr && is_valid(def.shader);
 	}
 }

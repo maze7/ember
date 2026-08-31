@@ -266,6 +266,80 @@ namespace ember::gpu
 		return handle;
 	}
 
+	ComputePipelineHandle Device::create_compute_pipeline(const ComputePipelineDef& def) noexcept
+	{
+		EMBER_GPU_GUARD({});
+
+		if (!::ember::gpu::is_valid(def))
+		{
+			EMBER_ERROR("gpu: compute pipeline '{}' has an invalid def", def.name);
+			return {};
+		}
+
+		const VkDevice device		= m_backend->context.device;
+		const VkShaderModule shader = create_module(device, def.shader.code);
+
+		if (shader == VK_NULL_HANDLE)
+		{
+			EMBER_ERROR("gpu: compute pipeline '{}' shader module creation failed", def.name);
+			return {};
+		}
+
+		const VkComputePipelineCreateInfo info{
+			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+			.stage =
+				{
+					.sType	= VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+					.stage	= VK_SHADER_STAGE_COMPUTE_BIT,
+					.module = shader,
+					.pName	= def.shader.entry,
+				},
+			.layout = m_backend->descriptor_heap.pipeline_layout(),
+		};
+
+		VkPipeline pipeline	  = VK_NULL_HANDLE;
+		const VkResult result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
+
+		vkDestroyShaderModule(device, shader, nullptr);
+
+		if (result != VK_SUCCESS)
+		{
+			EMBER_ERROR("gpu: compute pipeline '{}' creation failed: {}", def.name, vk::result_name(result));
+			return {};
+		}
+
+		const ComputePipelineHandle handle = m_backend->resources.compute_pipelines.insert(
+			vk::PipelineData{.pipeline = pipeline, .layout = info.layout});
+
+		if (handle.is_null())
+		{
+			EMBER_ERROR("gpu: compute pipeline pool exhausted ({})", def.name);
+			vkDestroyPipeline(device, pipeline, nullptr);
+			return {};
+		}
+
+		vk::set_name(m_backend->context, VK_OBJECT_TYPE_PIPELINE, reinterpret_cast<u64>(pipeline), def.name);
+
+		return handle;
+	}
+
+	void Device::destroy(ComputePipelineHandle handle) noexcept
+	{
+		EMBER_GPU_GUARD();
+
+		vk::PipelineData* data = m_backend->resources.compute_pipelines.get(handle);
+		if (data == nullptr)
+			return;
+
+		m_backend->destroy_queue.destroy(data->pipeline);
+		(void)m_backend->resources.compute_pipelines.erase(handle);
+	}
+
+	bool Device::is_valid(ComputePipelineHandle handle) const noexcept
+	{
+		return m_backend != nullptr && m_backend->resources.compute_pipelines.contains(handle);
+	}
+
 	void Device::destroy(GraphicsPipelineHandle handle) noexcept
 	{
 		EMBER_GPU_GUARD();

@@ -20,6 +20,14 @@ namespace ember::gpu
 
 	EMBER_ENUM_BITWISE_OPS(BufferUsage, u8);
 
+	/// Index width for draw_indexed and the indexed indirect draws. Bound with the
+	/// buffer because every target API takes it at bind time.
+	enum class IndexFormat : u8 {
+		U16,
+		U32,
+	};
+
+
 	/// Where the memory lives and how the CPU touches it.
 	enum class MemoryLocation : u8
 	{

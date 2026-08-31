@@ -1044,7 +1044,7 @@ namespace ember::gpu
 					return false;
 				}
 
-				slot.commands = commands;
+				slot.recording.commands = commands;
 			}
 
 			return true;

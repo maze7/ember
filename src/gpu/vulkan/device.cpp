@@ -318,6 +318,15 @@ namespace ember::gpu
 			destroy(handle);
 		}
 
+		auto& compute = m_backend->resources.compute_pipelines;
+		for (auto it = compute.begin(); it != compute.end();)
+		{
+			const ComputePipelineHandle handle = it.handle();
+			++it;
+			EMBER_WARN("gpu: compute pipeline leaked at device destruction");
+			destroy(handle);
+		}
+
 		auto& textures = m_backend->resources.textures;
 		for (auto it = textures.begin(); it != textures.end();)
 		{
@@ -435,10 +444,10 @@ namespace ember::gpu
 		vk::staging_begin_frame(m_backend->staging, slot);
 		vk::transient_begin_frame(*m_backend, slot);
 
-		frame.pending_present_count = 0;
-		frame.list_open				= false;
-		frame.lists_submitted		= 0;
-		frame.open					= true;
+		frame.pending_present_count				= 0;
+		frame.slots[slot].recording.inside_pass = false;
+		frame.lists_submitted					= 0;
+		frame.open								= true;
 
 		return {.frame_index = static_cast<u32>(frame.index), .slot = slot};
 	}
@@ -452,7 +461,7 @@ namespace ember::gpu
 		const u32 slot	  = static_cast<u32>(frame.index % m_backend->context.frames_in_flight);
 		const u64 value	  = ++frame.timeline_value;
 
-		VkCommandBuffer cmd = frame.slots[slot].commands;
+		VkCommandBuffer cmd = frame.slots[slot].recording.commands;
 		EMBER_ASSERT(!frame.list_open && "a command list was begun but never submitted");
 
 		// Frames that submitted nothing still owe every acquired backbuffer a legal
@@ -482,7 +491,8 @@ namespace ember::gpu
 		EMBER_ASSERT(!frame.list_open && "one command list per frame for now");
 
 		const u32 slot			  = static_cast<u32>(frame.index % m_backend->context.frames_in_flight);
-		const VkCommandBuffer cmd = frame.slots[slot].commands;
+		Recording& recording	  = frame.slots[slot].recording;
+		const VkCommandBuffer cmd = recording.commands;
 
 		const VkCommandBufferBeginInfo begin_info{
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -490,24 +500,34 @@ namespace ember::gpu
 		};
 		EMBER_VK_CHECK(vkBeginCommandBuffer(cmd, &begin_info));
 
-		// The only descriptor bind in the engine. Every pipeline shares the heap's
-		// layout, so one bind makes the whole frame's resources reachable by index.
-		// Set 1 joins with transient constants.
-		const VkDescriptorSet heap_set = m_backend->descriptor_heap.heap_set();
-		vkCmdBindDescriptorSets(
-			cmd,
-			VK_PIPELINE_BIND_POINT_GRAPHICS,
-			m_backend->descriptor_heap.pipeline_layout(),
-			0,
-			1,
-			&heap_set,
-			0,
-			nullptr);
+		const VkDescriptorSet sets[] = {
+			m_backend->descriptor_heap.heap_set(),
+			m_backend->descriptor_heap.constants_set(),
+		};
+		const u32 zero_offsets[CONSTANT_BUFFER_SLOTS] = {};
 
+		// Descriptor bindings are per bind point; graphics and compute each get the
+		// heap and zeroed constant slots so any pipeline is valid before the first
+		// set_constants.
+		for (const VkPipelineBindPoint bind_point : {VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PIPELINE_BIND_POINT_COMPUTE})
+		{
+			vkCmdBindDescriptorSets(
+				cmd,
+				bind_point,
+				m_backend->descriptor_heap.pipeline_layout(),
+				0,
+				static_cast<u32>(std::size(sets)),
+				sets,
+				CONSTANT_BUFFER_SLOTS,
+				zero_offsets);
+		}
+
+		recording		= Recording{.commands = recording.commands};
 		frame.list_open = true;
 
 		CommandList list;
-		list.m_backend = m_backend;
+		list.m_backend	 = m_backend;
+		list.m_recording = &recording;
 		return list;
 	}
 
@@ -518,15 +538,16 @@ namespace ember::gpu
 		FrameState& frame = m_backend->frame;
 		EMBER_ASSERT(list.m_backend == m_backend && "submit of a foreign command list");
 		EMBER_ASSERT(frame.list_open && "submit without begin_command_list");
+		EMBER_ASSERT(!list.m_recording->inside_pass && "a render pass is still open at submit");
 
-		const u32 slot = static_cast<u32>(frame.index % m_backend->context.frames_in_flight);
-		EMBER_VK_CHECK(vkEndCommandBuffer(frame.slots[slot].commands));
+		EMBER_VK_CHECK(vkEndCommandBuffer(list.m_recording->commands));
 
 		frame.list_open = false;
 		++frame.lists_submitted;
 
 		// A sealed list ignores every later call instead of corrupting the next frame.
-		list.m_backend = nullptr;
+		list.m_backend	 = nullptr;
+		list.m_recording = nullptr;
 	}
 
 	TextureFormat Device::swapchain_format(SwapchainHandle handle) const noexcept

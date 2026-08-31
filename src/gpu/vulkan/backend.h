@@ -61,13 +61,39 @@ namespace ember::gpu
 		VkPipelineStageFlags2 all_shader_stages = 0;
 	};
 
+	/**
+	 * Everything one CommandList records through: the native buffer and the shadow state
+	 * the lazy flushes compare against. Single writer from begin to submit.
+	 * Lives in fixed backend storage; an open list holds a pointer into it.
+	 */
+	struct Recording
+	{
+		VkCommandBuffer commands = VK_NULL_HANDLE;
+
+		/// Redundancy filters: rebinding the bound pipeline is free to skip.
+		GraphicsPipelineHandle graphics_pipeline{};
+		ComputePipelineHandle compute_pipeline{};
+
+		VkBuffer index_buffer  = VK_NULL_HANDLE;
+		u64 index_offset	   = 0;
+		VkIndexType index_type = VK_INDEX_TYPE_UINT32;
+
+		u32 constant_offsets[CONSTANT_BUFFER_SLOTS]{};
+
+		/// Constants serve both bind points; each flushes on its own schedule.
+		bool constants_dirty_graphics = false;
+		bool constants_dirty_compute  = false;
+		bool index_dirty			  = false;
+		bool inside_pass			  = false;
+	};
+
 	struct FrameSlot
 	{
 		u64 submitted = 0; // timeline value that this slot's last end_frame signalled; 0 = never used.
 
 		/// Whole-pool reset each frame (cheaper and more thorough than per-buffer reset).
-		VkCommandPool pool		 = VK_NULL_HANDLE;
-		VkCommandBuffer commands = VK_NULL_HANDLE; // one primary; more when recording parallelizes
+		VkCommandPool pool = VK_NULL_HANDLE;
+		Recording recording{}; // one open list per frame; an array once recording parallelizes
 	};
 
 	/// Swapchains acquired this frame; end_frame clears, submits and presents them as a batch.
