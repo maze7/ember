@@ -77,3 +77,18 @@ if (EMBER_USE_VULKAN)
 
 	target_link_libraries(vma INTERFACE volk::volk_headers)
 endif()
+
+# Dear ImGui backs Ember::ImGui. Compiled here because upstream ships no build files.
+if(EMBER_ENABLE_IMGUI AND EMBER_ENABLE_GRAPHICS)
+	add_library(imgui STATIC
+		imgui/imgui.cpp
+		imgui/imgui_demo.cpp
+		imgui/imgui_draw.cpp
+		imgui/imgui_tables.cpp
+		imgui/imgui_widgets.cpp
+	)
+	target_include_directories(imgui SYSTEM PUBLIC
+		"$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/imgui>"
+	)
+	add_library(imgui::imgui ALIAS imgui)
+endif()

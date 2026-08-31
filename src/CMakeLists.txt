@@ -54,9 +54,14 @@ if (EMBER_ENABLE_AUDIO)
 	add_subdirectory(audio)
 endif()
 
+if (EMBER_ENABLE_IMGUI AND EMBER_ENABLE_GRAPHICS)
+	add_subdirectory(imgui)
+endif()
+
 target_link_libraries(ember INTERFACE
 	Ember::Core
 	$<$<BOOL:${EMBER_ENABLE_PLATFORM}>:Ember::Platform>
 	$<$<BOOL:${EMBER_ENABLE_GRAPHICS}>:Ember::Gpu>
+	$<$<BOOL:${EMBER_ENABLE_IMGUI}>:Ember::ImGui>
 	$<$<BOOL:${EMBER_ENABLE_AUDIO}>:Ember::Audio>
 )
