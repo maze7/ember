@@ -734,4 +734,72 @@ namespace ember::gpu
 		m_recording->constants_dirty_graphics = true;
 		m_recording->constants_dirty_compute  = true;
 	}
+
+	void CommandList::begin_zone(const char* name, u32 color) noexcept
+	{
+		if (m_backend == nullptr)
+			return;
+
+		if (m_backend->context.debug_utils)
+		{
+			const VkDebugUtilsLabelEXT label{
+				.sType		= VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT,
+				.pLabelName = name,
+				.color =
+					{
+						static_cast<f32>((color >> 16) & 0xff) / 255.0f,
+						static_cast<f32>((color >> 8) & 0xff) / 255.0f,
+						static_cast<f32>(color & 0xff) / 255.0f,
+						1.0f,
+					},
+			};
+			vkCmdBeginDebugUtilsLabelEXT(m_recording->commands, &label);
+		}
+
+		Recording& recording = *m_recording;
+
+		// Past the cap the zone still labels and nests; it just goes untimed.
+		if (m_backend->frame.timestamps != VK_NULL_HANDLE && recording.zone_count < MAX_GPU_ZONES)
+		{
+			const u32 slot	= static_cast<u32>(m_backend->frame.index % m_backend->context.frames_in_flight);
+			const u32 query = slot * MAX_GPU_ZONES * 2 + recording.zone_count * 2;
+
+			vkCmdWriteTimestamp2(
+				recording.commands, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, m_backend->frame.timestamps, query);
+
+			recording.zones[recording.zone_count] = {
+				.name  = name,
+				.color = color,
+				.depth = recording.zone_depth,
+			};
+		}
+
+		++recording.zone_depth;
+	}
+
+	void CommandList::end_zone() noexcept
+	{
+		if (m_backend == nullptr)
+			return;
+
+		Recording& recording = *m_recording;
+		EMBER_ASSERT(recording.zone_depth > 0 && "end_zone without begin_zone");
+
+		--recording.zone_depth;
+
+		// Mirrors begin_zone's cap test: only zones that wrote a begin write an end.
+		if (m_backend->frame.timestamps != VK_NULL_HANDLE && recording.zone_count < MAX_GPU_ZONES)
+		{
+			const u32 slot	= static_cast<u32>(m_backend->frame.index % m_backend->context.frames_in_flight);
+			const u32 query = slot * MAX_GPU_ZONES * 2 + recording.zone_count * 2 + 1;
+
+			vkCmdWriteTimestamp2(
+				recording.commands, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, m_backend->frame.timestamps, query);
+
+			++recording.zone_count;
+		}
+
+		if (m_backend->context.debug_utils)
+			vkCmdEndDebugUtilsLabelEXT(recording.commands);
+	}
 }

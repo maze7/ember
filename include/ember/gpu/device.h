@@ -36,6 +36,16 @@ namespace ember::gpu
 		Count,
 	};
 
+	/// One resolved GPU zone from a retired frame. `name` is the pointer the zone was
+	/// recorded with; zones take string literals so it is still alive here.
+	struct GpuZoneTiming
+	{
+		const char* name = nullptr;
+		u32 color		 = 0;
+		u32 depth		 = 0; // nesting level, for indented display
+		f32 duration_ms	 = 0.0f;
+	};
+
 	/**
 	 * Resource pool capacities. Fixed at device creation because a handle's index
 	 * is also its bindless slot (see gpu/common.h).
@@ -264,6 +274,10 @@ namespace ember::gpu
 		/// Validation messages seen since construction. Tests assert both are 0 after teardown.
 		[[nodiscard]] static u32 validation_error_count() noexcept;
 		[[nodiscard]] static u32 validation_warning_count() noexcept;
+
+		/// Zones from the most recently retired frame (frames_in_flight ago). Refreshed
+		/// by begin_frame; empty when the adapter lacks timestamps.
+		[[nodiscard]] Span<const GpuZoneTiming> gpu_zones() const noexcept;
 
 	private:
 		void destroy_resources() noexcept;

@@ -85,6 +85,19 @@ namespace ember::gpu
 		bool constants_dirty_compute  = false;
 		bool index_dirty			  = false;
 		bool inside_pass			  = false;
+
+		/// Zones recorded by this list: names and colors stay CPU side, the query pool
+		/// holds only the ticks. Resolved by the next begin_frame on this slot.
+		struct Zone
+		{
+			const char* name = nullptr;
+			u32 color		 = 0;
+			u8 depth		 = 0;
+		};
+
+		Zone zones[MAX_GPU_ZONES]{};
+		u32 zone_count = 0;
+		u8 zone_depth  = 0;
 	};
 
 	struct FrameSlot
@@ -106,7 +119,8 @@ namespace ember::gpu
 	/// The frame loop's world: everything on the begin/end_frame clock. Owner thread only.
 	struct FrameState
 	{
-		VkSemaphore timeline = VK_NULL_HANDLE; // frame N signals value N
+		VkSemaphore timeline   = VK_NULL_HANDLE; // frame N signals value N
+		VkQueryPool timestamps = VK_NULL_HANDLE; // zone ticks, sliced per slot; null without caps.timestamps
 		u64 timeline_value	 = 0;			   // last value handed to a submit
 		u64 index			 = 0;			   // slot = index % frames_in_flight
 		bool open			 = false;
@@ -161,6 +175,10 @@ namespace ember::gpu
 		TransientAllocator transient{};		  // fast path; user-facing via Device::transient()
 		vk::TransientRing transient_ring{};	  // its memory, overflow pages, telemetry
 		vk::Staging staging{};				  // staging ring + upload batches
+
+		/// Zones from the most recently retired frame, refreshed by begin_frame.
+		GpuZoneTiming gpu_zones[MAX_GPU_ZONES]{};
+		u32 gpu_zone_count = 0;
 
 		/// Bookkeeping
 		u32 owner_thread = current_thread_id(); // the thread that constructed the Device

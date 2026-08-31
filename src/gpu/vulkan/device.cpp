@@ -408,6 +408,14 @@ namespace ember::gpu
 
 	u32 Device::validation_warning_count() noexcept { return debug_state().warnings.load(std::memory_order_relaxed); }
 
+	Span<const GpuZoneTiming> Device::gpu_zones() const noexcept
+	{
+		if (m_backend == nullptr)
+			return {};
+
+		return {m_backend->gpu_zones, m_backend->gpu_zone_count};
+	}
+
 	FrameInfo Device::begin_frame() noexcept
 	{
 		EMBER_GPU_GUARD({});
@@ -444,6 +452,50 @@ namespace ember::gpu
 		// The graveyard rides the frame pacing and needs no extra queries.
 		m_backend->destroy_queue.drain(
 			m_backend->context, m_backend->descriptor_heap, m_backend->resources, frame.completed);
+
+		// Resolve the slot's zones from the frame that just retired, then hand the
+		// query range back. Consuming zone_count keeps a later placeholder frame
+		// from re-reading a reset range.
+		Recording& recording	  = frame.slots[slot].recording;
+		m_backend->gpu_zone_count = 0;
+
+		if (frame.timestamps != VK_NULL_HANDLE && recording.zone_count > 0)
+		{
+			const u32 base = slot * MAX_GPU_ZONES * 2;
+			u64 ticks[MAX_GPU_ZONES * 2];
+
+			const VkResult result = vkGetQueryPoolResults(
+				m_backend->context.device,
+				frame.timestamps,
+				base,
+				recording.zone_count * 2,
+				sizeof(u64) * recording.zone_count * 2,
+				ticks,
+				sizeof(u64),
+				VK_QUERY_RESULT_64_BIT);
+
+			if (result == VK_SUCCESS)
+			{
+				const f32 period = m_backend->context.caps.timestamp_period_ns;
+
+				for (u32 i = 0; i < recording.zone_count; ++i)
+				{
+					const Recording::Zone& zone = recording.zones[i];
+
+					m_backend->gpu_zones[i] = {
+						.name		 = zone.name,
+						.color		 = zone.color,
+						.depth		 = zone.depth,
+						.duration_ms = static_cast<f32>(ticks[i * 2 + 1] - ticks[i * 2]) * period / 1'000'000.0f,
+					};
+				}
+
+				m_backend->gpu_zone_count = recording.zone_count;
+			}
+
+			vkResetQueryPool(m_backend->context.device, frame.timestamps, base, MAX_GPU_ZONES * 2);
+			recording.zone_count = 0;
+		}
 
 		// Rebind the slot's slices: the wait above is what proved them reclaimable.
 		vk::staging_begin_frame(m_backend->staging, slot);
@@ -544,6 +596,7 @@ namespace ember::gpu
 		EMBER_ASSERT(list.m_backend == m_backend && "submit of a foreign command list");
 		EMBER_ASSERT(frame.list_open && "submit without begin_command_list");
 		EMBER_ASSERT(!list.m_recording->inside_pass && "a render pass is still open at submit");
+		EMBER_ASSERT(list.m_recording->zone_depth == 0 && "a GPU zone was begun but never ended");
 
 		EMBER_VK_CHECK(vkEndCommandBuffer(list.m_recording->commands));
 

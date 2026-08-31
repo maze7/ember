@@ -43,6 +43,7 @@ namespace ember
 	/// tuning knobs: changing one changes every shader and every backend.
 	inline constexpr u32 MAX_FRAMES_IN_FLIGHT  = 3;
 	inline constexpr u32 MAX_COLOR_ATTACHMENTS = 8;	 // D3D12 fixed limit; Vulkan clamps via caps.max_color_attachments.
+	inline constexpr u32 MAX_GPU_ZONES		   = 64; // per frame; deeper nesting still labels, just untimed
 	inline constexpr u32 VERTEX_BUFFER_SLOTS   = 3;	 // position | attributes | instance
 	inline constexpr u32 MAX_VERTEX_ATTRIBUTES = 16; //
 	inline constexpr u32 CONSTANT_BUFFER_SLOTS = 3;	 // set 1 dynamic UBOs == D3D12 root CBVs

@@ -1045,6 +1045,27 @@ namespace ember::gpu
 				slot.recording.commands = commands;
 			}
 
+			// Timestamp ring, sliced per frame slot. Queries start undefined, so the
+			// pool is reset whole once here; per slot resets ride begin_frame.
+			if (ctx.caps.timestamps)
+			{
+				const VkQueryPoolCreateInfo query_info{
+					.sType		= VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+					.queryType	= VK_QUERY_TYPE_TIMESTAMP,
+					.queryCount = MAX_FRAMES_IN_FLIGHT * MAX_GPU_ZONES * 2,
+				};
+
+				if (vkCreateQueryPool(ctx.device, &query_info, nullptr, &frame.timestamps) != VK_SUCCESS)
+				{
+					EMBER_WARN("vulkan: timestamp pool creation failed; GPU zones will not be timed");
+					frame.timestamps = VK_NULL_HANDLE;
+				}
+				else
+				{
+					vkResetQueryPool(ctx.device, frame.timestamps, 0, query_info.queryCount);
+				}
+			}
+
 			return true;
 		}
 
@@ -1155,6 +1176,7 @@ namespace ember::gpu
 					vkDestroyCommandPool(ctx.device, slot.pool, nullptr);
 
 				vkDestroySemaphore(ctx.device, backend.frame.timeline, nullptr);
+				vkDestroyQueryPool(ctx.device, backend.frame.timestamps, nullptr);
 				vmaDestroyAllocator(ctx.allocator);
 				vkDestroyDevice(ctx.device, nullptr);
 			}

@@ -128,7 +128,7 @@ namespace ember::gpu
 	{
 		u32 index_count	   = 0;
 		u32 instance_count = 0;
-		u32 first_vertex   = 0;
+		u32 first_index	   = 0;
 		i32 base_vertex	   = 0;
 		u32 first_instance = 0;
 	};
@@ -250,6 +250,12 @@ namespace ember::gpu
 		/// Offset and size are multiples of 4 (fill writes whole u32 words).
 		void fill_buffer(BufferHandle dst, u64 offset, u64 size, u32 value) noexcept;
 
+		/// Opens a debug label (RenderDoc, Nsight) and a GPU timestamp pair. Zones nest;
+		/// every begin needs its end before submit. `name` must be a string literal or
+		/// otherwise outlive the frame.
+		void begin_zone(const char* name, u32 color = 0) noexcept;
+		void end_zone() noexcept;
+
 	private:
 		friend class Device;
 
@@ -259,4 +265,25 @@ namespace ember::gpu
 		Backend* m_backend	   = nullptr;
 		Recording* m_recording = nullptr;
 	};
+
+	class [[nodiscard]] GpuZoneScope
+	{
+	public:
+		GpuZoneScope(CommandList& list, const char* name, u32 color = 0) noexcept : m_list(&list)
+		{
+			list.begin_zone(name, color);
+		}
+
+		~GpuZoneScope() noexcept { m_list->end_zone(); }
+
+		GpuZoneScope(const GpuZoneScope&)			 = delete;
+		GpuZoneScope& operator=(const GpuZoneScope&) = delete;
+
+	private:
+		CommandList* m_list;
+	};
+
+#define EMBER_GPU_ZONE_JOIN(a, b) a##b
+#define EMBER_GPU_ZONE_NAME(line) EMBER_GPU_ZONE_JOIN(ember_gpu_zone_, line)
+#define EMBER_GPU_ZONE(list, ...) ::ember::gpu::GpuZoneScope EMBER_GPU_ZONE_NAME(__LINE__)(list, __VA_ARGS__)
 }
