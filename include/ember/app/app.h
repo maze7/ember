@@ -7,6 +7,7 @@
 #include <ember/gpu/swapchain.h>
 #include <ember/input/input.h>
 #include <ember/memory/memory.h>
+#include <ember/memory/pmr/arena_resource.h>
 #include <ember/platform/platform.h>
 #include <ember/platform/window.h>
 

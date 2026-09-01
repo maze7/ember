@@ -1,3 +1,4 @@
+#include "ember/memory/memory.h"
 #include <ember/app/app.h>
 #include <ember/core/logger.h>
 #include <ember/imgui/imgui_backend.h>
@@ -91,6 +92,8 @@ namespace ember
 			m_frame.quit_requested = true;
 			return m_frame;
 		}
+
+		memory::frame_arena().reset();
 
 		const auto tick		   = std::chrono::steady_clock::now();
 		m_frame.dt			   = std::clamp(std::chrono::duration<f32>(tick - m_previous_tick).count(), 0.0f, m_max_dt);

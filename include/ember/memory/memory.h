@@ -42,6 +42,11 @@ namespace ember
 		void initialize_thread() noexcept;
 		void shutdown_thread() noexcept;
 
+		/**
+		 * Per frame CPU scratch, owned by MemorySystem  and sized by MemoryConfig. The
+		 * frame loop owner resets it  once per frame (App::next_frame); allocations live
+		 * until that reset. CPU side only.
+		 */
 		[[nodiscard]] ArenaResource& frame_arena() noexcept;
 
 		/**

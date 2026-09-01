@@ -48,6 +48,7 @@ add_library(Ember::Ember ALIAS ember)
 
 if (EMBER_ENABLE_GRAPHICS)
 	add_subdirectory(gpu)
+	add_subdirectory(render)
 endif()
 
 if (EMBER_ENABLE_AUDIO)
@@ -69,4 +70,5 @@ target_link_libraries(ember INTERFACE
 	$<$<BOOL:${EMBER_ENABLE_IMGUI}>:Ember::ImGui>
 	$<$<BOOL:${EMBER_ENABLE_AUDIO}>:Ember::Audio>
 	$<$<BOOL:${EMBER_ENABLE_APP}>:Ember::App>
+	$<$<BOOL:${EMBER_ENABLE_GRAPHICS}>:Ember::Render>
 )
