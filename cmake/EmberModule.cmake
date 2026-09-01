@@ -42,3 +42,16 @@ function(ember_add_module name)
 		target_link_libraries(${target} PRIVATE ${MODULE_PRIVATE_DEPS})
 	endif()
 endfunction()
+
+# A game executable: the platform entry point and subsystem flags in one place.
+# Console target properties land here once, later.
+function(ember_add_game target)
+	cmake_parse_arguments(GAME "" "" "SOURCES" ${ARGN})
+
+	add_executable(${target} ${GAME_SOURCES})
+	target_link_libraries(${target} PRIVATE Ember::Ember Ember::Main)
+
+	if(WIN32)
+		set_target_properties(${target} PROPERTIES WIN32_EXECUTABLE ON)
+	endif()
+endfunction()

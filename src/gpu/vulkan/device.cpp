@@ -305,7 +305,6 @@ namespace ember::gpu
 		{
 			const SwapchainHandle handle = it.handle();
 			++it;
-			EMBER_WARN("gpu: swapchain leaked at device destruction");
 			destroy(handle);
 		}
 
@@ -314,7 +313,6 @@ namespace ember::gpu
 		{
 			const GraphicsPipelineHandle handle = it.handle();
 			++it;
-			EMBER_WARN("gpu: graphics pipeline leaked at device destruction");
 			destroy(handle);
 		}
 
@@ -323,7 +321,6 @@ namespace ember::gpu
 		{
 			const ComputePipelineHandle handle = it.handle();
 			++it;
-			EMBER_WARN("gpu: compute pipeline leaked at device destruction");
 			destroy(handle);
 		}
 
@@ -337,7 +334,6 @@ namespace ember::gpu
 			if (!textures.get_cold(handle)->parent.is_null())
 				continue;
 
-			EMBER_WARN("gpu: texture leaked at device destruction");
 			destroy(handle);
 		}
 
@@ -346,7 +342,6 @@ namespace ember::gpu
 		{
 			const SamplerHandle handle = it.handle();
 			++it;
-			EMBER_WARN("gpu: sampler leaked at device destruction");
 			destroy(handle);
 		}
 
@@ -355,7 +350,6 @@ namespace ember::gpu
 		{
 			const BufferHandle handle = it.handle();
 			++it;
-			EMBER_WARN("gpu: buffer leaked at device destruction");
 			destroy(handle);
 		}
 	}
