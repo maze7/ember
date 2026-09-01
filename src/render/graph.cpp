@@ -22,6 +22,18 @@ namespace ember::render
 			}
 		}
 
+		[[nodiscard]] constexpr bool is_write(gpu::BufferState state) noexcept
+		{
+			switch (state)
+			{
+				case gpu::BufferState::ShaderWrite:
+				case gpu::BufferState::CopyDst:
+					return true;
+				default:
+					return false;
+			}
+		}
+
 		/// Exact identity, no hashing: every field that changes compatibility is packed.
 		[[nodiscard]] constexpr u64 pool_key(const GraphTextureDef& def) noexcept
 		{
@@ -40,6 +52,15 @@ namespace ember::render
 		return graph->m_textures[handle.index].physical;
 	}
 
+	BufferHandle PassContext::buffer(GraphBuffer handle) const noexcept
+	{
+		EMBER_ASSERT(graph != nullptr && handle.index < graph->m_buffer_count);
+		if (graph == nullptr || handle.index >= graph->m_buffer_count)
+			return {};
+
+		return graph->m_buffers[handle.index].physical;
+	}
+
 	Extent2D PassContext::extent(GraphTexture handle) const noexcept
 	{
 		EMBER_ASSERT(graph != nullptr && handle.index < graph->m_texture_count);
@@ -49,26 +70,55 @@ namespace ember::render
 		return graph->m_textures[handle.index].def.extent;
 	}
 
+	u64 PassContext::size(GraphBuffer handle) const noexcept
+	{
+		EMBER_ASSERT(graph != nullptr && handle.index < graph->m_buffer_count);
+		if (graph == nullptr || handle.index >= graph->m_buffer_count)
+			return 0;
+
+		return graph->m_buffers[handle.index].def.size;
+	}
+
 	void RenderGraph::Pass::add_use(GraphTexture texture, gpu::TextureState state) noexcept
 	{
 		EMBER_ASSERT(!texture.is_null());
 		EMBER_ASSERT(state != gpu::TextureState::Undefined && state != gpu::TextureState::Present);
 
-		for (u32 i = 0; i < m_use_count; ++i)
+		for (u32 i = 0; i < m_texture_use_count; ++i)
 		{
-			if (m_uses[i].texture.index == texture.index)
+			if (m_texture_uses[i].texture.index == texture.index)
 			{
 				// One state per texture per pass; a second, different one is a design error.
-				EMBER_ASSERT(m_uses[i].state == state);
+				EMBER_ASSERT(m_texture_uses[i].state == state);
 				return;
 			}
 		}
 
-		EMBER_ASSERT(m_use_count < MAX_PASS_USES);
-		if (m_use_count >= MAX_PASS_USES)
+		EMBER_ASSERT(m_texture_use_count < MAX_PASS_USES);
+		if (m_texture_use_count >= MAX_PASS_USES)
 			return;
 
-		m_uses[m_use_count++] = {texture, state};
+		m_texture_uses[m_texture_use_count++] = {texture, state};
+	}
+
+	void RenderGraph::Pass::add_use(GraphBuffer buffer, gpu::BufferState state) noexcept
+	{
+		EMBER_ASSERT(!buffer.is_null());
+
+		for (u32 i = 0; i < m_buffer_use_count; ++i)
+		{
+			if (m_buffer_uses[i].buffer.index == buffer.index)
+			{
+				EMBER_ASSERT(m_buffer_uses[i].state == state);
+				return;
+			}
+		}
+
+		EMBER_ASSERT(m_buffer_use_count < MAX_PASS_USES);
+		if (m_buffer_use_count >= MAX_PASS_USES)
+			return;
+
+		m_buffer_uses[m_buffer_use_count++] = {buffer, state};
 	}
 
 	RenderGraph::Pass& RenderGraph::Pass::read(GraphTexture texture, gpu::TextureState state) noexcept
@@ -80,6 +130,18 @@ namespace ember::render
 	RenderGraph::Pass& RenderGraph::Pass::write(GraphTexture texture, gpu::TextureState state) noexcept
 	{
 		add_use(texture, state);
+		return *this;
+	}
+
+	RenderGraph::Pass& RenderGraph::Pass::read(GraphBuffer buffer, gpu::BufferState state) noexcept
+	{
+		add_use(buffer, state);
+		return *this;
+	}
+
+	RenderGraph::Pass& RenderGraph::Pass::write(GraphBuffer buffer, gpu::BufferState state) noexcept
+	{
+		add_use(buffer, state);
 		return *this;
 	}
 
@@ -108,6 +170,7 @@ namespace ember::render
 	{
 		m_pass_count	= 0;
 		m_texture_count = 0;
+		m_buffer_count	= 0;
 	}
 
 	GraphTexture RenderGraph::create(const GraphTextureDef& def) noexcept
@@ -128,6 +191,23 @@ namespace ember::render
 		return {static_cast<u16>(m_texture_count++)};
 	}
 
+	GraphBuffer RenderGraph::create(const GraphBufferDef& def) noexcept
+	{
+		EMBER_ASSERT(m_buffer_count < MAX_GRAPH_BUFFERS);
+		EMBER_ASSERT(def.size > 0);
+		if (m_buffer_count >= MAX_GRAPH_BUFFERS)
+			return {};
+
+		m_buffers[m_buffer_count] = {
+			.def	  = def,
+			.state	  = resting_state(def.usage),
+			.resting  = resting_state(def.usage),
+			.imported = false,
+		};
+
+		return {static_cast<u16>(m_buffer_count++)};
+	}
+
 	GraphTexture RenderGraph::import(
 		TextureHandle texture, gpu::TextureState current, gpu::TextureState final_state, Extent2D extent) noexcept
 	{
@@ -144,6 +224,24 @@ namespace ember::render
 		};
 
 		return {static_cast<u16>(m_texture_count++)};
+	}
+
+	GraphBuffer
+	RenderGraph::import(BufferHandle buffer, gpu::BufferState current, gpu::BufferState final_state, u64 size) noexcept
+	{
+		EMBER_ASSERT(m_buffer_count < MAX_GRAPH_BUFFERS);
+		if (m_buffer_count >= MAX_GRAPH_BUFFERS)
+			return {};
+
+		m_buffers[m_buffer_count] = {
+			.def	  = {.name = "imported", .size = size},
+			.physical = buffer,
+			.state	  = current,
+			.resting  = final_state,
+			.imported = true,
+		};
+
+		return {static_cast<u16>(m_buffer_count++)};
 	}
 
 	RenderGraph::Pass& RenderGraph::pass(const char* name) noexcept
@@ -166,7 +264,7 @@ namespace ember::render
 
 		for (u32 i = 0; i < MAX_POOL_ENTRIES; ++i)
 		{
-			PoolEntry& entry = m_pool[i];
+			TexturePoolEntry& entry = m_texture_pool[i];
 			if (!entry.in_use && !entry.texture.is_null() && entry.key == key)
 			{
 				entry.in_use = true;
@@ -195,7 +293,7 @@ namespace ember::render
 
 		for (u32 i = 0; i < MAX_POOL_ENTRIES; ++i)
 		{
-			PoolEntry& entry = m_pool[i];
+			TexturePoolEntry& entry = m_texture_pool[i];
 			if (entry.texture.is_null() && !entry.in_use)
 			{
 				entry	  = {.texture = texture, .key = key, .last_used_frame = m_frame, .in_use = true};
@@ -209,6 +307,55 @@ namespace ember::render
 		return texture;
 	}
 
+	BufferHandle RenderGraph::acquire(gpu::Device& device, const GraphBufferDef& def, u32& pool_slot) noexcept
+	{
+		for (u32 i = 0; i < MAX_POOL_ENTRIES; ++i)
+		{
+			BufferPoolEntry& entry = m_buffer_pool[i];
+			if (!entry.in_use && !entry.buffer.is_null() && entry.size == def.size && entry.usage == def.usage)
+			{
+				entry.in_use = true;
+				pool_slot	 = i;
+				return entry.buffer;
+			}
+		}
+
+		const BufferHandle buffer = device.create_buffer({
+			.name  = def.name,
+			.size  = def.size,
+			.usage = def.usage,
+		});
+
+		pool_slot = UNPOOLED;
+
+		if (buffer.is_null())
+		{
+			EMBER_ERROR("graph transient '{}' failed to create", def.name);
+			return buffer;
+		}
+
+		for (u32 i = 0; i < MAX_POOL_ENTRIES; ++i)
+		{
+			BufferPoolEntry& entry = m_buffer_pool[i];
+			if (entry.buffer.is_null() && !entry.in_use)
+			{
+				entry = {
+					.buffer			 = buffer,
+					.size			 = def.size,
+					.usage			 = def.usage,
+					.last_used_frame = m_frame,
+					.in_use			 = true,
+				};
+				pool_slot = i;
+				return buffer;
+			}
+		}
+
+		// Pool full: the buffer still serves this frame and dies at release.
+		EMBER_ASSERT(false);
+		return buffer;
+	}
+
 	void RenderGraph::release(gpu::Device& device) noexcept
 	{
 		for (u32 i = 0; i < m_texture_count; ++i)
@@ -219,9 +366,9 @@ namespace ember::render
 
 			if (texture.pool_slot != UNPOOLED)
 			{
-				PoolEntry& entry	  = m_pool[texture.pool_slot];
-				entry.in_use		  = false;
-				entry.last_used_frame = m_frame;
+				TexturePoolEntry& entry = m_texture_pool[texture.pool_slot];
+				entry.in_use			= false;
+				entry.last_used_frame	= m_frame;
 			}
 			else if (!texture.physical.is_null())
 			{
@@ -231,10 +378,38 @@ namespace ember::render
 
 		for (u32 i = 0; i < MAX_POOL_ENTRIES; ++i)
 		{
-			PoolEntry& entry = m_pool[i];
+			TexturePoolEntry& entry = m_texture_pool[i];
 			if (!entry.in_use && !entry.texture.is_null() && m_frame - entry.last_used_frame > POOL_IDLE_FRAMES)
 			{
 				device.destroy(entry.texture);
+				entry = {};
+			}
+		}
+
+		for (u32 i = 0; i < m_buffer_count; ++i)
+		{
+			VirtualBuffer& buffer = m_buffers[i];
+			if (buffer.imported)
+				continue;
+
+			if (buffer.pool_slot != UNPOOLED)
+			{
+				BufferPoolEntry& entry = m_buffer_pool[buffer.pool_slot];
+				entry.in_use		   = false;
+				entry.last_used_frame  = m_frame;
+			}
+			else if (!buffer.physical.is_null())
+			{
+				device.destroy(buffer.physical);
+			}
+		}
+
+		for (u32 i = 0; i < MAX_POOL_ENTRIES; ++i)
+		{
+			BufferPoolEntry& entry = m_buffer_pool[i];
+			if (!entry.in_use && !entry.buffer.is_null() && m_frame - entry.last_used_frame > POOL_IDLE_FRAMES)
+			{
+				device.destroy(entry.buffer);
 				entry = {};
 			}
 		}
@@ -249,6 +424,13 @@ namespace ember::render
 				texture.physical = acquire(device, texture.def, texture.pool_slot);
 		}
 
+		for (u32 i = 0; i < m_buffer_count; ++i)
+		{
+			VirtualBuffer& buffer = m_buffers[i];
+			if (!buffer.imported)
+				buffer.physical = acquire(device, buffer.def, buffer.pool_slot);
+		}
+
 		gpu::CommandList cmd = device.begin_command_list();
 
 		for (u32 pass_index = 0; pass_index < m_pass_count; ++pass_index)
@@ -257,17 +439,19 @@ namespace ember::render
 
 			cmd.begin_zone(pass.m_name);
 
-			gpu::TextureBarrier barriers[MAX_PASS_USES];
-			u32 barrier_count = 0;
+			gpu::TextureBarrier texture_barriers[MAX_PASS_USES];
+			gpu::BufferBarrier buffer_barriers[MAX_PASS_USES];
+			u32 texture_barrier_count = 0;
+			u32 buffer_barrier_count  = 0;
 
-			for (u32 i = 0; i < pass.m_use_count; ++i)
+			for (u32 i = 0; i < pass.m_texture_use_count; ++i)
 			{
-				const Pass::Use& use	= pass.m_uses[i];
-				VirtualTexture& texture = m_textures[use.texture.index];
+				const Pass::TextureUse& use = pass.m_texture_uses[i];
+				VirtualTexture& texture		= m_textures[use.texture.index];
 
 				if (texture.state != use.state || is_write(use.state))
 				{
-					barriers[barrier_count++] = {
+					texture_barriers[texture_barrier_count++] = {
 						.texture = texture.physical,
 						.before	 = texture.state,
 						.after	 = use.state,
@@ -276,8 +460,26 @@ namespace ember::render
 				}
 			}
 
-			if (barrier_count > 0)
-				cmd.barrier({barriers, barrier_count});
+			for (u32 i = 0; i < pass.m_buffer_use_count; ++i)
+			{
+				const Pass::BufferUse& use = pass.m_buffer_uses[i];
+				VirtualBuffer& buffer	   = m_buffers[use.buffer.index];
+
+				// A read to read scope change still barriers; the last write was only made
+				// visible to the scopes named then.
+				if (buffer.state != use.state || is_write(use.state))
+				{
+					buffer_barriers[buffer_barrier_count++] = {
+						.buffer = buffer.physical,
+						.before = buffer.state,
+						.after	= use.state,
+					};
+					buffer.state = use.state;
+				}
+			}
+
+			if (texture_barrier_count + buffer_barrier_count > 0)
+				cmd.barrier({texture_barriers, texture_barrier_count}, {buffer_barriers, buffer_barrier_count});
 
 			const bool raster = pass.m_color_count > 0 || pass.m_has_depth;
 			if (raster)
@@ -325,15 +527,17 @@ namespace ember::render
 			cmd.end_zone();
 		}
 
-		gpu::TextureBarrier finals[MAX_GRAPH_TEXTURES];
-		u32 final_count = 0;
+		gpu::TextureBarrier texture_finals[MAX_GRAPH_TEXTURES];
+		gpu::BufferBarrier buffer_finals[MAX_GRAPH_BUFFERS];
+		u32 texture_final_count = 0;
+		u32 buffer_final_count	= 0;
 
 		for (u32 i = 0; i < m_texture_count; ++i)
 		{
 			VirtualTexture& texture = m_textures[i];
 			if (texture.state != texture.resting)
 			{
-				finals[final_count++] = {
+				texture_finals[texture_final_count++] = {
 					.texture = texture.physical,
 					.before	 = texture.state,
 					.after	 = texture.resting,
@@ -342,8 +546,22 @@ namespace ember::render
 			}
 		}
 
-		if (final_count > 0)
-			cmd.barrier({finals, final_count});
+		for (u32 i = 0; i < m_buffer_count; ++i)
+		{
+			VirtualBuffer& buffer = m_buffers[i];
+			if (buffer.state != buffer.resting)
+			{
+				buffer_finals[buffer_final_count++] = {
+					.buffer = buffer.physical,
+					.before = buffer.state,
+					.after	= buffer.resting,
+				};
+				buffer.state = buffer.resting;
+			}
+		}
+
+		if (texture_final_count + buffer_final_count > 0)
+			cmd.barrier({texture_finals, texture_final_count}, {buffer_finals, buffer_final_count});
 
 		device.submit(cmd);
 		release(device);
@@ -352,13 +570,25 @@ namespace ember::render
 
 	void RenderGraph::shutdown(gpu::Device& device) noexcept
 	{
+		// Teardown texture pool
 		for (u32 i = 0; i < MAX_POOL_ENTRIES; ++i)
 		{
-			PoolEntry& entry = m_pool[i];
+			TexturePoolEntry& entry = m_texture_pool[i];
 			EMBER_ASSERT(!entry.in_use);
 
 			if (!entry.texture.is_null())
 				device.destroy(entry.texture);
+			entry = {};
+		}
+
+		// Teardown buffer pool
+		for (u32 i = 0; i < MAX_POOL_ENTRIES; ++i)
+		{
+			BufferPoolEntry& entry = m_buffer_pool[i];
+			EMBER_ASSERT(!entry.in_use);
+
+			if (!entry.buffer.is_null())
+				device.destroy(entry.buffer);
 			entry = {};
 		}
 	}

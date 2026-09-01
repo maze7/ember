@@ -1,10 +1,11 @@
 #pragma once
 
-#include "ember/memory/memory.h"
 #include <ember/core/common.h>
+#include <ember/gpu/buffer.h>
 #include <ember/gpu/command_list.h>
 #include <ember/gpu/common.h>
 #include <ember/gpu/texture.h>
+#include <ember/memory/memory.h>
 #include <ember/memory/pmr/arena_resource.h>
 
 #include <type_traits>
@@ -19,6 +20,7 @@ namespace ember::render
 	/// Contract limits. Raise when a consumer outgrows them.
 	inline constexpr u32 MAX_GRAPH_PASSES	= 64;
 	inline constexpr u32 MAX_GRAPH_TEXTURES = 64;
+	inline constexpr u32 MAX_GRAPH_BUFFERS	= 64;
 	inline constexpr u32 MAX_PASS_USES		= 15;
 	inline constexpr u32 MAX_POOL_ENTRIES	= 128;
 	inline constexpr u32 GRAPH_ARENA_BYTES	= 16_kb;
@@ -39,6 +41,18 @@ namespace ember::render
 	};
 
 	/**
+	 * Graph-local name for a buffer used this frame. Minted by create() or import(),
+	 * dead after execute(). Resolves to a BufferHandle only inside pass callbacks,
+	 * through the PassContext.
+	 */
+	struct GraphBuffer
+	{
+		u16 index = 0xFFFF;
+
+		[[nodiscard]] bool is_null() const noexcept { return index == 0xFFFF; }
+	};
+
+	/**
 	 * A transient target. Pooled by (format, extent, mips, usage); equal descs may
 	 * resolve to the same texture in different frames, so contents never survive one.
 	 */
@@ -49,6 +63,18 @@ namespace ember::render
 		gpu::TextureUsage usage	  = gpu::TextureUsage::Sampled | gpu::TextureUsage::ColorTarget;
 		Extent2D extent			  = {};
 		u32 mip_count			  = 1;
+	};
+
+	/**
+	 * A transient buffer. Pooled by (size, usage); equal defs may resolve to the same
+	 * buffer in different frames, so contents never survive one. Transients live in
+	 * DeviceLocal memory; CPU-visible data goes through the device's transient ring.
+	 */
+	struct GraphBufferDef
+	{
+		const char* name	   = "graph_buffer";
+		u64 size			   = 0;
+		gpu::BufferUsage usage = gpu::BufferUsage::Storage;
 	};
 
 	/**
@@ -69,14 +95,34 @@ namespace ember::render
 		return gpu::TextureState::RenderTarget;
 	}
 
+	/**
+	 * The buffer counterpart: storage rests writable, indirect args and index
+	 * buffers rest at their consumer, everything else rests readable.
+	 */
+	[[nodiscard]] constexpr gpu::BufferState resting_state(gpu::BufferUsage usage) noexcept
+	{
+		using gpu::BufferUsage;
+
+		if ((usage & BufferUsage::Storage) != BufferUsage::None)
+			return gpu::BufferState::ShaderWrite;
+		if ((usage & BufferUsage::Indirect) != BufferUsage::None)
+			return gpu::BufferState::IndirectArgument;
+		if ((usage & BufferUsage::Index) != BufferUsage::None)
+			return gpu::BufferState::IndexBuffer;
+		return gpu::BufferState::ShaderRead;
+	}
+
 	class RenderGraph;
 
 	/// Hands pass callbacks their resolved resources at record time.
 	struct PassContext
 	{
 		[[nodiscard]] TextureHandle texture(GraphTexture handle) const noexcept;
+		[[nodiscard]] BufferHandle buffer(GraphBuffer handle) const noexcept;
 		[[nodiscard]] Extent2D extent(GraphTexture handle) const noexcept;
+		[[nodiscard]] u64 size(GraphBuffer handle) const noexcept;
 		[[nodiscard]] u32 bindless(GraphTexture handle) const noexcept { return bindless_index(texture(handle)); }
+		[[nodiscard]] u32 bindless(GraphBuffer handle) const noexcept { return bindless_index(buffer(handle)); }
 
 		const RenderGraph* graph = nullptr;
 	};
@@ -109,7 +155,9 @@ namespace ember::render
 			};
 
 			Pass& read(GraphTexture texture, gpu::TextureState state = gpu::TextureState::ShaderRead) noexcept;
+			Pass& read(GraphBuffer buffer, gpu::BufferState state = gpu::BufferState::ShaderRead) noexcept;
 			Pass& write(GraphTexture texture, gpu::TextureState state = gpu::TextureState::ShaderWrite) noexcept;
+			Pass& write(GraphBuffer buffer, gpu::BufferState state = gpu::BufferState::ShaderWrite) noexcept;
 			Pass& color(const ColorDef& def) noexcept;
 			Pass& depth(const DepthDef& def) noexcept;
 
@@ -145,21 +193,31 @@ namespace ember::render
 		private:
 			friend class RenderGraph;
 
-			struct Use
+			struct TextureUse
 			{
 				GraphTexture texture;
 				gpu::TextureState state;
 			};
 
+			struct BufferUse
+			{
+				GraphBuffer buffer;
+				gpu::BufferState state;
+			};
+
 			using RecordFn = void (*)(gpu::CommandList&, const PassContext&, void*);
 
 			void add_use(GraphTexture texture, gpu::TextureState state) noexcept;
+			void add_use(GraphBuffer buffer, gpu::BufferState state) noexcept;
 
 			const char* m_name	 = nullptr;
 			RenderGraph* m_graph = nullptr;
 
-			Use m_uses[MAX_PASS_USES] = {};
-			u32 m_use_count			  = 0;
+			TextureUse m_texture_uses[MAX_PASS_USES] = {};
+			u32 m_texture_use_count					 = 0;
+
+			BufferUse m_buffer_uses[MAX_PASS_USES] = {};
+			u32 m_buffer_use_count				   = 0;
 
 			ColorDef m_colors[MAX_COLOR_ATTACHMENTS] = {};
 			u32 m_color_count						 = 0;
@@ -185,6 +243,9 @@ namespace ember::render
 		/// Creates a new GraphTexture
 		[[nodiscard]] GraphTexture create(const GraphTextureDef& def) noexcept;
 
+		/// Creates a new GraphBuffer
+		[[nodiscard]] GraphBuffer create(const GraphBufferDef& def) noexcept;
+
 		/**
 		 * Wraps an externally owned texture (swapchain image, scene asset).
 		 *
@@ -197,6 +258,16 @@ namespace ember::render
 			gpu::TextureState current,
 			gpu::TextureState final_state,
 			Extent2D extent = {}) noexcept;
+
+		/**
+		 * Wraps an externally owned buffer.
+		 *
+		 * @param current is its state when entering the frame
+		 * @param final_state is where the graph leaves it.
+		 * @param size feeds PassContext::size; imports without one report zero.
+		 */
+		[[nodiscard]] GraphBuffer
+		import(BufferHandle buffer, gpu::BufferState current, gpu::BufferState final_state, u64 size = 0) noexcept;
 
 		[[nodiscard]] Pass& pass(const char* name) noexcept;
 
@@ -222,7 +293,17 @@ namespace ember::render
 			u32 pool_slot			  = UNPOOLED;
 		};
 
-		struct PoolEntry
+		struct VirtualBuffer
+		{
+			GraphBufferDef def		 = {};
+			BufferHandle physical	 = {};
+			gpu::BufferState state	 = gpu::BufferState::ShaderRead;
+			gpu::BufferState resting = gpu::BufferState::ShaderRead;
+			bool imported			 = false;
+			u32 pool_slot			 = UNPOOLED;
+		};
+
+		struct TexturePoolEntry
 		{
 			TextureHandle texture{};
 			u64 key				= 0;
@@ -230,7 +311,18 @@ namespace ember::render
 			bool in_use			= false;
 		};
 
+		struct BufferPoolEntry
+		{
+			BufferHandle buffer{};
+			u64 size			   = 0;
+			gpu::BufferUsage usage = gpu::BufferUsage::None;
+			u32 last_used_frame	   = 0;
+			bool in_use			   = false;
+		};
+
 		[[nodiscard]] TextureHandle acquire(gpu::Device& device, const GraphTextureDef& def, u32& pool_slot) noexcept;
+		[[nodiscard]] BufferHandle acquire(gpu::Device& device, const GraphBufferDef& def, u32& pool_slot) noexcept;
+
 		void release(gpu::Device& device) noexcept;
 
 		/// One slot past the cap: declarations past MAX_GRAPH_PASSES land there and never execute.
@@ -240,7 +332,12 @@ namespace ember::render
 		VirtualTexture m_textures[MAX_GRAPH_TEXTURES] = {};
 		u32 m_texture_count							  = 0;
 
-		PoolEntry m_pool[MAX_POOL_ENTRIES] = {};
-		u32 m_frame						   = 0;
+		VirtualBuffer m_buffers[MAX_GRAPH_BUFFERS] = {};
+		u32 m_buffer_count						   = 0;
+
+		TexturePoolEntry m_texture_pool[MAX_POOL_ENTRIES] = {};
+		BufferPoolEntry m_buffer_pool[MAX_POOL_ENTRIES]	  = {};
+
+		u32 m_frame = 0;
 	};
 }
