@@ -132,7 +132,9 @@ namespace ember::gpu
 				signals[signal_count++] = {
 					.sType	   = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
 					.semaphore = data.present_semaphores[data.acquired_image],
-					.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+					// ALL_COMMANDS: the present transition retires in no stage (dst NONE), so
+					// any narrower signal scope fails to cover it.
+					.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 				};
 			}
 
