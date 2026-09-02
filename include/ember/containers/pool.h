@@ -7,6 +7,15 @@
 
 #include <algorithm>
 
+#pragma once
+
+#include <ember/core/bits.h>
+#include <ember/core/common.h>
+#include <ember/core/handle.h>
+#include <ember/memory/memory.h>
+
+#include <algorithm>
+
 namespace ember
 {
 	/**
@@ -17,9 +26,15 @@ namespace ember
 	 * is destroyed. The GPU layer relies on the direct addressing because a Handle's
 	 * index is also its bindless heap slot.
 	 *
+	 * ComponentT sets the handle's index and generation width. The u16 default keeps
+	 * handles at 32 bits and covers the GPU resource pools; pools indexing GPU tables
+	 * past 65536 slots (renderer objects) widen to u32 and carry 64 bit handles.
+	 * Only the per slot metadata grows with the width.
+	 *
 	 * Each slot carries a generation. Freeing the slot advances it, skipping zero,
 	 * and create mints the slot's current generation, so get() is one compare and
-	 * stale or null handles return nullptr. A slot's handles repeat after 65535 frees.
+	 * stale or null handles return nullptr. A slot's handles repeat once the
+	 * generation counter wraps; treat the generation space as a safety budget.
 	 *
 	 * Free indices live in a FIFO ring: create pops the oldest free slot, so reuse
 	 * cycles through every free slot before revisiting one and generation churn spreads
@@ -36,7 +51,7 @@ namespace ember
 	 *
 	 * The pool is neither thread-safe nor re-entrant. Its memory resource must outlive it.
 	 */
-	template <class Tag, class HotT = Tag, class ColdT = void> class Pool
+	template <class Tag, class HotT = Tag, class ColdT = void, class Component = u16> class Pool
 	{
 		struct NoColdStorage
 		{
@@ -44,15 +59,24 @@ namespace ember
 
 	public:
 		static constexpr bool HAS_COLD_STORAGE = !std::is_void_v<ColdT>;
-		static constexpr u32 MAX_CAPACITY	   = 1u << 16; // every u16 index is addressable
 
-		using Hot  = HotT;
-		using Cold = std::conditional_t<HAS_COLD_STORAGE, ColdT, NoColdStorage>;
+		/// Every component index is addressable; the u32 bookkeeping bounds what a
+		/// u32 component could otherwise name.
+		static constexpr u64 INDEX_SPACE  = u64{1} << std::numeric_limits<Component>::digits;
+		static constexpr u32 MAX_CAPACITY = static_cast<u32>(std::min<u64>(INDEX_SPACE, 0xFFFF'FFFF));
+
+		using Hot		 = HotT;
+		using Cold		 = std::conditional_t<HAS_COLD_STORAGE, ColdT, NoColdStorage>;
+		using HandleType = Handle<Tag, Component>;
 
 		template <bool IsConst> class SlotIterator;
 
 		using Iterator		= SlotIterator<false>;
 		using ConstIterator = SlotIterator<true>;
+
+		static_assert(
+			std::unsigned_integral<Component> && !std::same_as<Component, bool>,
+			"Pool handles use an unsigned integral component");
 
 		static_assert(
 			std::is_nothrow_destructible_v<Hot> && std::is_nothrow_destructible_v<Cold>,
@@ -74,39 +98,39 @@ namespace ember
 		void init(u32 capacity) noexcept;
 
 		/// Constructs the HotType in-place in the next available slot
-		template <class... Args> [[nodiscard]] EMBER_FINLINE Handle<Tag> emplace(Args&&... args) noexcept;
+		template <class... Args> [[nodiscard]] EMBER_FINLINE HandleType emplace(Args&&... args) noexcept;
 
 		/// Inserts (copies) the HotType in the next available slot
-		[[nodiscard]] EMBER_FINLINE Handle<Tag> insert(const Hot& value) noexcept;
+		[[nodiscard]] EMBER_FINLINE HandleType insert(const Hot& value) noexcept;
 
 		/// Inserts (moves) the HotType in the next available slot
-		[[nodiscard]] EMBER_FINLINE Handle<Tag> insert(Hot&& value) noexcept;
+		[[nodiscard]] EMBER_FINLINE HandleType insert(Hot&& value) noexcept;
 
 		template <class HotArg, class ColdArg>
-		[[nodiscard]] EMBER_FINLINE Handle<Tag> insert(HotArg&& hot, ColdArg&& cold) noexcept
+		[[nodiscard]] EMBER_FINLINE HandleType insert(HotArg&& hot, ColdArg&& cold) noexcept
 			requires(HAS_COLD_STORAGE);
 
-		[[nodiscard]] EMBER_FINLINE bool erase(Handle<Tag> handle) noexcept;
+		[[nodiscard]] EMBER_FINLINE bool erase(HandleType handle) noexcept;
 
 		/// Retires the slot: the handle dies and the values are destroyed now, but the
 		/// slot stays claimed until release_slot(). For resources whose index stays
 		/// visible to in-flight GPU work, retire at destroy and release at the fence.
-		[[nodiscard]] EMBER_FINLINE bool retire(Handle<Tag> handle) noexcept;
+		[[nodiscard]] EMBER_FINLINE bool retire(HandleType handle) noexcept;
 
 		/// Returns a retired slot to the free ring. The caller proves the slot is no
 		/// longer referenced; nothing here can check that.
-		EMBER_FINLINE void release_slot(u16 index) noexcept;
+		EMBER_FINLINE void release_slot(Component index) noexcept;
 
-		[[nodiscard]] EMBER_FINLINE bool contains(Handle<Tag> handle) const noexcept;
-
-		/// Weak deref: nullptr when the handle is stale or null.
-		[[nodiscard]] EMBER_FINLINE Hot* get(Handle<Tag> handle) noexcept;
-		[[nodiscard]] EMBER_FINLINE const Hot* get(Handle<Tag> handle) const noexcept;
+		[[nodiscard]] EMBER_FINLINE bool contains(HandleType handle) const noexcept;
 
 		/// Weak deref: nullptr when the handle is stale or null.
-		[[nodiscard]] EMBER_FINLINE Cold* get_cold(Handle<Tag> handle) noexcept
+		[[nodiscard]] EMBER_FINLINE Hot* get(HandleType handle) noexcept;
+		[[nodiscard]] EMBER_FINLINE const Hot* get(HandleType handle) const noexcept;
+
+		/// Weak deref: nullptr when the handle is stale or null.
+		[[nodiscard]] EMBER_FINLINE Cold* get_cold(HandleType handle) noexcept
 			requires(HAS_COLD_STORAGE);
-		[[nodiscard]] EMBER_FINLINE const Cold* get_cold(Handle<Tag> handle) const noexcept
+		[[nodiscard]] EMBER_FINLINE const Cold* get_cold(HandleType handle) const noexcept
 			requires(HAS_COLD_STORAGE);
 
 		/// Occupied slots, live plus retired.
@@ -150,10 +174,10 @@ namespace ember
 		/// Pops the ring head. INVALID_INDEX when the pool is full or init() has not run.
 		/// The slot stays dead until publish_slot.
 		[[nodiscard]] EMBER_FINLINE u32 acquire_slot() noexcept;
-		[[nodiscard]] EMBER_FINLINE Handle<Tag> publish_slot(u32 index) noexcept;
-		[[nodiscard]] EMBER_FINLINE Handle<Tag> make_handle(u32 index) const noexcept;
+		[[nodiscard]] EMBER_FINLINE HandleType publish_slot(u32 index) noexcept;
+		[[nodiscard]] EMBER_FINLINE HandleType make_handle(u32 index) const noexcept;
 
-		EMBER_FINLINE void free_push(u16 index) noexcept;
+		EMBER_FINLINE void free_push(Component index) noexcept;
 
 		/// Housekeeping.
 		void destroy_slot(u32 index) noexcept;
@@ -178,13 +202,13 @@ namespace ember
 		Hot* m_hot						   = nullptr;
 		[[no_unique_address]] Cold* m_cold = nullptr;
 
-		u16* m_generations = nullptr;
-		u16* m_free		   = nullptr;
-		u64* m_live		   = nullptr;
-		u32 m_free_head	   = 0;
-		u32 m_free_count   = 0;
-		u32 m_retired	   = 0;
-		u32 m_capacity	   = 0;
+		Component* m_generations = nullptr;
+		Component* m_free		 = nullptr;
+		u64* m_live				 = nullptr;
+		u32 m_free_head			 = 0;
+		u32 m_free_count		 = 0;
+		u32 m_retired			 = 0;
+		u32 m_capacity			 = 0;
 	};
 }
 
