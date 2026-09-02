@@ -1132,6 +1132,134 @@ namespace
 	}
 
 #ifndef NDEBUG
+
+	struct WideTag;
+	struct WideRetireTag;
+	struct TinyTag;
+
+	using WidePool	 = Pool<WideTag, u32, void, u32>;
+	using WideHandle = Handle<WideTag, u32>;
+
+	// The capacity bound follows the component width: full index space for narrow
+	// components, the u32 bookkeeping bound for wide ones.
+	static_assert(Pool<TinyTag, int, void, ember::u8>::MAX_CAPACITY == 256u);
+	static_assert(WidePool::MAX_CAPACITY == 0xFFFF'FFFFu);
+	static_assert(std::is_same_v<WidePool::HandleType, WideHandle>);
+	static_assert(sizeof(WideHandle) == 8);
+
+	TEST(Pool, WideComponentCrossesTheU16Boundary)
+	{
+		// 100k slots is the renderer object scale that motivated the wide
+		// component; every index past 65535 is unreachable with u16 handles.
+		constexpr u32 object_count = 100'000;
+
+		WidePool values;
+		values.init(object_count);
+
+		WideHandle first{};
+		WideHandle boundary{};
+		WideHandle last{};
+
+		for (u32 index = 0; index < object_count; ++index)
+		{
+			const WideHandle handle = values.insert(index * 3u);
+
+			ASSERT_FALSE(handle.is_null());
+			ASSERT_EQ(handle.index, index);
+
+			if (index == 0)
+				first = handle;
+			if (index == 65'536)
+				boundary = handle;
+			if (index == object_count - 1)
+				last = handle;
+		}
+
+		EXPECT_EQ(values.size(), object_count);
+		EXPECT_TRUE(values.insert(0u).is_null());
+
+		EXPECT_EQ(*values.get(first), 0u);
+		EXPECT_EQ(*values.get(boundary), 65'536u * 3u);
+		EXPECT_EQ(*values.get(last), (object_count - 1) * 3u);
+	}
+
+	TEST(Pool, WideComponentRecyclesAboveTheU16Boundary)
+	{
+		constexpr u32 capacity = 70'000;
+		constexpr u32 target   = 69'999;
+
+		WidePool values;
+		values.init(capacity);
+
+		WideHandle handle{};
+		for (u32 index = 0; index < capacity; ++index)
+			handle = values.insert(index);
+
+		ASSERT_EQ(handle.index, target);
+
+		// Retire and release round-trip on an index no u16 could carry, then the
+		// FIFO ring hands the slot back with a fresh generation.
+		ASSERT_TRUE(values.retire(handle));
+		EXPECT_EQ(values.retired_count(), 1u);
+		EXPECT_EQ(values.get(handle), nullptr);
+
+		values.release_slot(handle.index);
+		EXPECT_EQ(values.retired_count(), 0u);
+
+		const WideHandle recycled = values.insert(123u);
+
+		EXPECT_EQ(recycled.index, target);
+		EXPECT_NE(recycled.generation, handle.generation);
+		EXPECT_FALSE(values.contains(handle));
+		EXPECT_EQ(*values.get(recycled), 123u);
+	}
+
+	TEST(Pool, WideComponentSurvivesChurnAtRendererScale)
+	{
+		constexpr u32 object_count = 100'000;
+
+		WidePool values;
+		values.init(object_count);
+
+		std::vector<WideHandle> handles;
+		handles.reserve(object_count);
+
+		for (u32 index = 0; index < object_count; ++index)
+			handles.push_back(values.insert(index));
+
+		// Punch out every third slot across the whole range so reuse, generation
+		// advance and the ring seam all operate beyond the u16 span.
+		u32 erased = 0;
+		for (u32 index = 0; index < object_count; index += 3)
+		{
+			ASSERT_TRUE(values.erase(handles[index]));
+			++erased;
+		}
+
+		EXPECT_EQ(values.size(), object_count - erased);
+
+		for (u32 index = 0; index < erased; ++index)
+		{
+			const WideHandle handle = values.insert(index + 1'000'000u);
+
+			ASSERT_FALSE(handle.is_null());
+			ASSERT_EQ(handle.index % 3u, 0u);
+		}
+
+		EXPECT_EQ(values.size(), object_count);
+
+		// Survivors kept their values and their handles; stale handles stay dead.
+		EXPECT_EQ(*values.get(handles[1]), 1u);
+		EXPECT_EQ(*values.get(handles[99'998]), 99'998u);
+		EXPECT_FALSE(values.contains(handles[99'999]));
+
+		u32 walked = 0;
+		for (auto iterator = values.begin(); iterator != values.end(); ++iterator)
+			++walked;
+
+		EXPECT_EQ(walked, object_count);
+	}
+
 	TEST(PoolDeathTest, InitTwiceIsFatal)
 	{
 		EXPECT_DEATH(
