@@ -133,6 +133,25 @@ namespace ember
 		[[nodiscard]] EMBER_FINLINE const Cold* get_cold(HandleType handle) const noexcept
 			requires(HAS_COLD_STORAGE);
 
+		
+		/// Raw slot storage, liveness ignored. For mirror code (GPU table sync) that
+		/// addresses slots by index and must still read a destroyed slot's last bytes;
+		/// only meaningful while the value type is trivially destructible.
+		[[nodiscard]] EMBER_FINLINE Hot* hot_data() noexcept { return m_hot; }
+		[[nodiscard]] EMBER_FINLINE const Hot* hot_data() const noexcept { return m_hot; }
+
+		[[nodiscard]] EMBER_FINLINE Cold* cold_data() noexcept
+			requires(HAS_COLD_STORAGE)
+		{
+			return m_cold;
+		}
+
+		[[nodiscard]] EMBER_FINLINE const Cold* cold_data() const noexcept
+			requires(HAS_COLD_STORAGE)
+		{
+			return m_cold;
+		}
+
 		/// Occupied slots, live plus retired.
 		[[nodiscard]] EMBER_FINLINE u32 size() const noexcept;
 

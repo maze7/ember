@@ -1133,6 +1133,21 @@ namespace
 
 #ifndef NDEBUG
 
+	TEST(Pool, RawSlotStorageKeepsBytesAfterErase)
+	{
+		BasicPool values;
+		values.init(2);
+
+		const auto handle = values.insert(7);
+
+		// Mirror code scrubs through the live handle, erases, then uploads from
+		// raw storage. The trivially destructible value must survive the erase.
+		*values.get(handle) = 42;
+		ASSERT_TRUE(values.erase(handle));
+
+		EXPECT_EQ(values.hot_data()[handle.index], 42);
+	}
+
 	struct WideTag;
 	struct WideRetireTag;
 	struct TinyTag;

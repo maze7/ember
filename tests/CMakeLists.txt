@@ -18,3 +18,7 @@ endfunction()
 
 add_subdirectory(containers)
 add_subdirectory(memory)
+
+if(EMBER_ENABLE_GRAPHICS)
+	add_subdirectory(render)
+endif()

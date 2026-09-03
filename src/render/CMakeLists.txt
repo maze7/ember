@@ -2,6 +2,7 @@
 ember_add_module(Render
 	SOURCES
 		graph.cpp
+		scene.cpp
 	PUBLIC_DEPS
 		Ember::Gpu
 )
