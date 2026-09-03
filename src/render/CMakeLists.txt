@@ -4,6 +4,7 @@ ember_add_module(Render
 		graph.cpp
 		scene.cpp
 		geometry.cpp
+		gpu_scene.cpp
 	PUBLIC_DEPS
 		Ember::Gpu
 )
