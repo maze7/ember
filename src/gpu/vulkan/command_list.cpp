@@ -53,13 +53,13 @@ namespace ember::gpu
 
 				case TextureState::CopySrc:
 					return {
-						VK_PIPELINE_STAGE_2_COPY_BIT,
+						VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
 						VK_ACCESS_2_TRANSFER_READ_BIT,
 						VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL};
 
 				case TextureState::CopyDst:
 					return {
-						VK_PIPELINE_STAGE_2_COPY_BIT,
+						VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
 						VK_ACCESS_2_TRANSFER_WRITE_BIT,
 						VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL};
 
@@ -89,10 +89,13 @@ namespace ember::gpu
 					return {VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT};
 				case BufferState::IndirectArgument:
 					return {VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT, VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT};
+				// Fills and updates execute at the CLEAR stage, copies at COPY.
+				// One buffer state names them all, so the scope must cover every
+				// transfer command a pass can record.
 				case BufferState::CopySrc:
-					return {VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT};
+					return {VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT};
 				case BufferState::CopyDst:
-					return {VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT};
+					return {VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT};
 			}
 
 			EMBER_UNREACHABLE_ASSERT();
