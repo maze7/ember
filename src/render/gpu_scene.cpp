@@ -51,7 +51,8 @@ namespace ember::render
 		EMBER_ASSERT(!m_objects.is_null() && "sync before init");
 		EMBER_ASSERT(scene.capacity() <= m_capacity && "tables must cover every scene slot");
 
-		m_last_sync = {};
+		m_last_sync	 = {};
+		m_slot_count = scene.slot_count();
 
 		const Span<const u32> dirty = scene.dirty_slots();
 		if (dirty.empty())
@@ -91,9 +92,10 @@ namespace ember::render
 					u64{first} * sizeof(TransformData),
 					{reinterpret_cast<const u8*>(transforms + cursor), run * sizeof(TransformData)});
 
-				cursor				  += run;
-				m_last_sync.copy_runs += 1;
-				m_last_sync.bytes	  += run * (sizeof(ObjectData) + sizeof(TransformData));
+				cursor					  += run;
+				m_last_sync.slot_runs	  += 1;
+				m_last_sync.copy_commands += 2;
+				m_last_sync.bytes		  += run * (sizeof(ObjectData) + sizeof(TransformData));
 			});
 
 		m_last_sync.dirty_slots = count;

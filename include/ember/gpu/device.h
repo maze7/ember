@@ -130,12 +130,13 @@ namespace ember::gpu
 		u32 copy_row_pitch_alignment		 = 1;	  // buffer<->texture copies (D3D12: 256)
 		u32 copy_offset_alignment			 = 1;	  // (D3D12: 512)
 
-		u32 max_texture_2d		  = 0;
-		u32 max_texture_3d		  = 0;
-		u32 max_texture_layers	  = 0;
-		u32 max_color_attachments = 0;
-		u32 max_anisotropy		  = 1;
-		u32 subgroup_size		  = 0;
+		u32 max_texture_2d			= 0;
+		u32 max_texture_3d			= 0;
+		u32 max_texture_layers		= 0;
+		u32 max_color_attachments	= 0;
+		u32 max_indirect_draw_count = 0; // ceiling for indirect drawCount and maxDrawCount
+		u32 max_anisotropy			= 1;
+		u32 subgroup_size			= 0;
 
 		f32 timestamp_period_ns = 0.0f; // ticks -> ns for GPU zones
 		bool timestamps			= false;

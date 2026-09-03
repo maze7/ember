@@ -959,12 +959,13 @@ namespace ember::gpu
 			caps.copy_row_pitch_alignment = static_cast<u32>(limits.optimalBufferCopyRowPitchAlignment);
 			caps.copy_offset_alignment	  = static_cast<u32>(limits.optimalBufferCopyOffsetAlignment);
 
-			caps.max_texture_2d		   = limits.maxImageDimension2D;
-			caps.max_texture_3d		   = limits.maxImageDimension3D;
-			caps.max_texture_layers	   = limits.maxImageArrayLayers;
-			caps.max_color_attachments = std::min(limits.maxColorAttachments, MAX_COLOR_ATTACHMENTS);
-			caps.max_anisotropy		   = static_cast<u32>(limits.maxSamplerAnisotropy);
-			caps.subgroup_size		   = adapter.subgroup_size;
+			caps.max_indirect_draw_count = limits.maxDrawIndirectCount;
+			caps.max_texture_2d			 = limits.maxImageDimension2D;
+			caps.max_texture_3d			 = limits.maxImageDimension3D;
+			caps.max_texture_layers		 = limits.maxImageArrayLayers;
+			caps.max_color_attachments	 = std::min(limits.maxColorAttachments, MAX_COLOR_ATTACHMENTS);
+			caps.max_anisotropy			 = static_cast<u32>(limits.maxSamplerAnisotropy);
+			caps.subgroup_size			 = adapter.subgroup_size;
 
 			caps.timestamps			 = limits.timestampComputeAndGraphics == VK_TRUE && limits.timestampPeriod > 0.0f;
 			caps.timestamp_period_ns = limits.timestampPeriod;

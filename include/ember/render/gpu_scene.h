@@ -67,9 +67,10 @@ namespace ember::render
 	public:
 		struct SyncStats
 		{
-			u32 dirty_slots = 0;
-			u32 copy_runs	= 0;
-			u64 bytes		= 0;
+			u32 dirty_slots	  = 0;
+			u32 slot_runs	  = 0;
+			u32 copy_commands = 0; // two staged copies per run, one per table
+			u64 bytes		  = 0;
 		};
 
 		GpuScene() = default;
@@ -91,6 +92,13 @@ namespace ember::render
 		[[nodiscard]] u32 objects_index() const noexcept { return bindless_index(m_objects); }
 		[[nodiscard]] u32 transforms_index() const noexcept { return bindless_index(m_transforms); }
 
+		/**
+		 * High water of the mirror as of the last sync: GPU passes iterate
+		 * exactly this many table slots. Zero before the first sync, so a cull
+		 * issued early draws nothing instead of reading slots never uploaded.
+		 */
+		[[nodiscard]] u32 slot_count() const noexcept { return m_slot_count; }
+
 		[[nodiscard]] SyncStats last_sync() const noexcept { return m_last_sync; }
 
 	private:
@@ -98,6 +106,7 @@ namespace ember::render
 		BufferHandle m_transforms = {};
 
 		u32 m_capacity		  = 0;
+		u32 m_slot_count	  = 0;
 		SyncStats m_last_sync = {};
 	};
 }

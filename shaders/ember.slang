@@ -56,3 +56,9 @@
 // draw. Declare a typed block for each slot the shader reads; CommandList
 // set_constants fills it from the transient ring.
 #define EMBER_CONSTANTS(slot, T, name) [[vk::binding(slot, 1)]] ConstantBuffer<T> name;
+
+// Writable view over the same storage buffer heap, for compute producers
+// (draw stream compaction, scatter uploads). Vulkan binds StructuredBuffer and
+// RWStructuredBuffer through the same descriptor type, so the slot contract is
+// unchanged; only shader-side access widens.
+#define EMBER_BUFFER_RW_ALIAS(T, name) [[vk::binding(8, 0)]] RWStructuredBuffer<T> name[];
