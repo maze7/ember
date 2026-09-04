@@ -69,10 +69,14 @@ float4 fs_main(VertexOutput input) : SV_Target
 {
 	const MeshMaterial material = ember_mesh_materials[g_push.materials][input.material];
 
-	// Material indices vary per draw inside one indirect batch and waves can
-	// pack across draws, so the descriptor indices are not uniform here.
 	float4 texel = EMBER_TEX2D_NU(material.albedo)
 					   .SampleLevel(EMBER_SAMPLER_NU(material.albedo_sampler), input.uv, (float)material.mip);
+
+	// Cutout: tile and sprite art carries meaning in alpha. Opaque textures
+	// sample a = 1 everywhere and never take this branch. Lives here until the
+	// family split gives cutout its own pipeline.
+	if (texel.a < 0.01)
+		discard;
 
 	// A fixed top light keyed off the decoded normal, so a broken attribute or
 	// octahedral path shows up as wrong shading instead of hiding.
