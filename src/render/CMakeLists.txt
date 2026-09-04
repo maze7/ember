@@ -10,6 +10,7 @@ ember_add_module(Render
 		renderer.cpp
 		features/mesh.cpp
 		features/upscale.cpp
+		features/sprite.cpp
 	PUBLIC_DEPS
 		Ember::Gpu
 )

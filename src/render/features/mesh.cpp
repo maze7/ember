@@ -83,7 +83,7 @@ namespace ember::render
 
 		auto& pass = frame.graph.pass("mesh")
 						 .color({.texture = target, .clear = m_clear})
-						 .depth({.texture = frame.resources.scene_depth, .store = gpu::StoreOp::DontCare});
+						 .depth({.texture = frame.resources.scene_depth, .store = gpu::StoreOp::Store});
 
 		read(pass, frame.visibility[0].opaque);
 

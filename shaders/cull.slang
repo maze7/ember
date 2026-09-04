@@ -13,8 +13,10 @@ EMBER_CONSTANTS(1, CullConstants, g_cull)
 
 struct PushConstants
 {
-	uint args;
-	uint count;
+	uint args_opaque;
+	uint count_opaque;
+	uint args_cutout;
+	uint count_cutout;
 };
 
 [[vk::push_constant]] ConstantBuffer<PushConstants> g_push;
@@ -48,9 +50,6 @@ void cs_main(uint3 thread : SV_DispatchThreadID)
 	if (geometry.index_count == 0)
 		return;
 
-	uint draw_index;
-	InterlockedAdd(ember_count_buffers[g_push.count][0], 1, draw_index);
-
 	DrawArgs args;
 	args.index_count    = geometry.index_count;
 	args.instance_count = 1;
@@ -58,5 +57,15 @@ void cs_main(uint3 thread : SV_DispatchThreadID)
 	args.base_vertex    = 0;
 	args.first_instance = slot; // object identity; the vertex stage adds it back from the start location
 
-	ember_draw_buffers[g_push.args][draw_index] = args;
+	uint draw_index;
+	if ((object.flags & OBJECT_FLAG_CUTOUT) != 0)
+	{
+		InterlockedAdd(ember_count_buffers[g_push.count_cutout][0], 1, draw_index);
+		ember_draw_buffers[g_push.args_cutout][draw_index] = args;
+	}
+	else
+	{
+		InterlockedAdd(ember_count_buffers[g_push.count_opaque][0], 1, draw_index);
+		ember_draw_buffers[g_push.args_opaque][draw_index] = args;
+	}
 }

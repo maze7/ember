@@ -40,6 +40,7 @@ namespace ember::render
 		None		= 0,
 		CastsShadow = 1u << 0,
 		Billboard	= 1u << 1, // vertex shader rebuilds rotation from the view basis
+		AlphaTest	= 1u << 2, // routes to the cutout visibility bucket for the sprite family
 	};
 
 	EMBER_ENUM_BITWISE_OPS(ObjectFlags, u32);

@@ -37,7 +37,8 @@ namespace ember::render
 
 	struct ViewVisibility
 	{
-		DrawStream opaque = {};
+		DrawStream opaque = {}; // solid scene geometry
+		DrawStream cutout = {}; // alpha-tested sprites, drawn after opaque against its depth
 	};
 
 	/// Declares a pass's consumption of a stream. The fallback draw never reads

@@ -6,6 +6,10 @@
 // scene. One mirror, so a layout change breaks one file instead of every
 // consumer.
 
+// Mirror of render::ObjectFlags. The cull kernel routes AlphaTest objects into
+// the cutout draw stream so the sprite family draws them after the opaque world.
+static const uint OBJECT_FLAG_CUTOUT = 4u;
+
 struct ObjectData
 {
 	float4 sphere; // world space center and radius
