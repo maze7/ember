@@ -57,10 +57,13 @@ namespace ember::render
 			.frame_slot = frame_slot,
 		};
 
-		frame.resources.output		  = m_graph.import(output.texture, output.initial, output.final_state, output.extent);
+		frame.resources.output = m_graph.import(output.texture, output.initial, output.final_state, output.extent);
 		frame.resources.output_extent = output.extent;
 
 		(void)frame.add_view(main_view);
+
+		for (const FeatureEntry& entry : m_features)
+			entry.feature->prepare(frame);
 
 		for (const FeatureEntry& entry : m_features)
 			entry.feature->build_views(frame);

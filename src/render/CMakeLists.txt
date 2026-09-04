@@ -9,6 +9,7 @@ ember_add_module(Render
 		material.cpp
 		renderer.cpp
 		features/mesh.cpp
+		features/upscale.cpp
 	PUBLIC_DEPS
 		Ember::Gpu
 )

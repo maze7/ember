@@ -71,15 +71,18 @@ namespace ember::render
 
 		m_materials.sync(frame.device);
 
+		const GraphTexture target =
+			frame.resources.scene_color.is_null() ? frame.resources.output : frame.resources.scene_color;
+
 		frame.resources.scene_depth = frame.graph.create({
 			.name	= "scene_depth",
 			.format = m_depth_format,
 			.usage	= gpu::TextureUsage::DepthStencilTarget,
-			.extent = frame.resources.output_extent,
+			.extent = frame.resources.scene_extent,
 		});
 
 		auto& pass = frame.graph.pass("mesh")
-						 .color({.texture = frame.resources.output, .clear = m_clear})
+						 .color({.texture = target, .clear = m_clear})
 						 .depth({.texture = frame.resources.scene_depth, .store = gpu::StoreOp::DontCare});
 
 		read(pass, frame.visibility[0].opaque);
@@ -92,13 +95,14 @@ namespace ember::render
 			 pipeline	  = m_pipeline,
 			 stream		  = frame.visibility[0].opaque,
 			 index_buffer = frame.geometry.index_buffer(),
-			 push		  = MeshPush{
-						.positions	= frame.geometry.positions_index(),
-						.attributes = frame.geometry.attributes_index(),
-						.objects	= frame.gpu_scene.objects_index(),
-						.transforms = frame.gpu_scene.transforms_index(),
-						.materials	= m_materials.table_index(),
-				}](gpu::CommandList& cmd, const PassContext& ctx)
+			 push =
+				 MeshPush{
+					 .positions	 = frame.geometry.positions_index(),
+					 .attributes = frame.geometry.attributes_index(),
+					 .objects	 = frame.gpu_scene.objects_index(),
+					 .transforms = frame.gpu_scene.transforms_index(),
+					 .materials	 = m_materials.table_index(),
+				 }](gpu::CommandList& cmd, const PassContext& ctx)
 			{
 				cmd.set_pipeline(pipeline);
 				cmd.set_constants(0, constants);

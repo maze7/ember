@@ -44,7 +44,8 @@ namespace ember::render
 			/// Cooked shaders/mesh.slang (game cook, EMBER_SHADERS list).
 			Span<const u8> shader = {};
 
-			/// Must match the output the renderer draws into.
+			/// Match the target family: the swapchain format standalone,
+			/// RGBA16Float under the upscale feature.
 			gpu::TextureFormat color_format = gpu::TextureFormat::RGBA8Unorm;
 			gpu::TextureFormat depth_format = gpu::TextureFormat::D32Float;
 

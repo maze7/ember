@@ -4,7 +4,9 @@
 #include <ember/gpu/common.h>
 #include <ember/render/common.h>
 
+#include <glm/common.hpp>
 #include <glm/geometric.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <glm/mat3x3.hpp>
 #include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
@@ -41,23 +43,6 @@ namespace ember::render
 		LayerMask layers = LAYER_ALL;
 		const char* name = "view";
 	};
-
-	/**
-	 * Reverse Z projection with an infinite far plane. Depth clears to zero,
-	 * GreaterEqual compares, and precision concentrates where scenes need it;
-	 * the far plane dissapears entirely instead of being a large magic number.
-	 */
-	[[nodiscard]] inline glm::mat4 perspective_reverse_z(f32 fov_y, f32 aspect, f32 near) noexcept
-	{
-		const f32 f = 1.0f / std::tan(fov_y * 0.5f);
-
-		glm::mat4 m(0.0f);
-		m[0][0] = f / aspect;
-		m[1][1] = f;
-		m[2][3] = -1.0f;
-		m[3][2] = near;
-		return m;
-	}
 
 	/// Gribb Hartmann extraction in Vulkan clip conventions: x and y in [-w, w],
 	/// z in [0, w]. Works for any projection, perspective or ortho, either depth
@@ -141,4 +126,81 @@ namespace ember::render
 			.name			 = name,
 		};
 	}
+
+	/**
+	 * Reverse Z projection with an infinite far plane. Depth clears to zero,
+	 * GreaterEqual compares, and precision concentrates where scenes need it;
+	 * the far plane dissapears entirely instead of being a large magic number.
+	 */
+	[[nodiscard]] inline glm::mat4 perspective_reverse_z(f32 fov_y, f32 aspect, f32 near) noexcept
+	{
+		const f32 f = 1.0f / std::tan(fov_y * 0.5f);
+
+		glm::mat4 m(0.0f);
+		m[0][0] = f / aspect;
+		m[1][1] = f;
+		m[2][3] = -1.0f;
+		m[3][2] = near;
+		return m;
+	}
+
+	/// Reverse Z orthographic projection: depth one at the near plane, zero at
+	/// the far plane, matching the perspective convention so one pipeline state
+	/// serves both.
+	[[nodiscard]] inline glm::mat4 ortho_reverse_z(f32 half_width, f32 half_height, f32 near, f32 far) noexcept
+	{
+		glm::mat4 m(1.0f);
+		m[0][0] = 1.0f / half_width;
+		m[1][1] = 1.0f / half_height;
+		m[2][2] = 1.0f / (far - near);
+		m[3][2] = far / (far - near);
+		return m;
+	}
+
+	struct SnappedOrthoView
+	{
+		View view = {};
+
+		/// The sub-texel camera remainder, in texels. Feed it to the upscale
+		/// feature so panning stays smooth while geometry stays pixel locked.
+		glm::vec2 subtexel_offset = {};
+	};
+
+	/**
+	 * An orthographic view whose origin snaps to the texel grid. Whole texels
+	 * move the view; the remainder returns as a UV offset for the upscale
+	 * pass. The half height is world units on screen; the texel size follows
+	 * from it and the internal resolution.
+	 */
+	[[nodiscard]] inline SnappedOrthoView make_snapped_ortho_view(
+		glm::vec3 position,
+		glm::vec3 target,
+		glm::vec3 up,
+		f32 half_height,
+		Extent2D internal_extent,
+		f32 near,
+		f32 far,
+		LayerMask layers = LAYER_ALL,
+		const char* name = "main") noexcept
+	{
+		const f32 aspect	 = static_cast<f32>(internal_extent.width) / static_cast<f32>(internal_extent.height);
+		const f32 half_width = half_height * aspect;
+		const f32 texel		 = (2.0f * half_height) / static_cast<f32>(internal_extent.height);
+
+		glm::mat4 view = glm::lookAt(position, target, up);
+
+		// Snap the view space translation so world geometry lands on texel
+		// centers regardless of camera position.
+		const glm::vec2 translation{view[3].x, view[3].y};
+		const glm::vec2 snapped = glm::floor(translation / texel + 0.5f) * texel;
+
+		view[3].x = snapped.x;
+		view[3].y = snapped.y;
+
+		return {
+			.view = make_view(view, ortho_reverse_z(half_width, half_height, near, far), internal_extent, layers, name),
+			.subtexel_offset = (translation - snapped) / texel,
+		};
+	}
+
 }

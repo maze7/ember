@@ -37,6 +37,11 @@ namespace ember::render
 		GraphTexture scene_depth = {}; // published by whichever feature owns the depth target
 
 		Extent2D output_extent = {}; // sizes feature-created targets that match the output
+
+		/// Internal render resolution: what world features size their targets
+		/// by. Defaults to the output extent; an upscale feature overrides it
+		/// when the scene renders through an internal target.
+		Extent2D scene_extent = {};
 	};
 
 	/**
@@ -94,6 +99,10 @@ namespace ember::render
 	public:
 		virtual ~RenderFeature() = default;
 
+		/// Publish frame targets (scene color, bloom chains) before any
+		/// feature declares passes. Runs for every feature ahead of build_views.
+		virtual void prepare(RenderFrame&) noexcept {}
+
 		/// Releases GPU resources the feature owns; runs before destruction in
 		/// reverse registration order.
 		virtual void shutdown(gpu::Device&) noexcept {}
@@ -126,7 +135,7 @@ namespace ember::render
 
 	struct RenderOutput
 	{
-		TextureHandle texture	  = {};
+		TextureHandle texture		  = {};
 		Extent2D extent				  = {};
 		gpu::TextureState initial	  = gpu::TextureState::Undefined;
 		gpu::TextureState final_state = gpu::TextureState::Present;
@@ -136,7 +145,7 @@ namespace ember::render
 	 * The render domain's owner and orchestrator: the proxy scene, the GPU
 	 * mirrors, geometry, visibility, the graph and the registered features all
 	 * live here, and render() runs the fixed phase contract over them every
-	 * frame: sync, build views, cull every view, add passes in registration
+	 * frame: prepare, build views, cull every view, add passes in registration
 	 * order, capture counts, execute.
 	 *
 	 * Renderer policy is which features a game registers and how it configures
@@ -176,8 +185,8 @@ namespace ember::render
 
 			m_features.push_back({
 				.feature = feature,
-				.destroy =
-					[](RenderFeature* base) { memory::delete_object(MemoryTag::Graphics, static_cast<F*>(base)); },
+				.destroy = [](RenderFeature* base)
+				{ memory::delete_object(MemoryTag::Graphics, static_cast<F*>(base)); },
 			});
 
 			return *feature;
