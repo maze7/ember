@@ -7,6 +7,8 @@ ember_add_module(Render
 		gpu_scene.cpp
 		visibility.cpp
 		material.cpp
+		renderer.cpp
+		features/mesh.cpp
 	PUBLIC_DEPS
 		Ember::Gpu
 )
