@@ -328,15 +328,35 @@ namespace ember
 		{
 			// clang-format off
 			return add({
-				.left = Binding{GamepadAxisBindings{x, -1, x_deadzone}},
-				.right = Binding{GamepadAxisBindings{x, +1, x_deadzone}},
-				.up = Binding{GamepadAxisBinding{y, -1, y_deadzone}},
-				.down = Binding{GamepadAxisBinding{y, +1, y_deadzone}},
-				.circular_deadzone = circular_deadzone,
+				.left	 = Binding{GamepadButtonBinding{left}},
+				.right	 = Binding{GamepadButtonBinding{right}},
+				.up		 = Binding{GamepadButtonBinding{up}},
+				.down	 = Binding{GamepadButtonBinding{down}},
 				.overlap = overlap,
-				.masks = masks,
+				.masks	 = masks
 			});
 			// clang-format on
+		}
+
+		/// Adds both directions of two GamepadAxes with per axis deadzones.
+		StickBindingSet&
+		add(GamepadAxis x,
+			f32 x_deadzone,
+			GamepadAxis y,
+			f32 y_deadzone,
+			f32 circular_deadzone,
+			BindingAxisOverlap overlap = {},
+			BindingMask masks		   = 0)
+		{
+			return add({
+				.left			   = Binding{GamepadAxisBinding{x, -1, x_deadzone}},
+				.right			   = Binding{GamepadAxisBinding{x, +1, x_deadzone}},
+				.up				   = Binding{GamepadAxisBinding{y, -1, y_deadzone}},
+				.down			   = Binding{GamepadAxisBinding{y, +1, y_deadzone}},
+				.circular_deadzone = circular_deadzone,
+				.overlap		   = overlap,
+				.masks			   = masks,
+			});
 		}
 
 		/// Adds a GamepadAxis pair with a circular deadzone only.
@@ -412,6 +432,6 @@ namespace ember
 		}
 
 	private:
-		Vector<Entry> m_entries{&memory::heap{MemoryTag::Input}};
+		Vector<Entry> m_entries{&memory::heap(MemoryTag::Input)};
 	};
 }
