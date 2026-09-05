@@ -194,6 +194,11 @@ namespace ember::render
 
 		void render(const View& main_view, const RenderOutput& output, u32 frame_slot) noexcept;
 
+		/// Debug: view 0 culls with this view while it is set, and features keep
+		/// rasterizing the main view. The freeze harness. The pointee outlives
+		/// the setting.
+		void set_cull_override(const View* view) noexcept { m_cull_override = view; }
+
 		/// The proxy scene games mutate.
 		[[nodiscard]] RenderScene& scene() noexcept { return m_scene; }
 		[[nodiscard]] const RenderScene& scene() const noexcept { return m_scene; }
@@ -231,5 +236,6 @@ namespace ember::render
 		RenderGraph m_graph;
 
 		Vector<FeatureEntry> m_features;
+		const View* m_cull_override = nullptr;
 	};
 }

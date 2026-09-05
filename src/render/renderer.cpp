@@ -71,7 +71,10 @@ namespace ember::render
 		frame.views_locked = true;
 
 		for (u32 view = 0; view < frame.view_count; ++view)
-			frame.visibility[view] = m_visibility.cull(m_graph, m_gpu_scene, m_geometry, frame.views[view]);
+		{
+			const View& culled	   = (view == 0 && m_cull_override != nullptr) ? *m_cull_override : frame.views[view];
+			frame.visibility[view] = m_visibility.cull(m_graph, m_gpu_scene, m_geometry, culled);
+		}
 
 		for (const FeatureEntry& entry : m_features)
 			entry.feature->add_passes(frame);

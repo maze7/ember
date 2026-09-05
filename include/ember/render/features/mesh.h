@@ -52,10 +52,6 @@ namespace ember::render
 			gpu::ClearColor clear = {0.0f, 0.0f, 0.0f, 1.0f};
 
 			u32 material_capacity = 256;
-
-			/// Debug: raster with this view while culling answers for
-			/// frame.views[0]. The freeze harness; null draws the culled view.
-			const View* camera_override = nullptr;
 		};
 
 		MeshFeature(gpu::Device& device, const Def& def) noexcept;
@@ -72,6 +68,5 @@ namespace ember::render
 
 		gpu::TextureFormat m_depth_format = gpu::TextureFormat::D32Float;
 		gpu::ClearColor m_clear			  = {};
-		const View* m_camera_override	  = nullptr;
 	};
 }

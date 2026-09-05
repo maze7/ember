@@ -24,7 +24,7 @@ namespace ember::render
 	}
 
 	MeshFeature::MeshFeature(gpu::Device& device, const Def& def) noexcept
-		: m_depth_format(def.depth_format), m_clear(def.clear), m_camera_override(def.camera_override)
+		: m_depth_format(def.depth_format), m_clear(def.clear)
 	{
 		m_pipeline = device.create_graphics_pipeline({
 			.name		   = "mesh",
@@ -87,8 +87,7 @@ namespace ember::render
 
 		read(pass, frame.visibility[0].opaque);
 
-		const View& camera = m_camera_override != nullptr ? *m_camera_override : frame.views[0];
-		const MeshConstants constants{.view_proj = camera.view_projection};
+		const MeshConstants constants{.view_proj = frame.views[0].view_projection};
 
 		pass.record(
 			[constants,
