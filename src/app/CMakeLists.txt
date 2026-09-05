@@ -7,6 +7,7 @@ endif()
 ember_add_module(App
 	SOURCES
 		app.cpp
+		runtime.cpp
 	PUBLIC_DEPS
 		Ember::Core
 		Ember::Platform

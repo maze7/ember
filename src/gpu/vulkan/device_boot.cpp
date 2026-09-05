@@ -1102,12 +1102,12 @@ namespace ember::gpu
 
 	namespace vk
 	{
-		bool boot(Device& device, Backend& backend, const DeviceDef& def) noexcept
+		bool boot(Device& device, Backend& backend, Platform* platform, const DeviceDef& def) noexcept
 		{
 			Context& ctx	  = backend.context; // the one mutable Context reference in the codebase
 			FrameState& frame = backend.frame;
 
-			ctx.platform		 = def.platform;
+			ctx.platform		 = platform;
 			ctx.frames_in_flight = std::clamp(def.frames_in_flight, 1u, MAX_FRAMES_IN_FLIGHT);
 
 			debug_state().break_on_error = def.break_on_validation_error;

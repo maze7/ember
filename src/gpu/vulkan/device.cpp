@@ -245,7 +245,10 @@ namespace ember::gpu
 		}
 	}
 
-	Device::Device(const DeviceDef& def) noexcept
+	Device::Device(const DeviceDef& def) noexcept : Device(nullptr, def) {}
+	Device::Device(Platform& platform, const DeviceDef& def) noexcept : Device(&platform, def) {}
+
+	Device::Device(Platform* platform, const DeviceDef& def) noexcept
 	{
 		EMBER_PROFILE_FUNCTION_C(PROFILE_COLOR_RENDER);
 		EMBER_ASSERT(::ember::gpu::is_valid(def));
@@ -260,7 +263,7 @@ namespace ember::gpu
 		// (and releases the claim). Boot logs the adapter summary on success.
 		m_backend = memory::new_object<Backend>(MemoryTag::Graphics);
 
-		if (!vk::boot(*this, *m_backend, def))
+		if (!vk::boot(*this, *m_backend, platform, def))
 			shutdown();
 	}
 

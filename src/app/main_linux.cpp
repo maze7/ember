@@ -1,4 +1,4 @@
-#include <ember/app/game.h>
+#include <ember/app/main.h>
 
 #include <cstddef>
 

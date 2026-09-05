@@ -73,9 +73,6 @@ namespace ember::gpu
 
 	struct DeviceDef
 	{
-		/// Window-system glue (surfaces, instance extensions).
-		Platform* platform = nullptr;
-
 		const char* app_name = "Ember";
 
 		/// Validation layers + debug messenger. Off in release builds unless forced.
@@ -101,10 +98,6 @@ namespace ember::gpu
 
 		/// Resource pool limits
 		DeviceLimits limits{};
-
-		/// Pipeline cache blob path (loaded at boot when valid for this adapter, saved at shutdown).
-		/// nullptr = in-memory cache only.
-		const char* pipeline_cache_path = nullptr;
 	};
 
 	/**
@@ -190,6 +183,8 @@ namespace ember::gpu
 	{
 	public:
 		Device(const DeviceDef& def) noexcept;
+		Device(Platform& platform, const DeviceDef& def) noexcept;
+
 		~Device() noexcept;
 
 		Device(const Device&)			 = delete;
@@ -281,6 +276,8 @@ namespace ember::gpu
 		[[nodiscard]] Span<const GpuZoneTiming> gpu_zones() const noexcept;
 
 	private:
+		Device(Platform* platform, const DeviceDef& def) noexcept;
+
 		void destroy_resources() noexcept;
 		void shutdown() noexcept;
 

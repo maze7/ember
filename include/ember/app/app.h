@@ -1,96 +1,97 @@
 #pragma once
 
-#include <chrono>
-#include <ember/containers/span.h>
+#include <ember/app/main.h>
+#include <ember/core/common.h>
 #include <ember/gpu/common.h>
 #include <ember/gpu/device.h>
-#include <ember/gpu/swapchain.h>
 #include <ember/input/input.h>
 #include <ember/memory/memory.h>
-#include <ember/memory/pmr/arena_resource.h>
-#include <ember/platform/platform.h>
 #include <ember/platform/window.h>
+#include <ember/render/renderer.h>
 
 namespace ember
 {
-	struct AppDef
+	class Runtime;
+
+	struct UpdateContext
 	{
-		MemoryConfig config = {};
-		WindowDef window	= {};
-
-		gpu::DeviceDef gpu			  = {};
-		gpu::PresentMode present_mode = gpu::PresentMode::VSync;
-
-		// TEMPORARY until I build the asset manager - cal.
-		Vector<u8> imgui_shader = {};
-
-		f32 max_dt = 0.1f;
+		f32 dt			= 0.0f;
+		u64 frame_index = 0;
 	};
 
-	/// One frame as the game sees it. Field shold until the next next_frame().
-	struct Frame
+	struct RenderContext
 	{
-		f32 dt	  = 0.0f; // seconds, clamped to AppDef::max_dt
-		u32 index = 0;	  // monotonic
-		u32 slot  = 0;	  // index % frames_in_flight, for per slot game state
-		Extent2D extent{};
-		TextureHandle backbuffer = {};	  // null while unpresentable (minimized): skip drawing, keep simulating
-		bool quit_requested		 = false; // Has the OS or user requested to quit the app
+		f32 dt			= 0.0f;
+		u64 frame_index = 0;
+		u32 frame_slot	= 0;
+
+		TextureHandle backbuffer   = {};
+		Extent2D backbuffer_extent = {};
+	};
+
+	struct AppConfig
+	{
+		MemoryConfig memory			  = {};
+		WindowDef window			  = {};
+		gpu::DeviceDef gpu			  = {};
+		gpu::PresentMode present_mode = gpu::PresentMode::VSync;
+		f32 max_delta_seconds		  = 0.1f;
 	};
 
 	/**
-	 * Boots the engine stack and pumps frames; the loop belongs to the caller.
-	 * Accessors hand out the real modules, App owns wiring and lifetime.
+	 * User-defined application.
 	 *
-	 * Member declaration order is the boot order. Reverse destruction is the teardown
-	 * order, so a partially booted app unwinds on its own.
+	 * Runtime binds the application only after the complete derived object
+	 * has been constructed. Engine resources should therefore be created in
+	 * on_init(), not in the game constructor.
 	 */
-	class App final
+	class App
 	{
 	public:
-		explicit App(const AppDef& def) noexcept;
-		~App() noexcept;
+		virtual ~App() noexcept = default;
 
 		App(const App&)			   = delete;
 		App& operator=(const App&) = delete;
 		App(App&&)				   = delete;
 		App& operator=(App&&)	   = delete;
 
-		/// False when any boot stage failed; the stage has already logged why.
-		[[nodiscard]] explicit operator bool() const noexcept { return m_valid; }
-
 		/**
-		 * Closes the previous frame and opens the next: device frame, event pump,
-		 * clock, backbuffer acquire, UI frame. Returns false once quit was requested.
+		 * Applications inherit this default, so configuration is optional.
+		 *
+		 * Configuration runs before the engine allocator exists. Keep it to
+		 * lightweight policy values and do not load assets here.
 		 */
-		[[nodiscard]] const Frame& next_frame() noexcept;
+		[[nodiscard]] static AppConfig configure(const Args&) noexcept { return {}; }
 
-		/// Takes effect at the next_frame() call.
-		void request_quit() noexcept { m_quit = true; }
+	protected:
+		App() noexcept = default;
 
-		[[nodiscard]] Platform& platform() noexcept { return m_platform; }
-		[[nodiscard]] gpu::Device& gpu() noexcept { return m_gpu; }
-		[[nodiscard]] Input& input() noexcept { return m_input; }
+		[[nodiscard]] const Args& args() const noexcept;
+		[[nodiscard]] Platform& platform() noexcept;
+		[[nodiscard]] gpu::Device& gpu() noexcept;
+		[[nodiscard]] render::Renderer& renderer() noexcept;
+		[[nodiscard]] WindowHandle window() const noexcept;
+		[[nodiscard]] const Input& input() const noexcept;
+		[[nodiscard]] SwapchainHandle swapchain() const noexcept;
 
-		[[nodiscard]] WindowHandle window() const noexcept { return m_window; }
-		[[nodiscard]] SwapchainHandle swapchain() const noexcept { return m_swapchain; }
+		void quit(int exit_code = 0) noexcept;
 
 	private:
-		void close_frame() noexcept;
+		friend class Runtime;
 
-		MemorySystem m_memory;
-		Platform m_platform;
-		gpu::Device m_gpu;
-		Input m_input;
+		/**
+		 * Returning false still invokes on_shutdown(). This lets applications
+		 * release resources created before a later initialization stage failed.
+		 */
+		virtual bool init() noexcept { return true; }
 
-		WindowHandle m_window;
-		SwapchainHandle m_swapchain;
+		virtual void update(const UpdateContext&) noexcept {}
 
-		Frame m_frame;
-		std::chrono::steady_clock::time_point m_previous_tick;
-		f32 m_max_dt	  = 0.1f;
-		bool m_frame_open = false;
-		bool m_quit		  = false;
-		bool m_valid	  = false;
+		virtual void render(const RenderContext&) noexcept;
+
+		virtual void shutdown() noexcept {}
+
+		// Runtime is constructed before the application and destroyed after it.
+		Runtime* m_runtime = nullptr;
 	};
 }

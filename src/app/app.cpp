@@ -1,125 +1,86 @@
-#include "ember/memory/memory.h"
 #include <ember/app/app.h>
-#include <ember/core/logger.h>
-#include <ember/imgui/imgui_backend.h>
-
-#include <chrono>
+#include <ember/app/runtime.h>
+#include <ember/core/common.h>
 
 namespace ember
 {
-	namespace
+	const Args& App::args() const noexcept
 	{
-		[[nodiscard]] gpu::DeviceDef wire(gpu::DeviceDef def, Platform& platform) noexcept
-		{
-			def.platform = &platform;
-			return def;
-		}
+		EMBER_ASSERT(m_runtime != nullptr);
+		return m_runtime->args();
 	}
 
-	App::App(const AppDef& def) noexcept : m_memory(def.config), m_gpu(wire(def.gpu, m_platform)), m_max_dt(def.max_dt)
+	Platform& App::platform() noexcept
 	{
-		if (!m_memory || !m_platform || !m_gpu)
-			return;
+		EMBER_ASSERT(m_runtime != nullptr);
+		return m_runtime->m_platform;
+	}
 
-		m_window = m_platform.create_window(def.window);
-		if (m_window.is_null())
-		{
-			EMBER_ERROR("app: window creation failed");
-			return;
-		}
+	gpu::Device& App::gpu() noexcept
+	{
+		EMBER_ASSERT(m_runtime != nullptr);
+		return m_runtime->m_gpu;
+	}
 
-		m_swapchain = m_gpu.create_swapchain({.window = m_window, .present_mode = def.present_mode});
-		if (m_swapchain.is_null())
-			return;
+	const Input& App::input() const noexcept
+	{
+		EMBER_ASSERT(m_runtime != nullptr);
+		return m_runtime->m_input;
+	}
 
-		if (def.imgui_shader.empty())
-		{
-			EMBER_ERROR("app: AppDef::imgui_shader is empty; pass the cooked imgui.spv");
-			return;
-		}
+	WindowHandle App::window() const noexcept
+	{
+		EMBER_ASSERT(m_runtime != nullptr);
+		return m_runtime->m_window;
+	}
 
-		const imgui::BackendDef imgui_def{
-			.shader		  = def.imgui_shader,
-			.color_format = m_gpu.swapchain_format(m_swapchain),
+	SwapchainHandle App::swapchain() const noexcept
+	{
+		EMBER_ASSERT(m_runtime != nullptr);
+		return m_runtime->m_swapchain;
+	}
+
+	void App::quit(int exit_code) noexcept
+	{
+		EMBER_ASSERT(m_runtime != nullptr);
+		m_runtime->request_quit(exit_code);
+	}
+
+	/**
+	 * Default clear & present, some window managers (Wayland) require a present
+	 * before a window is ever rendered. This ensures all users see an empty window.
+	 */
+	void App::render(const RenderContext& ctx) noexcept
+	{
+		auto cmd = gpu().begin_command_list();
+
+		cmd.barrier(
+			{.texture = ctx.backbuffer,
+			 .before  = gpu::TextureState::Undefined,
+			 .after	  = gpu::TextureState::RenderTarget});
+
+		gpu::ColorAttachment color{
+			.texture = ctx.backbuffer,
+			.load	 = gpu::LoadOp::Clear,
+			.store	 = gpu::StoreOp::Store,
+			.clear =
+				{
+					.r = 0.02f,
+					.g = 0.025f,
+					.b = 0.035f,
+					.a = 1.0f,
+				},
 		};
 
-		if (!imgui::init(m_gpu, m_platform, imgui_def))
-			return;
+		cmd.begin_rendering({.colors = {&color, 1}});
+		cmd.end_rendering();
 
-		m_previous_tick = std::chrono::steady_clock::now();
-		m_valid			= true;
-	}
+		cmd.barrier({
+			.texture = ctx.backbuffer,
+			.before	 = gpu::TextureState::RenderTarget,
+			.after	 = gpu::TextureState::Present,
+		});
 
-	App::~App() noexcept
-	{
-		if (m_gpu)
-		{
-			close_frame();
-			m_gpu.wait_idle();
-		}
-
-		imgui::shutdown(m_gpu);
-
-		if (!m_swapchain.is_null())
-			m_gpu.destroy(m_swapchain);
-
-		if (!m_window.is_null())
-			m_platform.destroy_window(m_window);
-	}
-
-	const Frame& App::next_frame() noexcept
-	{
-		close_frame();
-
-		if (!m_valid || m_quit)
-		{
-			m_frame				   = {};
-			m_frame.quit_requested = true;
-			return m_frame;
-		}
-
-		const gpu::FrameInfo info = m_gpu.begin_frame();
-		m_frame_open			  = true;
-
-		if (m_platform.pump_events(m_input).quit_requested)
-			m_quit = true;
-
-		// Nothing was acquired yet, so closing here presents nothing.
-		if (m_quit)
-		{
-			close_frame();
-			m_frame				   = {};
-			m_frame.quit_requested = true;
-			return m_frame;
-		}
-
-		memory::frame_arena().reset();
-
-		const auto tick		   = std::chrono::steady_clock::now();
-		m_frame.dt			   = std::clamp(std::chrono::duration<f32>(tick - m_previous_tick).count(), 0.0f, m_max_dt);
-		m_previous_tick		   = tick;
-		m_frame.index		   = info.frame_index;
-		m_frame.slot		   = info.slot;
-		m_frame.backbuffer	   = m_gpu.acquire(m_swapchain);
-		m_frame.extent		   = m_gpu.swapchain_extent(m_swapchain);
-		m_frame.quit_requested = false;
-
-		imgui::new_frame(m_input, m_window, m_frame.extent, m_frame.dt);
-
-		return m_frame;
-	}
-
-	void App::close_frame() noexcept
-	{
-		if (!m_frame_open)
-			return;
-
-		m_frame_open = false;
-
-		// A UI frame with no backbuffer has nowhere to land
-		if (m_frame.backbuffer.is_null())
-			imgui::discard();
-
-		m_gpu.end_frame();
+		gpu().submit(cmd);
 	}
 }
