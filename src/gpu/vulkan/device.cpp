@@ -6,7 +6,6 @@
 #include <gpu/vulkan/formats.h>
 
 #include <atomic>
-#include <cmath>
 #include <utility>
 
 namespace ember::gpu
@@ -17,8 +16,9 @@ namespace ember::gpu
 		/// handle types would alias each other's heaps. Mirrors the Platform claim guard.
 		constinit std::atomic<bool> s_device_claimed{false};
 
-		/// Placeholder visual until CommandList lands: clear every acquired backbuffer with a
-		/// slowly cycling hue. Animated on purpose — a static clear can't prove frame pacing.
+		/// Ensure that a frame where no commands were submitted still performs a clear and
+		/// prepares the swapchain for presentation. This ensures that all platforms (Wayland)
+		/// receive a presentable surface every frame.
 		void record_placeholder_clears(Backend& backend, VkCommandBuffer cmd) noexcept
 		{
 			const VkCommandBufferBeginInfo begin_info{
@@ -27,12 +27,11 @@ namespace ember::gpu
 			};
 			EMBER_VK_CHECK(vkBeginCommandBuffer(cmd, &begin_info));
 
-			const f32 t = static_cast<f32>(backend.frame.index) * 0.02f;
 			const VkClearColorValue clear{
 				.float32 = {
-					0.5f + 0.5f * std::sin(t),
-					0.5f + 0.5f * std::sin(t + 2.09f),
-					0.5f + 0.5f * std::sin(t + 4.19f),
+					0.02f,
+					0.025f,
+					0.035f,
 					1.0f,
 				}};
 

@@ -87,7 +87,7 @@ namespace ember
 
 		virtual void update(const UpdateContext&) noexcept {}
 
-		virtual void render(const RenderContext&) noexcept;
+		virtual void render(const RenderContext&) noexcept {}
 
 		virtual void shutdown() noexcept {}
 
