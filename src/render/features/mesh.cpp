@@ -1,3 +1,4 @@
+#include <ember/render/embedded_shaders.h>
 #include <ember/core/logger.h>
 #include <ember/gpu/device.h>
 #include <ember/render/features/mesh.h>
@@ -23,13 +24,15 @@ namespace ember::render
 		static_assert(sizeof(MeshPush) == 20);
 	}
 
-	MeshFeature::MeshFeature(gpu::Device& device, const Def& def) noexcept
+	MeshFeature::MeshFeature(Renderer& renderer, const Def& def) noexcept
 		: m_depth_format(def.depth_format), m_clear(def.clear)
 	{
-		m_pipeline = device.create_graphics_pipeline({
+		auto& gpu = renderer.gpu();
+		auto& shader = def.shader.empty() ? embedded::mesh_shader() : def.shader;
+		m_pipeline = gpu.create_graphics_pipeline({
 			.name		   = "mesh",
-			.vertex		   = {.code = def.shader, .entry = "vs_main"},
-			.fragment	   = {.code = def.shader, .entry = "fs_main"},
+			.vertex		   = {.code = shader, .entry = "vs_main"},
+			.fragment	   = {.code = shader, .entry = "fs_main"},
 			.color_formats = {def.color_format},
 			.depth_format  = def.depth_format,
 			.depth_test	   = true,
@@ -46,7 +49,7 @@ namespace ember::render
 		const MeshMaterial error{};
 
 		m_materials.init(
-			device,
+			gpu,
 			{
 				.name		  = "mesh.materials",
 				.stride		  = sizeof(MeshMaterial),

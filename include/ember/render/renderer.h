@@ -19,6 +19,8 @@ namespace ember::gpu
 
 namespace ember::render
 {
+	class Renderer;
+
 	/// Views per frame; matched to the readback query slots so every view's
 	/// count is capturable.
 	inline constexpr u32 MAX_FRAME_VIEWS = VISIBILITY_QUERY_SLOTS;
@@ -120,17 +122,13 @@ namespace ember::render
 		u32 command_capacity	 = 1u << 17;
 		GeometryPoolDef geometry = {};
 
-		/// The cooked engine cull kernel (shaders/cull.slang). A blob because
-		/// ember does no asset io yet; the game's cook compiles engine shaders
-		/// the same way it does imgui.slang, and this span retires with the
-		/// asset manager.
+		/// Cooked cull kernel override; empty uses the engine's embedded shaders/cull.slang.
 		Span<const u8> cull_shader = {};
 	};
 
 	[[nodiscard]] constexpr bool is_valid(const RendererDef& def) noexcept
 	{
-		return def.object_capacity != 0 && def.command_capacity != 0 && is_valid(def.geometry) &&
-			   !def.cull_shader.empty();
+		return def.object_capacity != 0 && def.command_capacity != 0 && is_valid(def.geometry);
 	}
 
 	struct RenderOutput
@@ -181,7 +179,7 @@ namespace ember::render
 			static_assert(std::is_base_of_v<RenderFeature, F>, "features implement RenderFeature");
 			EMBER_ASSERT(m_device != nullptr && "add features after init");
 
-			F* feature = memory::new_object<F>(MemoryTag::Graphics, *m_device, def);
+			F* feature = memory::new_object<F>(MemoryTag::Graphics, *this, def);
 
 			m_features.push_back({
 				.feature = feature,
@@ -215,6 +213,18 @@ namespace ember::render
 			return m_readback.value(frame_slot, view);
 		}
 
+		[[nodiscard]] gpu::Device& gpu() noexcept
+		{
+			EMBER_ASSERT(m_device != nullptr);
+			return *m_device;
+		}
+
+		/// Builtin conveniences beside the heap's slot 0 error fallback: the
+		/// art every game asks for by name instead of loading.
+		[[nodiscard]] TextureHandle white_texture() const noexcept { return m_white; }
+		[[nodiscard]] SamplerHandle point_sampler() const noexcept { return m_point_sampler; }
+		[[nodiscard]] SamplerHandle linear_sampler() const noexcept { return m_linear_sampler; }
+
 	private:
 		struct FeatureEntry
 		{
@@ -234,6 +244,10 @@ namespace ember::render
 		Visibility m_visibility;
 		VisibilityReadback m_readback;
 		RenderGraph m_graph;
+
+		TextureHandle m_white		   = {};
+		SamplerHandle m_point_sampler  = {};
+		SamplerHandle m_linear_sampler = {};
 
 		Vector<FeatureEntry> m_features;
 		const View* m_cull_override = nullptr;

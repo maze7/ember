@@ -22,6 +22,12 @@ namespace ember
 		return m_runtime->m_gpu;
 	}
 
+	render::Renderer& App::renderer() noexcept
+	{
+		EMBER_ASSERT(m_runtime != nullptr);
+		return m_runtime->m_renderer;
+	}
+
 	const Input& App::input() const noexcept
 	{
 		EMBER_ASSERT(m_runtime != nullptr);

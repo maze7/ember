@@ -30,7 +30,7 @@ namespace ember::render
 	public:
 		struct Def
 		{
-			/// Cooked shaders/upscale.slang.
+			/// Cooked SPIR-V override; empty uses the engine's embeded shaders/upscale.slang
 			Span<const u8> shader = {};
 
 			/// Must match the output the renderer draws into.
@@ -42,7 +42,7 @@ namespace ember::render
 			const glm::vec2* subtexel_offset = nullptr;
 		};
 
-		UpscaleFeature(gpu::Device& device, const Def& def) noexcept;
+		UpscaleFeature(Renderer& renderer, const Def& def) noexcept;
 
 		void shutdown(gpu::Device& device) noexcept override;
 		void prepare(RenderFrame& frame) noexcept override;

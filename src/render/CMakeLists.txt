@@ -14,3 +14,13 @@ ember_add_module(Render
 	PUBLIC_DEPS
 		Ember::Gpu
 )
+
+ember_embed_shaders(ember_render
+	NAMESPACE ember::render::embedded
+	HEADER ember/render/embedded_shaders.h
+	SHADERS
+		cull.slang
+		mesh.slang
+		sprite.slang
+		upscale.slang
+)

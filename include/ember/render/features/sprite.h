@@ -32,6 +32,10 @@ namespace ember::render
 
 	static_assert(sizeof(SpriteMaterial) == 48 && std::is_trivially_copyable_v<SpriteMaterial>);
 
+	/// Authoring-space bounds of a unit quad, for objects that draw it: RenderObjectDef::sphere,
+	/// scaled by the objects transform.
+	inline constexpr glm::vec4 SPRITE_QUAD_SPHERE = {0.5f, 0.5f, 0.0f, 0.7072f};
+
 	/**
 	 * The cutout standee family: alpha-tested quads that share the scene's
 	 * geometry, culling and depth. It draws from the cutout visibility bucket
@@ -49,7 +53,7 @@ namespace ember::render
 	public:
 		struct Def
 		{
-			/// Cooked shaders/sprite.slang (game cook, EMBER_SHADERS list).
+			/// Cooked SPIR-V shader, uses embedded shaders/sprite.slang if empty.
 			Span<const u8> shader = {};
 
 			/// Match the world family the sprites compose onto.
@@ -59,7 +63,7 @@ namespace ember::render
 			u32 material_capacity = 256;
 		};
 
-		SpriteFeature(gpu::Device& device, const Def& def) noexcept;
+		SpriteFeature(Renderer& renderer, const Def& def) noexcept;
 
 		void shutdown(gpu::Device& device) noexcept override;
 		void add_passes(RenderFrame& frame) noexcept override;
@@ -67,8 +71,15 @@ namespace ember::render
 		/// The family's material table; the game creates and edits through it.
 		[[nodiscard]] MaterialPool& materials() noexcept { return m_materials; }
 
+		/// The unit card every sprite can draw: [0,1] x [0,1], uv v0 at the top,
+		/// up normal. Games with exotic cards make their own.
+		[[nodiscard]] GeometryHandle quad() const noexcept { return m_quad; }
+
 	private:
+		Renderer* m_renderer = nullptr; // owner; outlives the feature
+
 		GraphicsPipelineHandle m_pipeline = {};
+		GeometryHandle m_quad			  = {};
 		MaterialPool m_materials;
 	};
 }

@@ -12,3 +12,10 @@ ember_add_module(ImGui
 		Ember::Gpu
 		imgui::imgui
 )
+
+ember_embed_shaders(ember_imgui
+	NAMESPACE ember::imgui::embedded
+	HEADER ember/imgui/embedded_shader.h
+	SHADERS
+		imgui.slang
+)

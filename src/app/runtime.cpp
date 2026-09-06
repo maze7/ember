@@ -40,12 +40,16 @@ namespace ember
 			return;
 		}
 
+		m_renderer.init(m_gpu, {});
+
 		m_valid = true;
 	}
 
 	Runtime::~Runtime() noexcept
 	{
 		close_frame();
+
+		m_renderer.shutdown(m_gpu);
 
 		if (m_gpu)
 		{

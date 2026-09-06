@@ -1,5 +1,7 @@
+#include "ember/math/packing.h"
 #include <ember/core/logger.h>
 #include <ember/gpu/device.h>
+#include <ember/render/embedded_shaders.h>
 #include <ember/render/features/sprite.h>
 
 namespace ember::render
@@ -23,12 +25,15 @@ namespace ember::render
 		static_assert(sizeof(SpritePush) == 20);
 	}
 
-	SpriteFeature::SpriteFeature(gpu::Device& device, const Def& def) noexcept
+	SpriteFeature::SpriteFeature(Renderer& renderer, const Def& def) noexcept : m_renderer(&renderer)
 	{
-		m_pipeline = device.create_graphics_pipeline({
+		auto& gpu	 = renderer.gpu();
+		auto& shader = def.shader.empty() ? embedded::sprite_shader() : def.shader;
+
+		m_pipeline = gpu.create_graphics_pipeline({
 			.name		   = "sprite",
-			.vertex		   = {.code = def.shader, .entry = "vs_main"},
-			.fragment	   = {.code = def.shader, .entry = "fs_main"},
+			.vertex		   = {.code = shader, .entry = "vs_main"},
+			.fragment	   = {.code = shader, .entry = "fs_main"},
 			.color_formats = {def.color_format},
 			.depth_format  = def.depth_format,
 			.depth_test	   = true,
@@ -43,10 +48,40 @@ namespace ember::render
 			return;
 		}
 
+		// The default card: uv v0 at the top, up normal so baked
+		// and per-entity cards shade alike under a lit family.
+		const u32 normal = pack_octahedral({0.0f, 1.0f, 0.0f});
+
+		const glm::vec4 positions[4] = {
+			{0.0f, 1.0f, 0.0f, 1.0f},
+			{1.0f, 1.0f, 0.0f, 1.0f},
+			{0.0f, 0.0f, 0.0f, 1.0f},
+			{1.0f, 0.0f, 0.0f, 1.0f},
+		};
+
+		const AttributeData attributes[4] = {
+			{normal, 0xFFFFFFFF, {0.0f, 0.0f}},
+			{normal, 0xFFFFFFFF, {1.0f, 0.0f}},
+			{normal, 0xFFFFFFFF, {0.0f, 1.0f}},
+			{normal, 0xFFFFFFFF, {1.0f, 1.0f}},
+		};
+
+		const u32 indices[6] = {0, 2, 1, 1, 2, 3};
+
+		m_quad = renderer.geometry().create(
+			gpu,
+			{
+				.name		= "sprite.quad",
+				.positions	= {reinterpret_cast<const u8*>(positions), sizeof(positions)},
+				.attributes = {reinterpret_cast<const u8*>(attributes), sizeof(attributes)},
+				.indices	= {indices, 6},
+				.sphere		= SPRITE_QUAD_SPHERE,
+			});
+
 		const SpriteMaterial error{};
 
 		m_materials.init(
-			device,
+			gpu,
 			{
 				.name		  = "sprite.materials",
 				.stride		  = sizeof(SpriteMaterial),
@@ -58,6 +93,8 @@ namespace ember::render
 	void SpriteFeature::shutdown(gpu::Device& device) noexcept
 	{
 		m_materials.shutdown(device);
+		m_renderer->geometry().destroy(device, m_quad);
+		m_quad = {};
 
 		if (!m_pipeline.is_null())
 			device.destroy(m_pipeline);

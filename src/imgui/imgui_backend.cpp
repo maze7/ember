@@ -4,6 +4,7 @@
 #include <ember/gpu/device.h>
 #include <ember/input/input.h>
 #include <ember/platform/platform.h>
+#include <ember/imgui/embedded_shader.h>
 
 #include <algorithm>
 #include <cfloat>
@@ -299,7 +300,9 @@ namespace ember::imgui
 	{
 		EMBER_ASSERT(s_state.device == nullptr);
 
-		if (def.shader.empty() || def.color_format == gpu::TextureFormat::Undefined)
+		auto& shader = def.shader.empty() ? render::embedded::imgui_shader() : def.shader;
+
+		if (def.color_format == gpu::TextureFormat::Undefined)
 		{
 			EMBER_ERROR("imgui: invalid BackendDef");
 			return false;
@@ -327,8 +330,8 @@ namespace ember::imgui
 
 		const GraphicsPipelineHandle pipeline = device.create_graphics_pipeline({
 			.name		   = "imgui",
-			.vertex		   = {.code = def.shader, .entry = "vs_main"},
-			.fragment	   = {.code = def.shader, .entry = "fs_main"},
+			.vertex		   = {.code = shader, .entry = "vs_main"},
+			.fragment	   = {.code = shader, .entry = "fs_main"},
 			.color_formats = {def.color_format},
 			.blend		   = gpu::BlendPreset::AlphaBlend,
 		});

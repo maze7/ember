@@ -1,3 +1,4 @@
+#include <ember/render/embedded_shaders.h>
 #include <ember/core/logger.h>
 #include <ember/gpu/device.h>
 #include <ember/render/features/upscale.h>
@@ -23,18 +24,21 @@ namespace ember::render
 		};
 	}
 
-	UpscaleFeature::UpscaleFeature(gpu::Device& device, const Def& def) noexcept
+	UpscaleFeature::UpscaleFeature(Renderer& renderer, const Def& def) noexcept
 		: m_resolution(def.resolution), m_subtexel_offset(def.subtexel_offset)
 	{
-		m_pipeline = device.create_graphics_pipeline({
+		auto& gpu = renderer.gpu();
+		auto& shader = def.shader.empty() ? embedded::upscale_shader() : def.shader;
+
+		m_pipeline = gpu.create_graphics_pipeline({
 			.name		   = "upscale",
-			.vertex		   = {.code = def.shader, .entry = "vs_main"},
-			.fragment	   = {.code = def.shader, .entry = "fs_main"},
+			.vertex		   = {.code = shader, .entry = "vs_main"},
+			.fragment	   = {.code = shader, .entry = "fs_main"},
 			.color_formats = {def.output_format},
 		});
 
 		// Linear filtering does the edge band; the shader sharpens the UVs.
-		m_sampler = device.create_sampler({
+		m_sampler = gpu.create_sampler({
 			.name	   = "upscale.linear_clamp",
 			.address_u = gpu::AddressMode::ClampToEdge,
 			.address_v = gpu::AddressMode::ClampToEdge,
@@ -83,6 +87,7 @@ namespace ember::render
 				{std::max(1.0f, static_cast<f32>(output.width) / static_cast<f32>(m_resolution.width)),
 				 std::max(1.0f, static_cast<f32>(output.height) / static_cast<f32>(m_resolution.height))},
 			.subtexel_offset = m_subtexel_offset != nullptr ? *m_subtexel_offset : glm::vec2{},
+			.pad = {},
 		};
 
 		frame.graph.pass("upscale")

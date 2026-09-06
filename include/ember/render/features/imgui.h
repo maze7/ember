@@ -18,7 +18,7 @@ namespace ember::imgui
 		{
 		};
 
-		OverlayFeature(gpu::Device&, const Def&) noexcept {}
+		OverlayFeature(render::Renderer& render, const Def&) noexcept {}
 
 		void add_passes(render::RenderFrame& frame) noexcept override
 		{

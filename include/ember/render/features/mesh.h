@@ -41,7 +41,7 @@ namespace ember::render
 	public:
 		struct Def
 		{
-			/// Cooked shaders/mesh.slang (game cook, EMBER_SHADERS list).
+			/// Cooked SPIR-V override; empty uses the engine's embedded shaders/mesh.slang
 			Span<const u8> shader = {};
 
 			/// Match the target family: the swapchain format standalone,
@@ -54,9 +54,9 @@ namespace ember::render
 			u32 material_capacity = 256;
 		};
 
-		MeshFeature(gpu::Device& device, const Def& def) noexcept;
+		MeshFeature(Renderer& renderer, const Def& def) noexcept;
 
-		void shutdown(gpu::Device& device) noexcept override;
+		void shutdown(gpu::Device& gpu) noexcept override;
 		void add_passes(RenderFrame& frame) noexcept override;
 
 		/// The family's material table; the game creates and edits through it.

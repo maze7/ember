@@ -73,6 +73,7 @@ namespace ember
 		Platform m_platform;
 		gpu::Device m_gpu;
 		Input m_input;
+		render::Renderer m_renderer;
 
 		Args m_args;
 

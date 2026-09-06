@@ -174,7 +174,7 @@ namespace ember
 
 		AxisBindingSet() = default;
 
-		AxisBindingSet(std::initializer_list<Entry> entries) : m_entries{&memory::heap(MemoryTag::Input), entries} {}
+		AxisBindingSet(std::initializer_list<Entry> entries) : m_entries(entries, &memory::heap(MemoryTag::Input)) {}
 
 		[[nodiscard]] Vector<Entry>& entries() noexcept { return m_entries; }
 		[[nodiscard]] const Vector<Entry>& entries() const noexcept { return m_entries; }
@@ -289,7 +289,7 @@ namespace ember
 
 		StickBindingSet() = default;
 
-		StickBindingSet(std::initializer_list<Entry> entries) : m_entries{&memory::heap(MemoryTag::Input), entries} {}
+		StickBindingSet(std::initializer_list<Entry> entries) : m_entries(entries, &memory::heap(MemoryTag::Input)) {}
 
 		[[nodiscard]] Vector<Entry>& entries() noexcept { return m_entries; }
 		[[nodiscard]] const Vector<Entry>& entries() const noexcept { return m_entries; }
