@@ -12,8 +12,8 @@
 			}
 		},
 		{
-			"name": "dev",
-			"displayName": "Dev (Debug + tests)",
+			"name": "debug",
+			"displayName": "debug",
 			"inherits": "base",
 			"cacheVariables": {
 				"CMAKE_BUILD_TYPE": "Debug",
@@ -21,17 +21,17 @@
 			}
 		},
 		{
-			"name": "dev-release",
-			"displayName": "Dev (Release + tests)",
-			"inherits": "dev",
+			"name": "release",
+			"displayName": "release",
+			"inherits": "debug",
 			"cacheVariables": {
 				"CMAKE_BUILD_TYPE": "Release"
 			}
 		},
 		{
 			"name": "asan",
-			"displayName": "Dev (Debug + ASan/UBSan + tests)",
-			"inherits": "dev",
+			"displayName": "Debug + ASan/UBSan + tests",
+			"inherits": "debug",
 			"cacheVariables": {
 				"CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
 				"CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
@@ -40,8 +40,8 @@
 		}
 	],
 	"buildPresets": [
-		{ "name": "dev", "configurePreset": "dev" },
-		{ "name": "dev-release", "configurePreset": "dev-release" },
+		{ "name": "debug", "configurePreset": "debug" },
+		{ "name": "release", "configurePreset": "release" },
 		{ "name": "asan", "configurePreset": "asan" }
 	],
 	"testPresets": [
@@ -51,26 +51,26 @@
 			"output": { "outputOnFailure": true },
 			"execution": { "jobs": 8, "noTestsAction": "error" }
 		},
-		{ "name": "dev", "inherits": "test-common", "configurePreset": "dev" },
-		{ "name": "dev-release", "inherits": "test-common", "configurePreset": "dev-release" },
+		{ "name": "debug", "inherits": "test-common", "configurePreset": "debug" },
+		{ "name": "release", "inherits": "test-common", "configurePreset": "release" },
 		{ "name": "asan", "inherits": "test-common", "configurePreset": "asan" }
 	],
 	"workflowPresets": [
 		{
-			"name": "dev",
+			"name": "debug",
 			"displayName": "Configure + build + test (Debug)",
 			"steps": [
-				{ "type": "configure", "name": "dev" },
-				{ "type": "build", "name": "dev" },
-				{ "type": "test", "name": "dev" }
+				{ "type": "configure", "name": "debug" },
+				{ "type": "build", "name": "debug" },
+				{ "type": "test", "name": "debug" }
 			]
 		},
 		{
 			"name": "dev-release",
 			"steps": [
-				{ "type": "configure", "name": "dev-release" },
-				{ "type": "build", "name": "dev-release" },
-				{ "type": "test", "name": "dev-release" }
+				{ "type": "configure", "name": "release" },
+				{ "type": "build", "name": "release" },
+				{ "type": "test", "name": "release" }
 			]
 		},
 		{
