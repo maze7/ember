@@ -7,6 +7,10 @@
 #include <cstdio>
 #include <cstdlib>
 
+#if !defined(EMBER_PLATFORM_WINDOWS)
+	#include <sys/wait.h>
+#endif
+
 using namespace ember;
 using namespace ember::jobs;
 
@@ -105,6 +109,18 @@ namespace
 		frame[0] = 1;
 		std::_Exit(0);
 	}
+
+	// Linux reports the guard page hit as SIGSEGV and macOS as SIGBUS. Windows hands gtest
+	// the exception code instead: access violation or stack overflow.
+	bool died_of_stack_fault(int status)
+	{
+#if defined(EMBER_PLATFORM_WINDOWS)
+		const u32 code = static_cast<u32>(status);
+		return code == 0xC0000005u || code == 0xC00000FDu;
+#else
+		return WIFSIGNALED(status) && (WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGBUS);
+#endif
+	}
 }
 
 TEST(Fiber, PingPong)
@@ -201,6 +217,6 @@ TEST(FiberDeathTest, OverflowHitsGuardPage)
 			(void)neighbour;
 			fiber_switch(host, fiber);
 		},
-		testing::KilledBySignal(SIGSEGV),
+		testing::KilledBySignal(died_of_stack_fault(SIGSEGV)),
 		"");
 }

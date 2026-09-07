@@ -41,6 +41,43 @@ namespace ember::jobs
 	static_assert(offsetof(FiberContext, mxcsr) == 64);
 	static_assert(offsetof(FiberContext, x87_control) == 68);
 	static_assert(sizeof(FiberContext) == 80);
+	#elif defined(__aarch64__)
+	// Saved register set. Offsets are shared with fiber_aarch64_aapcs.S.
+	struct alignas(16) FiberContext
+	{
+		u64 sp	 = 0;
+		u64 lr	 = 0;
+		u64 x19	 = 0;
+		u64 x20	 = 0;
+		u64 x21	 = 0;
+		u64 x22	 = 0;
+		u64 x23	 = 0;
+		u64 x24	 = 0;
+		u64 x25	 = 0;
+		u64 x26	 = 0;
+		u64 x27	 = 0;
+		u64 x28	 = 0;
+		u64 x29	 = 0;
+		u64 d8	 = 0;
+		u64 d9	 = 0;
+		u64 d10	 = 0;
+		u64 d11	 = 0;
+		u64 d12	 = 0;
+		u64 d13	 = 0;
+		u64 d14	 = 0;
+		u64 d15	 = 0;
+		u64 fpcr = 0;
+	};
+
+	static_assert(offsetof(FiberContext, sp) == 0);
+	static_assert(offsetof(FiberContext, lr) == 8);
+	static_assert(offsetof(FiberContext, x19) == 16);
+	static_assert(offsetof(FiberContext, x28) == 88);
+	static_assert(offsetof(FiberContext, x29) == 96);
+	static_assert(offsetof(FiberContext, d8) == 104);
+	static_assert(offsetof(FiberContext, d15) == 160);
+	static_assert(offsetof(FiberContext, fpcr) == 168);
+	static_assert(sizeof(FiberContext) == 176);
 	#else
 		#error "Unsupported POSIX fiber architecture"
 	#endif
@@ -79,6 +116,22 @@ namespace
 		context.r13			= reinterpret_cast<u64>(entry);
 		context.mxcsr		= _mm_getcsr();
 		context.x87_control = read_x87_control();
+	}
+	#elif defined(__aarch64__)
+	[[nodiscard]] u64 read_fpcr() noexcept
+	{
+		u64 value = 0;
+		__asm__ __volatile__("mrs %0, fpcr" : "=r"(value));
+		return value;
+	}
+
+	void init_context(jobs::FiberContext& context, uintptr_t stack_top, jobs::FiberEntry entry, void* arg) noexcept
+	{
+		context.sp	 = align_down(stack_top, uintptr_t{16});
+		context.lr	 = reinterpret_cast<u64>(&ember_fiber_trampoline);
+		context.x19	 = reinterpret_cast<u64>(arg);
+		context.x20	 = reinterpret_cast<u64>(entry);
+		context.fpcr = read_fpcr();
 	}
 	#endif
 }
