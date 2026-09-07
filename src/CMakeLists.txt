@@ -13,6 +13,7 @@ ember_add_module(Core
 add_subdirectory(core)
 add_subdirectory(memory)
 add_subdirectory(sync)
+add_subdirectory(jobs)
 
 if(WIN32)
 	target_compile_definitions(ember_core PUBLIC EMBER_PLATFORM_WINDOWS)
@@ -65,6 +66,7 @@ endif()
 
 target_link_libraries(ember INTERFACE
 	Ember::Core
+	Ember::Jobs
 	$<$<BOOL:${EMBER_ENABLE_PLATFORM}>:Ember::Platform>
 	$<$<BOOL:${EMBER_ENABLE_GRAPHICS}>:Ember::Gpu>
 	$<$<BOOL:${EMBER_ENABLE_IMGUI}>:Ember::ImGui>
