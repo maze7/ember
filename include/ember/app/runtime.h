@@ -67,9 +67,12 @@ namespace ember
 
         void request_quit(int exit_code) noexcept;
         void close_frame() noexcept;
+        void frame_loop(App& app) noexcept;
 
-		// Declaration order is initialization order.
+		// Declaration order is initialization order. The job system follows the allocator
+		// so its workers outlive every service that can kick a job.
 		MemorySystem m_memory;
+		jobs::JobSystem m_jobs;
 		Platform m_platform;
 		gpu::Device m_gpu;
 		Input m_input;

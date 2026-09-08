@@ -76,7 +76,7 @@ namespace ember
 
 	bool ArenaResource::grow(size_t required) noexcept
 	{
-		EMBER_PROFILE_SCOPE_C("ArenaResource::grow", profile::COLOR_MEMORY);
+		EMBER_PROFILE_SCOPE_C("ArenaResource::grow", PROFILE_COLOR_MEMORY);
 
 		if (required > m_reserved) [[unlikely]]
 			return false;

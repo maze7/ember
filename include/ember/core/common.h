@@ -1,27 +1,28 @@
 #pragma once
 
 #include <ankerl/unordered_dense.h>
-#include <array>
 #include <cstdint>
-#include <span>
 #include <string>
 #include <vector>
 
 #if defined(_MSC_VER)
 	#define EMBER_INLINE __inline
 	#define EMBER_FINLINE __forceinline
+	#define EMBER_NOINLINE __declspec(noinline)
 	#define EMBER_DEBUG_BREAK() __debugbreak()
 	#define EMBER_UNREACHABLE() __assume(false)
 	#define EMBER_DISABLE_WARNING(n) __pragma(warning(disable : n))
 #elif defined(__clang__)
 	#define EMBER_INLINE inline
 	#define EMBER_FINLINE inline __attribute__((always_inline))
+	#define EMBER_NOINLINE __attribute__((noinline))
 	#define EMBER_DEBUG_BREAK() __builtin_debugtrap()
 	#define EMBER_UNREACHABLE() __builtin_unreachable()
 	#define EMBER_DISABLE_WARNING(n) // clang uses -Wno-xxx, not numeric
 #elif defined(__GNUC__)
 	#define EMBER_INLINE inline
 	#define EMBER_FINLINE inline __attribute__((always_inline))
+	#define EMBER_NOINLINE __attribute__((noinline))
 	#define EMBER_DEBUG_BREAK() __builtin_trap()
 	#define EMBER_UNREACHABLE() __builtin_unreachable()
 	#define EMBER_DISABLE_WARNING(n)

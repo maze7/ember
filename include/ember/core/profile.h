@@ -20,9 +20,14 @@
  */
 #if EMBER_USE_TRACY
 	#include <tracy/Tracy.hpp>
+	#include <tracy/TracyC.h>
 
 namespace ember
 {
+	/// A zone held in a variable instead of a scope, for spans that begin and end in
+	/// different functions. Begin and end must run on the same thread.
+	using ProfileZone = TracyCZoneCtx;
+
 	// 0xRRGGBB zone colors, one per subsystem, for readable captures.
 	inline constexpr u32 PROFILE_COLOR_FRAME	= 0x546e7a;
 	inline constexpr u32 PROFILE_COLOR_INPUT	= 0x00acc1;
@@ -58,6 +63,27 @@ namespace ember
 	/// Call once at the top of every engine-created thread.
 	#define EMBER_PROFILE_THREAD(name) ::tracy::SetThreadName(name)
 
+	/// Stored zones. The name is a literal; RENAME attaches runtime text, copied by the profiler.
+	#define EMBER_PROFILE_ZONE_BEGIN(zone, name)                                                                        \
+		do                                                                                                             \
+		{                                                                                                              \
+			TracyCZoneN(___ember_stored_zone, name, 1);                                                                \
+			(zone) = ___ember_stored_zone;                                                                             \
+		} while (0)
+	#define EMBER_PROFILE_ZONE_END(zone) TracyCZoneEnd(zone)
+	#define EMBER_PROFILE_ZONE_RENAME(zone, txt, size) TracyCZoneName(zone, txt, size)
+
+	/// Fibers. ENTER on every resume with the fiber's persistent name, LEAVE before switching
+	/// away; zones opened inside then belong to the fiber rather than the thread. Without
+	/// TRACY_FIBERS in the client build they compile to nothing and fibers show as threads.
+	#if defined(TRACY_FIBERS)
+		#define EMBER_PROFILE_FIBER_ENTER(name) TracyFiberEnter(name)
+		#define EMBER_PROFILE_FIBER_LEAVE() TracyFiberLeave
+	#else
+		#define EMBER_PROFILE_FIBER_ENTER(name) ((void)0)
+		#define EMBER_PROFILE_FIBER_LEAVE() ((void)0)
+	#endif
+
 	/// Plots: graphed counters (entity counts, draw calls, arena high-water marks...).
 	#define EMBER_PROFILE_PLOT(name, value) TracyPlot(name, value)
 	#define EMBER_PROFILE_PLOT_CONFIG_NUMBER(name)                                                                     \
@@ -86,6 +112,16 @@ namespace ember
 	#define EMBER_PROFILE_ALLOC_N(ptr, size, name) TracyAllocN(ptr, size, name)
 	#define EMBER_PROFILE_FREE_N(ptr, name) TracyFreeN(ptr, name)
 #else
+	namespace ember
+	{
+		struct ProfileZone
+		{
+		};
+	}
+
+	#define EMBER_PROFILE_ZONE_BEGIN(zone, name) ((void)0)
+	#define EMBER_PROFILE_ZONE_END(zone) ((void)0)
+	#define EMBER_PROFILE_ZONE_RENAME(zone, txt, size) ((void)0)
 	#define EMBER_PROFILE_FRAME() ((void)0)
 	#define EMBER_PROFILE_FRAME_N(name) ((void)0)
 	#define EMBER_PROFILE_FRAME_START(name) ((void)0)
@@ -99,6 +135,8 @@ namespace ember
 	#define EMBER_PROFILE_ZONE_NAME(txt, size) ((void)0)
 	#define EMBER_PROFILE_ZONE_VALUE(value) ((void)0)
 	#define EMBER_PROFILE_THREAD(name) ((void)0)
+	#define EMBER_PROFILE_FIBER_ENTER(name) ((void)0)
+	#define EMBER_PROFILE_FIBER_LEAVE() ((void)0)
 	#define EMBER_PROFILE_PLOT(name, value) ((void)0)
 	#define EMBER_PROFILE_PLOT_CONFIG_NUMBER(name) ((void)0)
 	#define EMBER_PROFILE_PLOT_CONFIG_MEMORY(name) ((void)0)

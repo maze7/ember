@@ -5,6 +5,7 @@
 #include <ember/gpu/common.h>
 #include <ember/gpu/device.h>
 #include <ember/input/input.h>
+#include <ember/jobs/job_system.h>
 #include <ember/memory/memory.h>
 #include <ember/platform/window.h>
 #include <ember/render/renderer.h>
@@ -32,6 +33,7 @@ namespace ember
 	struct AppConfig
 	{
 		MemoryConfig memory			  = {};
+		jobs::JobSystemDef jobs		  = {};
 		WindowDef window			  = {};
 		gpu::DeviceDef gpu			  = {};
 		gpu::PresentMode present_mode = gpu::PresentMode::VSync;

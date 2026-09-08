@@ -8,6 +8,31 @@
 
 	#include <cstddef>
 
+	#if defined(__SANITIZE_THREAD__)
+		#define EMBER_TSAN 1
+	#elif defined(__has_feature)
+		#if __has_feature(thread_sanitizer)
+			#define EMBER_TSAN 1
+		#endif
+	#endif
+
+	#if defined(EMBER_TSAN)
+		#include <sanitizer/tsan_interface.h>
+	#endif
+
+	#if defined(__SANITIZE_ADDRESS__)
+		#define EMBER_ASAN 1
+	#elif defined(__has_feature)
+		#if __has_feature(address_sanitizer)
+			#define EMBER_ASAN 1
+		#endif
+	#endif
+
+	#if defined(EMBER_ASAN)
+		#include <pthread.h>
+		#include <sanitizer/common_interface_defs.h>
+	#endif
+
 	#if defined(__x86_64__)
 		#include <xmmintrin.h>
 	#endif
@@ -87,6 +112,16 @@ namespace ember::jobs
 		FiberContext context;
 		void* stack_base  = nullptr; // reservation start, guard page first
 		size_t stack_size = 0;		 // whole reservation, 0 for an adopted thread
+		FiberEntry entry  = nullptr;
+		void* arg		  = nullptr;
+	#if defined(EMBER_TSAN)
+		void* tsan = nullptr; // ThreadSanitizer's view of this fiber
+	#endif
+	#if defined(EMBER_ASAN)
+		void* asan_fake_stack	= nullptr; // saved while the fiber is off the CPU
+		const void* asan_bottom = nullptr; // lowest usable stack address
+		size_t asan_size		= 0;
+	#endif
 	};
 }
 
@@ -99,6 +134,35 @@ extern "C"
 namespace
 {
 	using namespace ember;
+
+	// First code on a fresh stack. Lets the sanitizer finish the switch before user code
+	// runs, then calls the entry, which never returns.
+	void fiber_entry(void* arg) noexcept
+	{
+		auto* fiber = static_cast<jobs::Fiber*>(arg);
+	#if defined(EMBER_ASAN)
+		__sanitizer_finish_switch_fiber(nullptr, nullptr, nullptr);
+	#endif
+		fiber->entry(fiber->arg);
+	}
+
+	#if defined(EMBER_ASAN)
+	void query_thread_stack(const void*& bottom, size_t& size) noexcept
+	{
+		#if defined(EMBER_PLATFORM_MACOS)
+		const pthread_t self = pthread_self();
+		size					= pthread_get_stacksize_np(self);
+		bottom					= static_cast<const u8*>(pthread_get_stackaddr_np(self)) - size;
+		#else
+		pthread_attr_t attributes;
+		void* address = nullptr;
+		pthread_getattr_np(pthread_self(), &attributes);
+		pthread_attr_getstack(&attributes, &address, &size);
+		pthread_attr_destroy(&attributes);
+		bottom = address;
+		#endif
+	}
+	#endif
 
 	#if defined(__x86_64__)
 	[[nodiscard]] u16 read_x87_control() noexcept
@@ -160,7 +224,16 @@ namespace ember::jobs
 		Fiber* fiber	  = memory::new_object<Fiber>(MemoryTag::Engine);
 		fiber->stack_base = base;
 		fiber->stack_size = total;
-		init_context(fiber->context, reinterpret_cast<uintptr_t>(base) + total, def.entry, def.arg);
+		fiber->entry	  = def.entry;
+		fiber->arg		  = def.arg;
+		init_context(fiber->context, reinterpret_cast<uintptr_t>(base) + total, fiber_entry, fiber);
+	#if defined(EMBER_TSAN)
+		fiber->tsan = __tsan_create_fiber(0);
+	#endif
+	#if defined(EMBER_ASAN)
+		fiber->asan_bottom = base + guard;
+		fiber->asan_size   = total - guard;
+	#endif
 		return fiber;
 	}
 
@@ -170,11 +243,24 @@ namespace ember::jobs
 			return;
 
 		EMBER_ASSERT(fiber->stack_base != nullptr);
+	#if defined(EMBER_TSAN)
+		__tsan_destroy_fiber(fiber->tsan);
+	#endif
 		(void)virtual_memory::release(fiber->stack_base, fiber->stack_size);
 		memory::delete_object(MemoryTag::Engine, fiber);
 	}
 
-	Fiber* fiber_adopt_thread() noexcept { return memory::new_object<Fiber>(MemoryTag::Engine); }
+	Fiber* fiber_adopt_thread() noexcept
+	{
+		Fiber* fiber = memory::new_object<Fiber>(MemoryTag::Engine);
+	#if defined(EMBER_TSAN)
+		fiber->tsan = __tsan_get_current_fiber();
+	#endif
+	#if defined(EMBER_ASAN)
+		query_thread_stack(fiber->asan_bottom, fiber->asan_size);
+	#endif
+		return fiber;
+	}
 
 	void fiber_release_thread(Fiber* fiber) noexcept
 	{
@@ -188,7 +274,16 @@ namespace ember::jobs
 	void fiber_switch(Fiber* from, Fiber* to) noexcept
 	{
 		EMBER_ASSERT(from != nullptr && to != nullptr && from != to);
+	#if defined(EMBER_ASAN)
+		__sanitizer_start_switch_fiber(&from->asan_fake_stack, to->asan_bottom, to->asan_size);
+	#endif
+	#if defined(EMBER_TSAN)
+		__tsan_switch_to_fiber(to->tsan, 0);
+	#endif
 		ember_fiber_switch(&from->context, &to->context);
+	#if defined(EMBER_ASAN)
+		__sanitizer_finish_switch_fiber(from->asan_fake_stack, nullptr, nullptr);
+	#endif
 	}
 }
 

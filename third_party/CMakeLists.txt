@@ -2,6 +2,7 @@
 if(EMBER_USE_TRACY)
 	# Tracy's own CMake option must also be enabled.
 	set(TRACY_ENABLE ON)
+	set(TRACY_FIBERS ON)
 	add_subdirectory(tracy EXCLUDE_FROM_ALL)
 endif()
 

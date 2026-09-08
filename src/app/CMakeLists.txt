@@ -12,6 +12,7 @@ ember_add_module(App
 		Ember::Core
 		Ember::Platform
 		Ember::Gpu
+		Ember::Jobs
 	PRIVATE_DEPS
 		Ember::ImGui
 )

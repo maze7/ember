@@ -1,5 +1,7 @@
 # Ember::Jobs, the fiber job system
 ember_add_module(Jobs
+	SOURCES
+		job_system.cpp
 	PUBLIC_DEPS
 		Ember::Core
 )

@@ -1,5 +1,6 @@
 #include <ember/app/runtime.h>
 #include <ember/core/logger.h>
+#include <ember/core/profile.h>
 #include <ember/gpu/device.h>
 #include <ember/memory/pmr/arena_resource.h>
 
@@ -9,7 +10,7 @@
 namespace ember
 {
 	Runtime::Runtime(const AppConfig& config, const Args& args) noexcept
-		: m_memory(config.memory), m_platform(), m_gpu(m_platform, config.gpu), m_args(args),
+		: m_memory(config.memory), m_jobs(config.jobs), m_platform(), m_gpu(m_platform, config.gpu), m_args(args),
 		  m_max_delta_seconds(config.max_delta_seconds)
 	{
 		if (m_max_delta_seconds <= 0.0f)
@@ -87,6 +88,27 @@ namespace ember
 		EMBER_ASSERT(app.m_runtime == nullptr);
 		app.m_runtime = this;
 
+		struct MainArgs
+		{
+			Runtime* runtime;
+			App* app;
+		} main_args{this, &app};
+
+		// The application runs as the job system's main, so a wait anywhere in init, update,
+		// render or shutdown parks this thread's stack and resumes on this same thread.
+		m_jobs.run(
+			[](void* data)
+			{
+				auto* args = static_cast<MainArgs*>(data);
+				args->runtime->frame_loop(*args->app);
+			},
+			&main_args);
+
+		return m_exit_code;
+	}
+
+	void Runtime::frame_loop(App& app) noexcept
+	{
 		bool initialized = app.init();
 
 		// Initialization work must not become the first simulation delta.
@@ -99,17 +121,20 @@ namespace ember
 			if (m_exit_code == 0)
 				m_exit_code = 1;
 
-			return m_exit_code;
+			return;
 		}
 
 		while (!m_quit_requested)
 		{
 			memory::frame_arena().reset();
 
-			if (m_platform.pump_events(m_input).quit_requested)
 			{
-				m_quit_requested = true;
-				break;
+				EMBER_PROFILE_SCOPE_C("pump events", PROFILE_COLOR_INPUT);
+				if (m_platform.pump_events(m_input).quit_requested)
+				{
+					m_quit_requested = true;
+					break;
+				}
 			}
 
 			auto tick = std::chrono::steady_clock::now();
@@ -121,7 +146,10 @@ namespace ember
 				.frame_index = m_frame_index++,
 			};
 
-			app.update(update);
+			{
+				EMBER_PROFILE_SCOPE_C("update", PROFILE_COLOR_GAMEPLAY);
+				app.update(update);
+			}
 
 			if (m_quit_requested)
 				break;
@@ -147,17 +175,21 @@ namespace ember
 				.backbuffer_extent = m_gpu.swapchain_extent(m_swapchain),
 			};
 
-			app.render(render);
+			{
+				EMBER_PROFILE_SCOPE_C("render", PROFILE_COLOR_RENDER);
+				app.render(render);
+			}
 			if (m_gpu.device_lost())
 			{
 				EMBER_ERROR("(ember::Runtime): GPU device lost");
 				m_exit_code		 = 1;
 				m_quit_requested = true;
 			}
+
+			EMBER_PROFILE_FRAME();
 		}
 
 		app.shutdown();
-		return m_exit_code;
 	}
 
 	void Runtime::request_quit(int exit_code) noexcept
