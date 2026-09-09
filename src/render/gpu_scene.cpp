@@ -1,6 +1,6 @@
 #include <ember/core/logger.h>
 #include <ember/gpu/device.h>
-#include <ember/memory/pmr/arena_resource.h>
+#include <ember/memory/pmr/block_allocator.h>
 #include <ember/render/gpu_scene.h>
 
 #include <algorithm>
@@ -63,7 +63,7 @@ namespace ember::render
 		// The scene's list is append ordered; sorting turns it into runs. Both
 		// scratch blocks die with the frame arena and their bytes are consumed
 		// by update_buffer during the call.
-		auto* slots = static_cast<u32*>(memory::frame_arena().allocate_fast(count * sizeof(u32), alignof(u32)));
+		auto* slots = static_cast<u32*>(memory::frame_memory().allocate_fast(count * sizeof(u32), alignof(u32)));
 		std::memcpy(slots, dirty.data(), count * sizeof(u32));
 		std::sort(slots, slots + count);
 
@@ -71,7 +71,7 @@ namespace ember::render
 		// packed copy once, in sorted order. Object records upload straight from
 		// pool storage because a slot run is contiguous there.
 		auto* transforms = static_cast<TransformData*>(
-			memory::frame_arena().allocate_fast(count * sizeof(TransformData), alignof(TransformData)));
+			memory::frame_memory().allocate_fast(count * sizeof(TransformData), alignof(TransformData)));
 
 		for (u32 i = 0; i < count; ++i)
 			transforms[i] = scene.transform(slots[i]);

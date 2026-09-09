@@ -126,7 +126,7 @@ namespace ember
 
 		while (!m_quit_requested)
 		{
-			memory::frame_arena().reset();
+			memory::frame_memory().reset();
 
 			{
 				EMBER_PROFILE_SCOPE_C("pump events", PROFILE_COLOR_INPUT);

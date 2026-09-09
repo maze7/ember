@@ -1,6 +1,6 @@
 #include <ember/core/logger.h>
 #include <ember/gpu/device.h>
-#include <ember/memory/pmr/arena_resource.h>
+#include <ember/memory/pmr/block_allocator.h>
 #include <ember/render/geometry.h>
 
 namespace ember::render
@@ -117,7 +117,7 @@ namespace ember::render
 		// SV_VertexID addresses the shared streams directly. The scratch only
 		// feeds the staging copy inside update_buffer, so frame arena lifetime
 		// is enough even during boot.
-		u32* rebased = static_cast<u32*>(memory::frame_arena().allocate_fast(index_count * sizeof(u32), alignof(u32)));
+		u32* rebased = static_cast<u32*>(memory::frame_memory().allocate_fast(index_count * sizeof(u32), alignof(u32)));
 
 		for (u32 i = 0; i < index_count; ++i)
 		{

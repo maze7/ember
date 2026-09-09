@@ -38,10 +38,10 @@ namespace ember
 	[[nodiscard]] EMBER_FINLINE constexpr T* align_up(T* ptr, size_t alignment) noexcept
 	{
 		const uintptr_t value = reinterpret_cast<uintptr_t>(ptr);
-		const T mask = alignment - 1;
+		const uintptr_t mask  = alignment - 1;
 
 		EMBER_ASSERT(is_power_of_two(alignment));
-		EMBER_ASSERT(value <= (std::numeric_limits<T>::max() - mask));
+		EMBER_ASSERT(value <= (std::numeric_limits<uintptr_t>::max() - mask));
 
 		return reinterpret_cast<T*>((value + mask) & ~mask);
 	}

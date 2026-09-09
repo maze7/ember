@@ -2,7 +2,8 @@
 #include <ember/core/logger.h>
 #include <ember/memory/memory.h>
 #include <ember/memory/memory_tracker.h>
-#include <ember/memory/pmr/arena_resource.h>
+#include <ember/memory/pmr/block_allocator.h>
+#include <ember/memory/tagged_heap.h>
 
 #include <atomic>
 #include <cstdlib>
@@ -11,7 +12,12 @@
 
 namespace
 {
-	constinit ember::ArenaResource s_frame_arena;
+	constinit ember::TaggedHeap s_block_heap;
+	constinit ember::BlockAllocator s_frame_memory;
+
+	// Lifetime kinds. Frame memory is released at the top of every frame; the next kind added here
+	// gets 2, and per frame tags pack the frame number into the low half.
+	constexpr ember::HeapTag FRAME_TAG = ember::heap_tag(1);
 	constinit std::atomic<bool> s_initialized = false;
 
 	[[nodiscard]] bool initialize(const ember::MemoryConfig& config) noexcept
@@ -25,6 +31,7 @@ namespace
 		}
 
 		ember::memory::initialize_thread();
+		ember::BlockAllocator::register_thread();
 
 #if EMBER_MEMORY_TRACKING >= 2
 		if (!ember::memory_tracker::initialize()) [[unlikely]]
@@ -35,7 +42,7 @@ namespace
 #endif // EMBER_MEMORY_TRACKING >= 2
 
 		// install_third_party_hooks();
-		if (!s_frame_arena.init(config.frame_arena_reserve, config.frame_arena_commit, ember::MemoryTag::Engine)) [[unlikely]]
+		if (!s_block_heap.init(config.block_heap_capacity, config.block_size, ember::MemoryTag::Engine)) [[unlikely]]
 		{
 #if EMBER_MEMORY_TRACKING >= 2
 			ember::memory_tracker::shutdown();
@@ -43,6 +50,8 @@ namespace
 			s_initialized.store(false, std::memory_order_release);
 			return false;
 		}
+
+		s_frame_memory.init(s_block_heap, FRAME_TAG);
 
 		// Last, after every fallible step: from here on, resource-less PMR containers
 		// allocate from the engine heap instead of global operator new.
@@ -55,7 +64,9 @@ namespace
 		if (!s_initialized.exchange(false, std::memory_order_acq_rel))
 			return;
 
-		s_frame_arena.shutdown();
+		s_frame_memory.shutdown();
+		s_block_heap.shutdown();
+		ember::BlockAllocator::unregister_thread();
 #if EMBER_MEMORY_TRACKING >= 2
 		const ember::u64 leaks = ember::memory_tracker::report_leaks();
 		EMBER_ASSERT(leaks == 0);
@@ -79,11 +90,18 @@ namespace ember
 			shutdown();
 	}
 
-	ArenaResource& memory::frame_arena() noexcept
+	TaggedHeap& memory::block_heap() noexcept
 	{
 		EMBER_ASSERT(s_initialized.load(std::memory_order_acquire));
 
-		return s_frame_arena;
+		return s_block_heap;
+	}
+
+	BlockAllocator& memory::frame_memory() noexcept
+	{
+		EMBER_ASSERT(s_initialized.load(std::memory_order_acquire));
+
+		return s_frame_memory;
 	}
 
 	void out_of_memory(size_t size, size_t alignment, MemoryTag tag) noexcept

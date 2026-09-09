@@ -12,11 +12,14 @@ namespace ember
 {
 	struct MemoryConfig
 	{
-		size_t frame_arena_reserve = 128_mb;
-		size_t frame_arena_commit  = 1_mb;
+		size_t block_heap_capacity = 64_mb; // shared block pool, committed at startup.
+		size_t block_size  = 2_mb; // one thread's bump region between refills
 	};
 
+
 	class ArenaResource;
+	class BlockAllocator;
+	class TaggedHeap;
 
 	class MemorySystem final
 	{
@@ -43,11 +46,17 @@ namespace ember
 		void shutdown_thread() noexcept;
 
 		/**
-		 * Per frame CPU scratch, owned by MemorySystem  and sized by MemoryConfig. The
-		 * frame loop owner resets it  once per frame (App::next_frame); allocations live
-		 * until that reset. CPU side only.
+		 * The engine's block pool, owned by MemorySystem and sized by MemoryConfig. Systems that
+		 * want their own lifetime point a BlockAllocator at it under their own tag.
 		 */
-		[[nodiscard]] ArenaResource& frame_arena() noexcept;
+		[[nodiscard]] TaggedHeap& block_heap() noexcept;
+
+		/**
+		 * Per frame CPU scratch. Main and every job system worker allocate from it at once, and it
+		 * all goes back to the block heap when the frame loop owner resets it at the frame
+		 * boundary. CPU side only, and never from a detached job.
+		 */
+		[[nodiscard]] BlockAllocator& frame_memory() noexcept;
 
 		/**
 		 * The process heap viewed through a given tag. Pass to containers and new_object at subsystem wiring

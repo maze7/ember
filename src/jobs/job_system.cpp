@@ -5,6 +5,7 @@
 #include <ember/core/profile.h>
 #include <ember/memory/memory.h>
 #include <ember/sync/spin_mutex.h>
+#include <ember/memory/pmr/block_allocator.h>
 #include <ember/sync/thread.h>
 #include <jobs/fiber.h>
 
@@ -718,6 +719,7 @@ namespace ember::jobs
 	void JobSystem::Impl::worker_main(Worker& worker) noexcept
 	{
 		memory::initialize_thread();
+		BlockAllocator::register_thread();
 		t_worker = &worker;
 
 		char name[16];
@@ -741,6 +743,7 @@ namespace ember::jobs
 		fiber_release_thread(worker.thread_record.fiber);
 		worker.thread_record.fiber = nullptr;
 		t_worker				   = nullptr;
+		BlockAllocator::unregister_thread();
 		memory::shutdown_thread();
 	}
 

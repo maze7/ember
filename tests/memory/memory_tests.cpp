@@ -1,7 +1,8 @@
 #include <ember/core/bits.h>
 #include <ember/memory/memory.h>
 #include <ember/memory/memory_tracker.h>
-#include <ember/memory/pmr/arena_resource.h>
+#include <ember/memory/pmr/block_allocator.h>
+#include <ember/memory/tagged_heap.h>
 
 #include <gtest/gtest.h>
 
@@ -33,18 +34,17 @@ TEST(Memory, DefaultPmrResourceIsTheEngineHeap)
 	EXPECT_TRUE(resource->is_equal(ember::memory::heap(MemoryTag::Unknown)));
 }
 
-TEST(Memory, FrameArenaIsUsableAndScoped)
+TEST(Memory, FrameMemoryIsUsableAndComesFromTheBlockHeap)
 {
-	ember::ArenaResource& arena = ember::memory::frame_arena();
-	const size_t before			= arena.used();
+	ember::TaggedHeap& heap		 = ember::memory::block_heap();
+	ember::BlockAllocator& frame = ember::memory::frame_memory();
 
-	{
-		ember::ArenaScope scope(arena);
-		void* ptr = arena.allocate_fast(256);
-		EXPECT_TRUE(arena.owns(ptr));
-	}
+	EXPECT_EQ(heap.block_size(), ember::MemoryConfig{}.block_size);
 
-	EXPECT_EQ(arena.used(), before);
+	void* ptr = frame.allocate_fast(256);
+
+	EXPECT_TRUE(heap.owns(ptr));
+	EXPECT_GE(heap.blocks_in_use(), 1u);
 }
 
 // This test instantiates delete_object for the first time anywhere in the

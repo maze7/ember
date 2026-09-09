@@ -6,7 +6,7 @@
 #include <ember/gpu/common.h>
 #include <ember/gpu/texture.h>
 #include <ember/memory/memory.h>
-#include <ember/memory/pmr/arena_resource.h>
+#include <ember/memory/pmr/block_allocator.h>
 
 #include <type_traits>
 
@@ -166,20 +166,20 @@ namespace ember::render
 			 * scope when attachments were declared. Callbacks take (CommandList&)
 			 * or (CommandList&, const PassContext&).
 			 *
-			 * Captures live in the frame arena and are never destroyed: keep them trivial.
+			 * Captures live in the frame memory and are never destroyed: keep them trivial.
 			 */
 			template <class F> void record(F&& fn) noexcept
 			{
 				using Fn = std::decay_t<F>;
 				static_assert(
-					std::is_trivially_destructible_v<Fn>, "captures live in the frame arena and are never destroyed");
+					std::is_trivially_destructible_v<Fn>, "captures live in the frame memory and are never destroyed");
 				static_assert(
 					std::is_invocable_v<Fn&, gpu::CommandList&, const PassContext&> ||
 						std::is_invocable_v<Fn&, gpu::CommandList&>,
 					"callbacks take (CommandList&) or (CommandList&, const PassContext&)");
 
 				m_record_data =
-					new (memory::frame_arena().allocate_fast(sizeof(Fn), alignof(Fn))) Fn(static_cast<F&&>(fn));
+					new (memory::frame_memory().allocate_fast(sizeof(Fn), alignof(Fn))) Fn(static_cast<F&&>(fn));
 				m_record = [](gpu::CommandList& cmd, const PassContext& ctx, void* data)
 				{
 					Fn& fn = *static_cast<Fn*>(data);

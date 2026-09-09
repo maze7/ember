@@ -3,7 +3,7 @@
 #include <ember/memory/memory.h>
 #include <ember/memory/memory_tracker.h>
 #include <ember/sync/spin_mutex.h>
-#include <ember/memory/pmr/arena_resource.h>
+#include <ember/memory/tagged_heap.h>
 
 #if EMBER_MEMORY_TRACKING >= 1
 	#include <array>
@@ -470,23 +470,23 @@ namespace ember
 					totals.current_count,
 					totals.total_count);
 
-			const ArenaResource& arena = memory::frame_arena();
+			const TaggedHeap& blocks = memory::block_heap();
 			if (as_csv)
 				Logger::info(
 					std::source_location::current(),
-					"FrameArena,{},{},{},{}",
-					arena.used(),
-					arena.committed(),
-					arena.peak(),
-					arena.reserved());
+					"BlockHeap,{},{},{},{}",
+					blocks.used(),
+					blocks.peak(),
+					blocks.capacity(),
+					blocks.block_size());
 			else
 				Logger::info(
 					std::source_location::current(),
-					"FrameArena used={} committed={} peak={} reserved={}",
-					arena.used(),
-					arena.committed(),
-					arena.peak(),
-					arena.reserved());
+					"BlockHeap used={} peak={} capacity={} block={}",
+					blocks.used(),
+					blocks.peak(),
+					blocks.capacity(),
+					blocks.block_size());
 		}
 
 	#if EMBER_MEMORY_TRACKING >= 2
