@@ -215,6 +215,13 @@ namespace ember::gpu
 		[[nodiscard]] GraphicsPipelineHandle create_graphics_pipeline(const GraphicsPipelineDef& def) noexcept;
 		[[nodiscard]] ComputePipelineHandle create_compute_pipeline(const ComputePipelineDef& def) noexcept;
 
+		/**
+		 * True once a texture's pixels have reached the GPU. Only streamed textures are ever
+		 * false, and only until their upload lands; sampling one early reads the fallback rather
+		 * than stale memory, so this is for logic that wants to know, not for correctness.
+		 */
+		[[nodiscard]] bool is_resident(TextureHandle handle) const noexcept;
+
 		[[nodiscard]] bool is_valid(SwapchainHandle handle) const noexcept;
 		[[nodiscard]] bool is_valid(BufferHandle handle) const noexcept;
 		[[nodiscard]] bool is_valid(TextureHandle handle) const noexcept;

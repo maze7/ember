@@ -128,6 +128,20 @@ namespace ember::gpu
 		Recording recordings[MAX_COMMAND_LISTS]{};
 	};
 
+	/**
+	 * A streamed texture waiting on its pixels. The heap slot shows the fallback until the upload
+	 * timeline passes ready_value; begin_frame then writes the real view. The view and layout are
+	 * carried here so promotion never has to go back to the pool.
+	 */
+	struct PendingResidency
+	{
+		TextureHandle texture{};
+		VkImageView view	 = VK_NULL_HANDLE;
+		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+		TextureType type	 = TextureType::Texture2D;
+		u64 ready_value		 = 0;
+	};
+
 	/// Swapchains acquired this frame; end_frame clears, submits and presents them as a batch.
 	struct PendingPresent
 	{
@@ -176,12 +190,12 @@ namespace ember::gpu
 	}
 
 	/**
-	 * The compiled-in backend's entire state — what Device::m_state points at.
+	 * The compiled-in backend's entire state; what Device::m_state points at.
 	 * Three zones, three mutation clocks:
 	 *
-	 *   context  — written by boot, read-only afterwards
-	 *   frame    — written by the frame loop (begin/end_frame, acquire)
-	 *   services — written by user calls (create/destroy), drained by the frame loop
+	 *   context  - written by boot, read-only afterwards
+	 *   frame    - written by the frame loop (begin/end_frame, acquire)
+	 *   services - written by user calls (create/destroy), drained by the frame loop
 	 */
 	struct Backend
 	{
@@ -195,6 +209,9 @@ namespace ember::gpu
 		TransientAllocator transient{};		  // fast path; user-facing via Device::transient()
 		vk::TransientRing transient_ring{};	  // its memory, overflow pages, telemetry
 		vk::Staging staging{};				  // staging ring + upload batches
+
+		PendingResidency pending_residency[MAX_PENDING_RESIDENCY]{};
+		u32 pending_residency_count = 0;
 
 		/// Zones from the most recently retired frame, refreshed by begin_frame.
 		GpuZoneTiming gpu_zones[MAX_COMMAND_LISTS * MAX_GPU_ZONES]{};

@@ -81,6 +81,13 @@ namespace ember::gpu
 		/// Whole subresource chain, layer-major mip-minor, rows tightly packed
 		/// (block rows for BC). Uploaded before this frame's GPU work.
 		Span<const u8> initial_data = {};
+
+		/**
+		 * Streamed content: the handle is usable the moment it comes back, but its heap slot
+		 * shows the fallback until the upload lands, and no frame waits for it. Leave it false
+		 * for anything that has to be right on the first frame it is read.
+		 */
+		bool streamed = false;
 	};
 
 	/// Which storage array a texture's write descriptors live in. Cube storage

@@ -112,12 +112,17 @@ namespace ember::gpu::vk
 			vkCmdPipelineBarrier2(cmd, &dependency);
 		}
 
-		[[nodiscard]] VkCommandBuffer upload_cmd(Backend& backend) noexcept
+		[[nodiscard]] VkCommandBuffer upload_cmd(Backend& backend, bool streamed) noexcept
 		{
 			Staging& staging = backend.staging;
 
+			// One critical upload makes the whole batch critical: they share a submit, so the
+			// frame that needs one waits for all of them.
 			if (staging.open_cmd != VK_NULL_HANDLE)
+			{
+				staging.batches[staging.open_index].critical |= !streamed;
 				return staging.open_cmd;
+			}
 
 			for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT + 1; ++i)
 			{
@@ -134,8 +139,9 @@ namespace ember::gpu::vk
 				EMBER_VK_CHECK(vkBeginCommandBuffer(staging.batches[i].cmd, &begin_info));
 				record_upload_barrier(staging.batches[i].cmd, true);
 
-				staging.open_cmd   = staging.batches[i].cmd;
-				staging.open_index = i;
+				staging.batches[i].critical = !streamed;
+				staging.open_cmd			= staging.batches[i].cmd;
+				staging.open_index			= i;
 				return staging.open_cmd;
 			}
 
@@ -350,7 +356,7 @@ namespace ember::gpu::vk
 		staging.ring.slice_end = staging.ring.cursor + staging.ring.slice_bytes;
 	}
 
-	void staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, Span<const u8> data) noexcept
+	void staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, Span<const u8> data, bool streamed) noexcept
 	{
 		const StagingAlloc src = staging_alloc(backend, data.size(), STAGING_ALIGN);
 
@@ -370,7 +376,7 @@ namespace ember::gpu::vk
 			(void)vmaFlushAllocation(
 				backend.context.allocator, backend.staging.ring.allocation, src.offset, data.size());
 
-		VkCommandBuffer cmd = upload_cmd(backend);
+		VkCommandBuffer cmd = upload_cmd(backend, streamed);
 		if (cmd == VK_NULL_HANDLE)
 			return;
 
@@ -424,6 +430,9 @@ namespace ember::gpu::vk
 		const u64 value							  = ++staging.value;
 		staging.batches[staging.open_index].value = value;
 
+		if (staging.batches[staging.open_index].critical)
+			staging.critical_value = value;
+
 		const VkCommandBufferSubmitInfo cmd_info{
 			.sType		   = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
 			.commandBuffer = staging.open_cmd,
@@ -462,11 +471,12 @@ namespace ember::gpu::vk
 			staging.completed = counter;
 	}
 
-	void staging_upload_texture(Backend& backend, const TextureUpload& upload, Span<const u8> data) noexcept
+	void
+	staging_upload_texture(Backend& backend, const TextureUpload& upload, Span<const u8> data, bool streamed) noexcept
 	{
 		const FormatInfo& info = format_info(upload.format);
 
-		VkCommandBuffer cmd = upload_cmd(backend);
+		VkCommandBuffer cmd = upload_cmd(backend, streamed);
 		if (cmd == VK_NULL_HANDLE)
 			return;
 
@@ -535,7 +545,8 @@ namespace ember::gpu::vk
 		const FormatInfo& info = format_info(upload.format);
 		EMBER_ASSERT(info.aspect == VK_IMAGE_ASPECT_COLOR_BIT && "depth-stencil uploads are out of contract");
 
-		VkCommandBuffer cmd = upload_cmd(backend);
+		constexpr bool streamed = false; // an update targets a live resource: the frame always waits for it
+		VkCommandBuffer cmd		= upload_cmd(backend, streamed);
 		if (cmd == VK_NULL_HANDLE)
 			return;
 

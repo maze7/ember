@@ -59,6 +59,10 @@ namespace ember
 	/// pool, so recording jobs never share either.
 	inline constexpr u32 MAX_COMMAND_LISTS = 32;
 
+	/// Streamed textures that can be waiting on their pixels at once. Past it, an upload falls
+	/// back to being critical.
+	inline constexpr u32 MAX_PENDING_RESIDENCY = 256;
+
 	/// The bindless heap's arrays.
 	inline constexpr u32 BINDING_SAMPLED_2D		  = 0;
 	inline constexpr u32 BINDING_SAMPLED_2D_ARRAY = 1;

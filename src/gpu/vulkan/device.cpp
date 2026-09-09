@@ -215,6 +215,39 @@ namespace ember::gpu
 					backend.resources.swapchains.get(frame.pending_presents[i].swapchain)->needs_recreate = true;
 		}
 
+		/**
+		 * Streamed textures whose pixels have landed take their real view in the heap. Everything
+		 * still in flight stays on the fallback and is retried next frame; nothing here waits.
+		 */
+		void promote_residents(Backend& backend) noexcept
+		{
+			u32 remaining = 0;
+
+			for (u32 i = 0; i < backend.pending_residency_count; ++i)
+			{
+				const PendingResidency& pending = backend.pending_residency[i];
+
+				if (pending.ready_value > backend.staging.completed)
+				{
+					backend.pending_residency[remaining++] = pending;
+					continue;
+				}
+
+				// The handle can have died while its pixels were in flight; the slot is then
+				// somebody else's business and the write would corrupt it.
+				vk::TextureCold* cold = backend.resources.textures.get_cold(pending.texture);
+				if (cold == nullptr)
+					continue;
+
+				backend.descriptor_heap.write_sampled(
+					backend.context, pending.texture.index, pending.view, pending.layout, pending.type);
+
+				cold->ready_value = 0;
+			}
+
+			backend.pending_residency_count = remaining;
+		}
+
 		u64 flush_uploads(Backend& backend) noexcept { return vk::submit_uploads(backend); }
 	}
 
@@ -351,6 +384,18 @@ namespace ember::gpu
 			m_backend->context, m_backend->descriptor_heap, m_backend->resources, UINT64_MAX);
 	}
 
+	bool Device::is_resident(TextureHandle handle) const noexcept
+	{
+		if (m_backend == nullptr)
+			return false;
+
+		const vk::TextureCold* cold = m_backend->resources.textures.get_cold(handle);
+		if (cold == nullptr)
+			return false;
+
+		return cold->ready_value == 0 || cold->ready_value <= m_backend->staging.completed;
+	}
+
 	const DeviceCaps& Device::caps() const noexcept
 	{
 		// A falsy Device still answers caps(): all-zero caps read as "nothing supported", the
@@ -426,6 +471,7 @@ namespace ember::gpu
 		// A counter read, not a wait: uploads that landed since last frame become reclaimable
 		// here, and nothing stalls when they have not.
 		vk::poll_uploads(*m_backend);
+		promote_residents(*m_backend);
 
 		// The graveyard rides the frame pacing and needs no extra queries.
 		m_backend->destroy_queue.drain(

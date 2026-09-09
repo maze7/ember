@@ -30,7 +30,11 @@ namespace ember::gpu::vk
 	struct UploadBatch
 	{
 		VkCommandBuffer cmd = VK_NULL_HANDLE;
-		u64 value			= 0; // reusable once the frame timeline passes this; 0 = never used.
+		u64 value			= 0; // reusable once the upload timeline passes this; 0 = never used.
+
+		/// True once anything in the batch has to be there for the next frame. A batch of
+		/// nothing but streamed content leaves it false and no frame waits on the batch at all.
+		bool critical = false;
 	};
 
 	/// A texture's shape, for the image staging paths.
@@ -73,7 +77,12 @@ namespace ember::gpu::vk
 		VkSemaphore timeline = VK_NULL_HANDLE;
 		u64 value			 = 0; // last value handed to an upload submit
 		u64 completed		 = 0; // highest value proven signalled; polled, never waited on
+		u64 critical_value	 = 0; // last value a frame must wait for; streamed uploads never raise it
 	};
+
+	/// The value the batch now open will signal. A streamed resource records this at creation:
+	/// it is resident once the upload timeline reaches it.
+	[[nodiscard]] inline u64 pending_upload_value(const Staging& staging) noexcept { return staging.value + 1; }
 
 	[[nodiscard]] bool staging_boot(Backend& backend, u64 per_slot_bytes) noexcept;
 
@@ -86,13 +95,15 @@ namespace ember::gpu::vk
 	/// Records a staged copy into the current upload batch (opening it if needed).
 	/// Source memory comes from the ring while a frame s open, else a one-off buffer that
 	/// rides the desttroy queue. Owner thread only.
-	void staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, Span<const u8> data) noexcept;
+	void staging_upload(
+		Backend& backend, VkBuffer dst, u64 dst_offset, Span<const u8> data, bool streamed = false) noexcept;
 
 	/// Uploads the whole subresource chain (layer-major, mip-minor, tightly packed
 	/// blocks) and leaves the image in its steady layout. Empty data records only
 	/// the UNDEFINED to steady transition, which is how creation christens every
 	/// texture into a known layout. Owner thread only.
-	void staging_upload_texture(Backend& backend, const TextureUpload& upload, Span<const u8> data) noexcept;
+	void staging_upload_texture(
+		Backend& backend, const TextureUpload& upload, Span<const u8> data, bool streamed = false) noexcept;
 
 	/// One subresource, steady to copy and back. The batch's entry barrier orders
 	/// all prior submitted work before the copy, so frames in flight are safe.

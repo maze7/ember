@@ -218,13 +218,32 @@ namespace ember::gpu
 			return {};
 		}
 
+		// A streamed texture keeps the fallback in its slot until the pixels land. The handle is
+		// live either way, so callers never branch on readiness.
+		const bool sampled	= (def.usage & TextureUsage::Sampled) != TextureUsage::None;
+		const bool deferred = sampled && def.streamed && !def.initial_data.empty() &&
+							  m_backend->pending_residency_count < MAX_PENDING_RESIDENCY;
+
 		// A fresh slot is unreferenced by any in-flight frame, so writing now is safe.
-		if ((def.usage & TextureUsage::Sampled) != TextureUsage::None)
+		if (sampled && !deferred)
 			m_backend->descriptor_heap.write_sampled(m_backend->context, handle.index, view, steady, def.type);
 		if ((def.usage & TextureUsage::Storage) != TextureUsage::None)
 			m_backend->descriptor_heap.write_storage(m_backend->context, handle.index, storage_view, def.type);
 
 		vk::TextureCold& cold = *m_backend->resources.textures.get_cold(handle);
+
+		if (deferred)
+		{
+			cold.ready_value = vk::pending_upload_value(m_backend->staging);
+
+			m_backend->pending_residency[m_backend->pending_residency_count++] = {
+				.texture	 = handle,
+				.view		 = view,
+				.layout		 = steady,
+				.type		 = def.type,
+				.ready_value = cold.ready_value,
+			};
+		}
 
 		// Deep mips get their own storage entries so shaders can write any level by
 		// index. Hidden pool slots: created with the texture, destroyed with it,
@@ -331,7 +350,9 @@ namespace ember::gpu
 				.layer_count = def.layers,
 				.steady		 = steady,
 			},
-			def.initial_data);
+			def.initial_data,
+			deferred
+		);
 
 		vk::set_name(m_backend->context, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<u64>(image), def.name);
 

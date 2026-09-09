@@ -48,6 +48,10 @@ namespace ember::gpu::vk
 		/// Where the texture rests between uses
 		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
+		/// Upload value that makes the pixels visible; 0 once resident. A streamed texture
+		/// reads as the fallback until the upload timeline reaches it.
+		u64 ready_value = 0;
+
 		// False for swapchain images.
 		bool owns_image = true;
 
