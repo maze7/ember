@@ -45,11 +45,16 @@ namespace ember::imgui
 	 */
 	void new_frame(const Input& input, WindowHandle window, Extent2D display, f32 dt) noexcept;
 
-	/// Records the frame's draw data. Call inside an open rendering pass whose
-	/// target matches BackendDef::color_format. Leaves the scissor modified.
-	void render(gpu::CommandList& cmd) noexcept;
+	/**
+	 * Closes the UI frame and hands the device every texture the core created, changed or
+	 * dropped. Owner thread, once per frame, after the last ImGui:: call and before the graph
+	 * records: texture work is owner only, so it cannot ride the job that draws the UI.
+	 */
+	void end_frame(gpu::Device& device) noexcept;
 
-	/// Ends a UI frame without drawing it (minimized window, skipped frame).
+	/// Records the frame's draw data. Any frame thread, inside an open rendering pass whose
+	/// target matches BackendDef::color_format. Leaves the scissor modified.
+	void render(gpu::CommandList& cmd) noexcept;	/// Ends a UI frame without drawing it (minimized window, skipped frame).
 	void discard() noexcept;
 
 	/// True while the UI wants the device; game input should skip it.

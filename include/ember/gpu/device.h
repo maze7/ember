@@ -172,8 +172,9 @@ namespace ember::gpu
 	 *
 	 * THREADING
 	 *   Owner thread (the constructing thread): lifecycle, create/destroy/update, begin/end_frame,
-	 *   acquire, submit, wait_idle. Any thread: CommandList recording (one thread per list from
-	 *   begin to submit) and allocate_transient. Violations assert in debug builds.
+	 *   acquire, begin_command_list, wait_idle. Any frame thread: CommandList recording and the
+	 *   submit that seals it (one list at a time per thread, but a list may migrate between
+	 *   threads mid record), and allocate_transient. Violations assert in debug builds.
 	 *
 	 * FAILURE MODEL
 	 *   No exceptions. Resource creation returns a null handle and logs; the constructor logs
@@ -197,9 +198,15 @@ namespace ember::gpu
 		[[nodiscard]] const DeviceCaps& caps() const noexcept;
 		[[nodiscard]] bool device_lost() const noexcept;
 
+		/**
+		 * Opens a command list. Owner thread, because the order lists are claimed in is the order
+		 * they reach the queue: claim one per recording job, in the order the work must run.
+		 * A null list comes back when the frame's budget is spent.
+		 */
 		[[nodiscard]] CommandList begin_command_list() noexcept;
+
+		/// Seals a list. Any frame thread; the job that recorded it is the one that should.
 		void submit(CommandList& list) noexcept;
-		void submit(Span<CommandList* const> lists) noexcept;
 
 		[[nodiscard]] SwapchainHandle create_swapchain(const SwapchainDef& def) noexcept;
 		[[nodiscard]] BufferHandle create_buffer(const BufferDef& def) noexcept;

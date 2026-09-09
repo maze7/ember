@@ -101,13 +101,6 @@ namespace ember::gpu
 			EMBER_UNREACHABLE_ASSERT();
 		}
 
-		[[nodiscard]] VkCommandBuffer recording_cmd(Backend& backend) noexcept
-		{
-			EMBER_ASSERT(backend.frame.list_open && "CommandList used outside begin_comand_list/submit");
-			const u32 slot = static_cast<u32>(backend.frame.index % backend.context.frames_in_flight);
-			return backend.frame.slots[slot].recording.commands;
-		}
-
 		/// Weak resolve for recording paths: a stale handle logs and skips the command
 		/// instead of handing the driver a dead object.
 		[[nodiscard]] VkBuffer resolve_buffer(Backend& backend, BufferHandle handle) noexcept
@@ -326,7 +319,7 @@ namespace ember::gpu
 		if (m_backend == nullptr)
 			return;
 
-		const VkCommandBuffer cmd = recording_cmd(*m_backend);
+		const VkCommandBuffer cmd = m_recording->commands;
 		EMBER_ASSERT(!def.colors.empty() || !def.depth.texture.is_null());
 
 		auto to_vk_load = [](LoadOp op) noexcept
@@ -426,7 +419,7 @@ namespace ember::gpu
 		if (m_backend == nullptr)
 			return;
 
-		vkCmdEndRendering(recording_cmd(*m_backend));
+		vkCmdEndRendering(m_recording->commands);
 		m_recording->inside_pass = false;
 	}
 
@@ -467,12 +460,7 @@ namespace ember::gpu
 
 		// Ember uses one layout engine-wide, so pushing never depends on which pipeline is bound.
 		vkCmdPushConstants(
-			recording_cmd(*m_backend),
-			m_backend->descriptor_heap.pipeline_layout(),
-			VK_SHADER_STAGE_ALL,
-			0,
-			size,
-			data);
+			m_recording->commands, m_backend->descriptor_heap.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, size, data);
 	}
 
 	void CommandList::set_pipeline(GraphicsPipelineHandle pipeline) noexcept
@@ -770,7 +758,7 @@ namespace ember::gpu
 			claimed = static_cast<u8>(recording.zone_count++);
 
 			const u32 slot	= static_cast<u32>(m_backend->frame.index % m_backend->context.frames_in_flight);
-			const u32 query = slot * MAX_GPU_ZONES * 2 + claimed * 2;
+			const u32 query = (slot * MAX_COMMAND_LISTS + recording.index) * MAX_GPU_ZONES * 2 + claimed * 2;
 
 			vkCmdWriteTimestamp2(
 				recording.commands, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, m_backend->frame.timestamps, query);
@@ -805,7 +793,7 @@ namespace ember::gpu
 			if (claimed != Recording::ZONE_UNTIMED)
 			{
 				const u32 slot	= static_cast<u32>(m_backend->frame.index % m_backend->context.frames_in_flight);
-				const u32 query = slot * MAX_GPU_ZONES * 2 + claimed * 2 + 1;
+				const u32 query = (slot * MAX_COMMAND_LISTS + recording.index) * MAX_GPU_ZONES * 2 + claimed * 2 + 1;
 
 				vkCmdWriteTimestamp2(
 					recording.commands, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, m_backend->frame.timestamps, query);

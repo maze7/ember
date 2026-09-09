@@ -22,6 +22,10 @@ namespace ember::imgui
 
 		void add_passes(render::RenderFrame& frame) noexcept override
 		{
+			// Owner thread: the UI frame closes and its textures reach the device here, because
+			// the pass below records on whichever worker picks it up.
+			end_frame(frame.device);
+
 			frame.graph.pass("imgui")
 				.color({.texture = frame.resources.output, .load = gpu::LoadOp::Load})
 				.record([](gpu::CommandList& cmd) { render(cmd); });

@@ -108,7 +108,8 @@ namespace ember::gpu
 		 * present semaphore (WSI). Submission order plus the batch's exit barrier is what makes
 		 * this frame's reads see this frame's uploads.
 		 */
-		void submit_frame(Backend& backend, VkCommandBuffer upload, VkCommandBuffer frame_cmd, u64 value) noexcept
+		void
+		submit_frame(Backend& backend, VkCommandBuffer upload, Span<const VkCommandBuffer> lists, u64 value) noexcept
 		{
 			FrameState& frame = backend.frame;
 			const u32 slot	  = static_cast<u32>(frame.index % backend.context.frames_in_flight);
@@ -144,15 +145,17 @@ namespace ember::gpu
 				.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 			};
 
-			VkCommandBufferSubmitInfo cmd_infos[2];
+			VkCommandBufferSubmitInfo cmd_infos[MAX_COMMAND_LISTS + 1];
 			u32 cmd_count = 0;
 
 			if (upload != VK_NULL_HANDLE)
 				cmd_infos[cmd_count++] = {
 					.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = upload};
 
-			cmd_infos[cmd_count++] = {
-				.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = frame_cmd};
+			// Claim order is submission order, so the queue sees the passes in the order the graph
+			// declared them however the recording jobs were scheduled.
+			for (VkCommandBuffer list : lists)
+				cmd_infos[cmd_count++] = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = list};
 
 			const VkSubmitInfo2 submit_info{
 				.sType					  = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
@@ -445,7 +448,8 @@ namespace ember::gpu
 		if (wait_value > frame.completed)
 			frame.completed = wait_value;
 
-		EMBER_VK_CHECK(vkResetCommandPool(m_backend->context.device, frame.slots[slot].pool, 0));
+		for (VkCommandPool pool : frame.slots[slot].pools)
+			EMBER_VK_CHECK(vkResetCommandPool(m_backend->context.device, pool, 0));
 
 		// The graveyard rides the frame pacing and needs no extra queries.
 		m_backend->destroy_queue.drain(
@@ -454,12 +458,15 @@ namespace ember::gpu
 		// Resolve the slot's zones from the frame that just retired, then hand the
 		// query range back. Consuming zone_count keeps a later placeholder frame
 		// from re-reading a reset range.
-		Recording& recording	  = frame.slots[slot].recording;
 		m_backend->gpu_zone_count = 0;
 
-		if (frame.timestamps != VK_NULL_HANDLE && recording.zone_count > 0)
+		// List order, so the resolved zones read down the frame the way they were recorded.
+		for (Recording& recording : frame.slots[slot].recordings)
 		{
-			const u32 base = slot * MAX_GPU_ZONES * 2;
+			if (frame.timestamps == VK_NULL_HANDLE || recording.zone_count == 0)
+				continue;
+
+			const u32 base = (slot * MAX_COMMAND_LISTS + recording.index) * MAX_GPU_ZONES * 2;
 			u64 ticks[MAX_GPU_ZONES * 2];
 
 			const VkResult result = vkGetQueryPoolResults(
@@ -480,15 +487,13 @@ namespace ember::gpu
 				{
 					const Recording::Zone& zone = recording.zones[i];
 
-					m_backend->gpu_zones[i] = {
+					m_backend->gpu_zones[m_backend->gpu_zone_count++] = {
 						.name		 = zone.name,
 						.color		 = zone.color,
 						.depth		 = zone.depth,
 						.duration_ms = static_cast<f32>(ticks[i * 2 + 1] - ticks[i * 2]) * period / 1'000'000.0f,
 					};
 				}
-
-				m_backend->gpu_zone_count = recording.zone_count;
 			}
 
 			vkResetQueryPool(m_backend->context.device, frame.timestamps, base, MAX_GPU_ZONES * 2);
@@ -499,10 +504,15 @@ namespace ember::gpu
 		vk::staging_begin_frame(m_backend->staging, slot);
 		vk::transient_begin_frame(*m_backend, slot);
 
-		frame.pending_present_count				= 0;
-		frame.slots[slot].recording.inside_pass = false;
-		frame.lists_submitted					= 0;
-		frame.open								= true;
+		frame.pending_present_count = 0;
+		frame.lists_claimed			= 0;
+		frame.open					= true;
+
+		for (Recording& recording : frame.slots[slot].recordings)
+		{
+			recording.inside_pass = false;
+			recording.open		  = false;
+		}
 
 		return {.frame_index = static_cast<u32>(frame.index), .slot = slot};
 	}
@@ -516,20 +526,31 @@ namespace ember::gpu
 		const u32 slot	  = static_cast<u32>(frame.index % m_backend->context.frames_in_flight);
 		const u64 value	  = ++frame.timeline_value;
 
-		VkCommandBuffer cmd = frame.slots[slot].recording.commands;
-		EMBER_ASSERT(!frame.list_open && "a command list was begun but never submitted");
+		VkCommandBuffer lists[MAX_COMMAND_LISTS];
+		u32 list_count = 0;
+
+		for (u32 i = 0; i < frame.lists_claimed; ++i)
+		{
+			Recording& recording = frame.slots[slot].recordings[i];
+			EMBER_ASSERT(!recording.open && "a command list was begun but never submitted");
+			lists[list_count++] = recording.commands;
+		}
 
 		// Frames that submitted nothing still owe every acquired backbuffer a legal
 		// present; the boot era clear survives as that fallback.
-		if (frame.lists_submitted == 0)
+		if (list_count == 0)
+		{
+			VkCommandBuffer cmd = frame.slots[slot].recordings[0].commands;
 			record_placeholder_clears(*m_backend, cmd);
+			lists[list_count++] = cmd;
+		}
 
 		// Seal the frame's CPU-written memory before the submit that publishes it: transient
 		// flushes and poisons, the upload batch closes stamped with this frame's value.
 		vk::transient_end_frame(*m_backend, value);
 		const VkCommandBuffer upload = vk::close_upload(*m_backend, value);
 
-		submit_frame(*m_backend, upload, cmd, value);
+		submit_frame(*m_backend, upload, {lists, list_count}, value);
 		present_pending(*m_backend);
 
 		frame.slots[slot].submitted = value;
@@ -543,10 +564,14 @@ namespace ember::gpu
 
 		FrameState& frame = m_backend->frame;
 		EMBER_ASSERT(frame.open && "command lists record between begin_frame and end_frame");
-		EMBER_ASSERT(!frame.list_open && "one command list per frame for now");
+		EMBER_ASSERT(frame.lists_claimed < MAX_COMMAND_LISTS && "frame command list budget exhausted");
+
+		if (frame.lists_claimed >= MAX_COMMAND_LISTS) [[unlikely]]
+			return {};
 
 		const u32 slot			  = static_cast<u32>(frame.index % m_backend->context.frames_in_flight);
-		Recording& recording	  = frame.slots[slot].recording;
+		const u32 index			  = frame.lists_claimed++;
+		Recording& recording	  = frame.slots[slot].recordings[index];
 		const VkCommandBuffer cmd = recording.commands;
 
 		const VkCommandBufferBeginInfo begin_info{
@@ -577,8 +602,7 @@ namespace ember::gpu
 				zero_offsets);
 		}
 
-		recording		= Recording{.commands = recording.commands};
-		frame.list_open = true;
+		recording = Recording{.commands = recording.commands, .index = index, .open = true};
 
 		CommandList list;
 		list.m_backend	 = m_backend;
@@ -586,20 +610,20 @@ namespace ember::gpu
 		return list;
 	}
 
+	// Any frame thread: the job that recorded the list seals it, wherever it ended up running.
+	// The list's place in the queue was fixed when it was claimed, so sealing needs no order.
 	void Device::submit(CommandList& list) noexcept
 	{
-		EMBER_GPU_GUARD();
+		if (m_backend == nullptr || list.m_recording == nullptr)
+			return;
 
-		FrameState& frame = m_backend->frame;
 		EMBER_ASSERT(list.m_backend == m_backend && "submit of a foreign command list");
-		EMBER_ASSERT(frame.list_open && "submit without begin_command_list");
+		EMBER_ASSERT(list.m_recording->open && "submit without begin_command_list");
 		EMBER_ASSERT(!list.m_recording->inside_pass && "a render pass is still open at submit");
 		EMBER_ASSERT(list.m_recording->zone_depth == 0 && "a GPU zone was begun but never ended");
 
 		EMBER_VK_CHECK(vkEndCommandBuffer(list.m_recording->commands));
-
-		frame.list_open = false;
-		++frame.lists_submitted;
+		list.m_recording->open = false;
 
 		// A sealed list ignores every later call instead of corrupting the next frame.
 		list.m_backend	 = nullptr;

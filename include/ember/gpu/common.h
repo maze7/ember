@@ -55,6 +55,10 @@ namespace ember
 	inline constexpr u32 ALL_MIPS			   = ~0u;
 	inline constexpr u32 ALL_LAYERS			   = ~0u;
 
+	/// Command lists one frame may open. Each owns a command pool and a slice of the timestamp
+	/// pool, so recording jobs never share either.
+	inline constexpr u32 MAX_COMMAND_LISTS = 32;
+
 	/// The bindless heap's arrays.
 	inline constexpr u32 BINDING_SAMPLED_2D		  = 0;
 	inline constexpr u32 BINDING_SAMPLED_2D_ARRAY = 1;

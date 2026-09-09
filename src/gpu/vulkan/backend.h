@@ -70,6 +70,14 @@ namespace ember::gpu
 	{
 		VkCommandBuffer commands = VK_NULL_HANDLE;
 
+		/// Place in the frame's list order, which is also the submission order and the
+		/// timestamp slice this list writes into.
+		u32 index = 0;
+
+		/// Set by begin_command_list on the owner, cleared by submit on whichever thread
+		/// recorded it. end_frame reads it after the wait that joins the recorders.
+		bool open = false;
+
 		/// Redundancy filters: rebinding the bound pipeline is free to skip.
 		GraphicsPipelineHandle graphics_pipeline{};
 		ComputePipelineHandle compute_pipeline{};
@@ -108,9 +116,16 @@ namespace ember::gpu
 	{
 		u64 submitted = 0; // timeline value that this slot's last end_frame signalled; 0 = never used.
 
-		/// Whole-pool reset each frame (cheaper and more thorough than per-buffer reset).
-		VkCommandPool pool = VK_NULL_HANDLE;
-		Recording recording{}; // one open list per frame; an array once recording parallelizes
+		/**
+		 * A pool per list, not per thread. Vulkan asks for external synchronisation of the pool on
+		 * every vkCmd* recorded from it, and a job's fiber can resume on another worker mid pass,
+		 * so a thread is not a thing a pool can belong to. A list is: one job opens it, records it
+		 * and seals it, wherever it happens to be running.
+		 *
+		 * Whole-pool reset each frame (cheaper and more thorough than per-buffer reset).
+		 */
+		VkCommandPool pools[MAX_COMMAND_LISTS]{};
+		Recording recordings[MAX_COMMAND_LISTS]{};
 	};
 
 	/// Swapchains acquired this frame; end_frame clears, submits and presents them as a batch.
@@ -129,8 +144,9 @@ namespace ember::gpu
 		u64 index			 = 0;			   // slot = index % frames_in_flight
 		bool open			 = false;
 
-		bool list_open		= false;
-		u32 lists_submitted = 0;
+		/// Lists handed out this frame. Claimed on the owner thread, so the order is the order
+		/// the caller asked for them in, and that is the order they reach the queue.
+		u32 lists_claimed = 0;
 
 		/// Highest timeline value proven complete (begin_frame waits, wait_idle). Batch and
 		/// page recycling key off this instead of querying the semaphore.
@@ -181,7 +197,7 @@ namespace ember::gpu
 		vk::Staging staging{};				  // staging ring + upload batches
 
 		/// Zones from the most recently retired frame, refreshed by begin_frame.
-		GpuZoneTiming gpu_zones[MAX_GPU_ZONES]{};
+		GpuZoneTiming gpu_zones[MAX_COMMAND_LISTS * MAX_GPU_ZONES]{};
 		u32 gpu_zone_count = 0;
 
 		/// Bookkeeping

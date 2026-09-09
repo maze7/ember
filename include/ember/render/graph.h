@@ -22,6 +22,10 @@ namespace ember::render
 	inline constexpr u32 MAX_GRAPH_TEXTURES = 64;
 	inline constexpr u32 MAX_GRAPH_BUFFERS	= 64;
 	inline constexpr u32 MAX_PASS_USES		= 15;
+
+	/// Command lists the graph splits its passes across, one per recording job. Passes divide
+	/// evenly between them and each list covers a contiguous run, so declaration order survives.
+	inline constexpr u32 MAX_RECORD_CHUNKS = 8;
 	inline constexpr u32 MAX_POOL_ENTRIES	= 128;
 	inline constexpr u32 GRAPH_ARENA_BYTES	= 16_kb;
 
@@ -272,9 +276,13 @@ namespace ember::render
 		[[nodiscard]] Pass& pass(const char* name) noexcept;
 
 		/**
-		 * Resolves transients from the pool, derives barriers, records every pass
-		 * into one command list inside a zone named after it, submits, returns every
-		 * texture to rest.
+		 * Resolves transients from the pool, derives every pass's barriers in declaration order,
+		 * then records the passes as jobs across several command lists and returns every texture
+		 * to rest.
+		 *
+		 * A pass's record callback runs on whichever worker took its chunk, so it may touch its
+		 * CommandList and any-thread device calls (transient allocation, constants) and nothing
+		 * else. Creating, destroying and uploading stay on the owner thread, outside execute.
 		 */
 		void execute(gpu::Device& device) noexcept;
 

@@ -1,12 +1,40 @@
 #include <ember/core/bits.h>
 #include <ember/core/logger.h>
 #include <ember/gpu/device.h>
+#include <ember/jobs/job_system.h>
+#include <ember/memory/pmr/block_allocator.h>
 #include <ember/render/graph.h>
+
+#include <algorithm>
+#include <cstring>
 
 namespace ember::render
 {
 	namespace
 	{
+		static_assert(MAX_RECORD_CHUNKS <= MAX_COMMAND_LISTS, "a chunk needs a command list");
+
+		/// One pass's barriers, derived before recording and read by the job that records it.
+		struct PassBarriers
+		{
+			gpu::TextureBarrier* textures = nullptr;
+			gpu::BufferBarrier* buffers	  = nullptr;
+			u32 texture_count			  = 0;
+			u32 buffer_count			  = 0;
+		};
+
+		/// Parks a derived run in frame memory, where it outlives this scope but not the frame.
+		template <class T>
+		[[nodiscard]] T* park(std::pmr::memory_resource& frame, const T* source, u32 count) noexcept
+		{
+			if (count == 0)
+				return nullptr;
+
+			T* parked = static_cast<T*>(frame.allocate(count * sizeof(T), alignof(T)));
+			std::memcpy(parked, source, count * sizeof(T));
+			return parked;
+		}
+
 		/// Reads never hazard each other; everything else does, layout change or none.
 		[[nodiscard]] constexpr bool is_write(gpu::TextureState state) noexcept
 		{
@@ -431,13 +459,16 @@ namespace ember::render
 				buffer.physical = acquire(device, buffer.def, buffer.pool_slot);
 		}
 
-		gpu::CommandList cmd = device.begin_command_list();
+		auto& frame = memory::frame_memory();
+
+		// Barriers are derived here and recorded later: a pass's before state is whatever the pass
+		// ahead of it left behind, so deriving them is a chain and only the recording fans out.
+		auto* barriers = static_cast<PassBarriers*>(
+			frame.allocate_fast(std::max(m_pass_count, 1u) * sizeof(PassBarriers), alignof(PassBarriers)));
 
 		for (u32 pass_index = 0; pass_index < m_pass_count; ++pass_index)
 		{
 			Pass& pass = m_passes[pass_index];
-
-			cmd.begin_zone(pass.m_name);
 
 			gpu::TextureBarrier texture_barriers[MAX_PASS_USES];
 			gpu::BufferBarrier buffer_barriers[MAX_PASS_USES];
@@ -478,8 +509,69 @@ namespace ember::render
 				}
 			}
 
-			if (texture_barrier_count + buffer_barrier_count > 0)
-				cmd.barrier({texture_barriers, texture_barrier_count}, {buffer_barriers, buffer_barrier_count});
+			barriers[pass_index] = {
+				.textures	   = park(frame, texture_barriers, texture_barrier_count),
+				.buffers	   = park(frame, buffer_barriers, buffer_barrier_count),
+				.texture_count = texture_barrier_count,
+				.buffer_count  = buffer_barrier_count,
+			};
+		}
+
+		gpu::TextureBarrier texture_finals[MAX_GRAPH_TEXTURES];
+		gpu::BufferBarrier buffer_finals[MAX_GRAPH_BUFFERS];
+		u32 texture_final_count = 0;
+		u32 buffer_final_count	= 0;
+
+		for (u32 i = 0; i < m_texture_count; ++i)
+		{
+			VirtualTexture& texture = m_textures[i];
+			if (texture.state != texture.resting)
+			{
+				texture_finals[texture_final_count++] = {
+					.texture = texture.physical,
+					.before	 = texture.state,
+					.after	 = texture.resting,
+				};
+				texture.state = texture.resting;
+			}
+		}
+
+		for (u32 i = 0; i < m_buffer_count; ++i)
+		{
+			VirtualBuffer& buffer = m_buffers[i];
+			if (buffer.state != buffer.resting)
+			{
+				buffer_finals[buffer_final_count++] = {
+					.buffer = buffer.physical,
+					.before = buffer.state,
+					.after	= buffer.resting,
+				};
+				buffer.state = buffer.resting;
+			}
+		}
+
+		// One list per chunk, claimed here in declaration order because claim order is the order
+		// they reach the queue. A frame with no passes still owes the resting barriers one list.
+		const u32 chunks = m_pass_count == 0
+							   ? 1u
+							   : std::min({m_pass_count, jobs::worker_count(), MAX_RECORD_CHUNKS});
+
+		gpu::CommandList lists[MAX_RECORD_CHUNKS];
+		for (u32 i = 0; i < chunks; ++i)
+			lists[i] = device.begin_command_list();
+
+		auto record_pass = [&](gpu::CommandList& cmd, u32 pass_index) noexcept
+		{
+			Pass& pass					= m_passes[pass_index];
+			const PassBarriers& barrier = barriers[pass_index];
+
+			cmd.begin_zone(pass.m_name);
+
+			if (barrier.texture_count + barrier.buffer_count > 0)
+			{
+				cmd.barrier(
+					{barrier.textures, barrier.texture_count}, {barrier.buffers, barrier.buffer_count});
+			}
 
 			const bool raster = pass.m_color_count > 0 || pass.m_has_depth;
 			if (raster)
@@ -525,45 +617,31 @@ namespace ember::render
 				cmd.end_rendering();
 
 			cmd.end_zone();
-		}
+		};
 
-		gpu::TextureBarrier texture_finals[MAX_GRAPH_TEXTURES];
-		gpu::BufferBarrier buffer_finals[MAX_GRAPH_BUFFERS];
-		u32 texture_final_count = 0;
-		u32 buffer_final_count	= 0;
-
-		for (u32 i = 0; i < m_texture_count; ++i)
+		auto record_chunk = [&](jobs::JobRange range) noexcept
 		{
-			VirtualTexture& texture = m_textures[i];
-			if (texture.state != texture.resting)
+			for (u32 chunk = range.begin; chunk < range.end; ++chunk)
 			{
-				texture_finals[texture_final_count++] = {
-					.texture = texture.physical,
-					.before	 = texture.state,
-					.after	 = texture.resting,
-				};
-				texture.state = texture.resting;
+				gpu::CommandList& cmd = lists[chunk];
+
+				// Even split, contiguous runs: chunk c owns passes [c * n / chunks, (c + 1) * n / chunks).
+				const u32 first = (chunk * m_pass_count) / chunks;
+				const u32 last	= ((chunk + 1) * m_pass_count) / chunks;
+
+				for (u32 pass_index = first; pass_index < last; ++pass_index)
+					record_pass(cmd, pass_index);
+
+				// The last list carries the walk back to resting state, after its own passes.
+				if (chunk + 1 == chunks && texture_final_count + buffer_final_count > 0)
+					cmd.barrier({texture_finals, texture_final_count}, {buffer_finals, buffer_final_count});
+
+				device.submit(cmd);
 			}
-		}
+		};
 
-		for (u32 i = 0; i < m_buffer_count; ++i)
-		{
-			VirtualBuffer& buffer = m_buffers[i];
-			if (buffer.state != buffer.resting)
-			{
-				buffer_finals[buffer_final_count++] = {
-					.buffer = buffer.physical,
-					.before = buffer.state,
-					.after	= buffer.resting,
-				};
-				buffer.state = buffer.resting;
-			}
-		}
+		jobs::parallel_for({.count = chunks, .grain = 1, .name = "record passes"}, record_chunk);
 
-		if (texture_final_count + buffer_final_count > 0)
-			cmd.barrier({texture_finals, texture_final_count}, {buffer_finals, buffer_final_count});
-
-		device.submit(cmd);
 		release(device);
 		++m_frame;
 	}

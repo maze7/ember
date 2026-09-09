@@ -1012,38 +1012,43 @@ namespace ember::gpu
 			for (u32 i = 0; i < ctx.frames_in_flight; ++i)
 			{
 				FrameSlot& slot = frame.slots[i];
-				VkCommandPoolCreateInfo pool_info{
-					.sType			  = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-					.queueFamilyIndex = ctx.graphics.family,
-				};
 
-				VkCommandPool pool = VK_NULL_HANDLE;
-				result			   = vkCreateCommandPool(ctx.device, &pool_info, nullptr, &pool);
-
-				if (result != VK_SUCCESS)
+				for (u32 list = 0; list < MAX_COMMAND_LISTS; ++list)
 				{
-					EMBER_ERROR("vulkan: frame command pool creation failed: {}", vk::result_name(result));
-					return false;
+					VkCommandPoolCreateInfo pool_info{
+						.sType			  = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+						.queueFamilyIndex = ctx.graphics.family,
+					};
+
+					VkCommandPool pool = VK_NULL_HANDLE;
+					result			   = vkCreateCommandPool(ctx.device, &pool_info, nullptr, &pool);
+
+					if (result != VK_SUCCESS)
+					{
+						EMBER_ERROR("vulkan: frame command pool creation failed: {}", vk::result_name(result));
+						return false;
+					}
+
+					// Publish immediately so centralized rollback can destroy it.
+					slot.pools[list] = pool;
+					VkCommandBufferAllocateInfo allocation_info{
+						.sType				= VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+						.commandPool		= pool,
+						.level				= VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+						.commandBufferCount = 1,
+					};
+
+					VkCommandBuffer commands = VK_NULL_HANDLE;
+					result					 = vkAllocateCommandBuffers(ctx.device, &allocation_info, &commands);
+					if (result != VK_SUCCESS)
+					{
+						EMBER_ERROR("vulkan: frame command-buffer allocation failed: {}", vk::result_name(result));
+						return false;
+					}
+
+					slot.recordings[list].commands = commands;
+					slot.recordings[list].index	   = list;
 				}
-
-				// Publish immediately so centralized rollback can destroy it.
-				slot.pool = pool;
-				VkCommandBufferAllocateInfo allocation_info{
-					.sType				= VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-					.commandPool		= pool,
-					.level				= VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-					.commandBufferCount = 1,
-				};
-
-				VkCommandBuffer commands = VK_NULL_HANDLE;
-				result					 = vkAllocateCommandBuffers(ctx.device, &allocation_info, &commands);
-				if (result != VK_SUCCESS)
-				{
-					EMBER_ERROR("vulkan: frame command-buffer allocation failed: {}", vk::result_name(result));
-					return false;
-				}
-
-				slot.recording.commands = commands;
 			}
 
 			// Timestamp ring, sliced per frame slot. Queries start undefined, so the
@@ -1053,7 +1058,7 @@ namespace ember::gpu
 				const VkQueryPoolCreateInfo query_info{
 					.sType		= VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
 					.queryType	= VK_QUERY_TYPE_TIMESTAMP,
-					.queryCount = MAX_FRAMES_IN_FLIGHT * MAX_GPU_ZONES * 2,
+					.queryCount = MAX_FRAMES_IN_FLIGHT * MAX_COMMAND_LISTS * MAX_GPU_ZONES * 2,
 				};
 
 				if (vkCreateQueryPool(ctx.device, &query_info, nullptr, &frame.timestamps) != VK_SUCCESS)
@@ -1174,7 +1179,8 @@ namespace ember::gpu
 				backend.descriptor_heap.destroy(ctx);
 
 				for (FrameSlot& slot : backend.frame.slots)
-					vkDestroyCommandPool(ctx.device, slot.pool, nullptr);
+					for (VkCommandPool pool : slot.pools)
+						vkDestroyCommandPool(ctx.device, pool, nullptr);
 
 				vkDestroySemaphore(ctx.device, backend.frame.timeline, nullptr);
 				vkDestroyQueryPool(ctx.device, backend.frame.timestamps, nullptr);

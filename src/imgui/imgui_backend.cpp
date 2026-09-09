@@ -300,7 +300,7 @@ namespace ember::imgui
 	{
 		EMBER_ASSERT(s_state.device == nullptr);
 
-		auto& shader = def.shader.empty() ? render::embedded::imgui_shader() : def.shader;
+		auto& shader = def.shader.empty() ? imgui::embedded::imgui_shader() : def.shader;
 
 		if (def.color_format == gpu::TextureFormat::Undefined)
 		{
@@ -481,24 +481,32 @@ namespace ember::imgui
 		ImGui::NewFrame();
 	}
 
-	void render(gpu::CommandList& cmd) noexcept
+	void end_frame(gpu::Device& device) noexcept
 	{
 		EMBER_ASSERT(s_state.device != nullptr);
 
 		ImGui::Render();
 
 		const ImDrawData* draw_data = ImGui::GetDrawData();
-		if (draw_data == nullptr)
+		if (draw_data == nullptr || draw_data->Textures == nullptr)
 			return;
 
-		if (draw_data->Textures != nullptr)
+		for (ImTextureData* texture : *draw_data->Textures)
 		{
-			for (ImTextureData* texture : *draw_data->Textures)
-			{
-				if (texture->Status != ImTextureStatus_OK)
-					process_texture(*s_state.device, texture);
-			}
+			if (texture->Status != ImTextureStatus_OK)
+				process_texture(device, texture);
 		}
+	}
+
+	void render(gpu::CommandList& cmd) noexcept
+	{
+		EMBER_ASSERT(s_state.device != nullptr);
+
+		// Draw data stays valid until the next new_frame, so the recording job reads what
+		// end_frame built on the owner thread.
+		const ImDrawData* draw_data = ImGui::GetDrawData();
+		if (draw_data == nullptr)
+			return;
 
 		if (draw_data->TotalVtxCount <= 0 || draw_data->CmdListsCount <= 0)
 			return;
