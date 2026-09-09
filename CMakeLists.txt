@@ -4,7 +4,7 @@ project(Ember VERSION 0.1.0 LANGUAGES C CXX)
 # Library configuration options
 option(EMBER_ENABLE_PLATFORM "Build platform support" ON)
 option(EMBER_ENABLE_GRAPHICS "Build graphics support" ON)
-option(EMBER_ENABLE_ASSETS   "Build asset system" OFF)
+option(EMBER_ENABLE_ASSETS   "Build asset system" ON)
 option(EMBER_ENABLE_AUDIO    "Build audio support" OFF)
 option(EMBER_ENABLE_APP		 "Build the App bootstrap and entry point modules" ON)
 option(EMBER_USE_TRACY     "Enable Tracy profiling" OFF)
