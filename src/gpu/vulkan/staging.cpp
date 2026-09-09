@@ -1,4 +1,5 @@
 #include <ember/core/common.h>
+#include <ember/core/profile.h>
 #include <gpu/vulkan/backend.h>
 #include <gpu/vulkan/destroy_queue.h>
 #include <gpu/vulkan/formats.h>
@@ -120,7 +121,9 @@ namespace ember::gpu::vk
 
 			for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT + 1; ++i)
 			{
-				if (staging.batches[i].value > backend.frame.completed)
+				// The upload clock, not the frame's: a batch is reusable once its own submit
+				// signalled, whether or not a frame has been anywhere near it.
+				if (staging.batches[i].value > staging.completed)
 					continue;
 
 				VkCommandBufferBeginInfo begin_info{
@@ -301,11 +304,37 @@ namespace ember::gpu::vk
 		for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT + 1; ++i)
 			staging.batches[i].cmd = commands[i];
 
+		const VkSemaphoreTypeCreateInfo timeline_type{
+			.sType		   = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+			.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+			.initialValue  = 0,
+		};
+
+		const VkSemaphoreCreateInfo semaphore_info{
+			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+			.pNext = &timeline_type,
+		};
+
+		if (vkCreateSemaphore(backend.context.device, &semaphore_info, nullptr, &staging.timeline) != VK_SUCCESS)
+		{
+			EMBER_ERROR("gpu: upload timeline creation failed");
+			return false;
+		}
+
+		set_name(
+			backend.context,
+			VK_OBJECT_TYPE_SEMAPHORE,
+			reinterpret_cast<u64>(staging.timeline),
+			"ember.upload_timeline");
+
 		return true;
 	}
 
 	void staging_destroy(const Context& ctx, Staging& staging) noexcept
 	{
+		if (staging.timeline != VK_NULL_HANDLE)
+			vkDestroySemaphore(ctx.device, staging.timeline, nullptr);
+
 		if (staging.pool != VK_NULL_HANDLE)
 			vkDestroyCommandPool(ctx.device, staging.pool, nullptr); // frees the batches with it
 
@@ -378,6 +407,59 @@ namespace ember::gpu::vk
 		VkCommandBuffer cmd = staging.open_cmd;
 		staging.open_cmd	= VK_NULL_HANDLE;
 		return cmd;
+	}
+
+	u64 submit_uploads(Backend& backend) noexcept
+	{
+		Staging& staging = backend.staging;
+
+		if (staging.open_cmd == VK_NULL_HANDLE)
+			return staging.value;
+
+		EMBER_PROFILE_SCOPE_C("gpu: submit uploads", PROFILE_COLOR_IO);
+
+		record_upload_barrier(staging.open_cmd, false);
+		EMBER_VK_CHECK(vkEndCommandBuffer(staging.open_cmd));
+
+		const u64 value							  = ++staging.value;
+		staging.batches[staging.open_index].value = value;
+
+		const VkCommandBufferSubmitInfo cmd_info{
+			.sType		   = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+			.commandBuffer = staging.open_cmd,
+		};
+
+		const VkSemaphoreSubmitInfo signal{
+			.sType	   = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+			.semaphore = staging.timeline,
+			.value	   = value,
+			.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+		};
+
+		const VkSubmitInfo2 submit_info{
+			.sType					  = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+			.commandBufferInfoCount	  = 1,
+			.pCommandBufferInfos	  = &cmd_info,
+			.signalSemaphoreInfoCount = 1,
+			.pSignalSemaphoreInfos	  = &signal,
+		};
+
+		note_result(backend, vkQueueSubmit2(backend.context.graphics.handle, 1, &submit_info, VK_NULL_HANDLE));
+
+		staging.open_cmd = VK_NULL_HANDLE;
+		return value;
+	}
+
+	void poll_uploads(Backend& backend) noexcept
+	{
+		Staging& staging = backend.staging;
+
+		if (staging.timeline == VK_NULL_HANDLE || staging.completed >= staging.value)
+			return;
+
+		u64 counter = 0;
+		if (vkGetSemaphoreCounterValue(backend.context.device, staging.timeline, &counter) == VK_SUCCESS)
+			staging.completed = counter;
 	}
 
 	void staging_upload_texture(Backend& backend, const TextureUpload& upload, Span<const u8> data) noexcept

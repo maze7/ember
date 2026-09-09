@@ -108,16 +108,25 @@ namespace ember::gpu
 		 * present semaphore (WSI). Submission order plus the batch's exit barrier is what makes
 		 * this frame's reads see this frame's uploads.
 		 */
-		void
-		submit_frame(Backend& backend, VkCommandBuffer upload, Span<const VkCommandBuffer> lists, u64 value) noexcept
+		void submit_frame(Backend& backend, u64 upload_value, Span<const VkCommandBuffer> lists, u64 value) noexcept
 		{
 			FrameState& frame = backend.frame;
 			const u32 slot	  = static_cast<u32>(frame.index % backend.context.frames_in_flight);
 
-			VkSemaphoreSubmitInfo waits[MAX_SWAPCHAINS];
+			VkSemaphoreSubmitInfo waits[MAX_SWAPCHAINS + 1];
 			VkSemaphoreSubmitInfo signals[MAX_SWAPCHAINS + 1];
 			u32 wait_count	 = 0;
 			u32 signal_count = 0;
+
+			// Uploads run on their own submit now, so the frame names what it needs instead of
+			// carrying it: everything staged up to this value is visible before a draw reads it.
+			if (upload_value != 0)
+				waits[wait_count++] = {
+					.sType	   = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+					.semaphore = backend.staging.timeline,
+					.value	   = upload_value,
+					.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+				};
 
 			for (u32 i = 0; i < frame.pending_present_count; ++i)
 			{
@@ -145,12 +154,8 @@ namespace ember::gpu
 				.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 			};
 
-			VkCommandBufferSubmitInfo cmd_infos[MAX_COMMAND_LISTS + 1];
+			VkCommandBufferSubmitInfo cmd_infos[MAX_COMMAND_LISTS];
 			u32 cmd_count = 0;
-
-			if (upload != VK_NULL_HANDLE)
-				cmd_infos[cmd_count++] = {
-					.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = upload};
 
 			// Claim order is submission order, so the queue sees the passes in the order the graph
 			// declared them however the recording jobs were scheduled.
@@ -210,41 +215,7 @@ namespace ember::gpu
 					backend.resources.swapchains.get(frame.pending_presents[i].swapchain)->needs_recreate = true;
 		}
 
-		/**
-		 * Submits any open upload batch on its own, signalling the timeline. Out-of-frame
-		 * updates (loading screens, boot-time initial_data) reach the GPU through here; inside
-		 * a frame the batch rides submit_frame instead.
-		 */
-		void flush_uploads(Backend& backend) noexcept
-		{
-			if (backend.staging.open_cmd == VK_NULL_HANDLE)
-				return;
-
-			const u64 value			  = ++backend.frame.timeline_value;
-			const VkCommandBuffer cmd = vk::close_upload(backend, value);
-
-			const VkCommandBufferSubmitInfo cmd_info{
-				.sType		   = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-				.commandBuffer = cmd,
-			};
-
-			const VkSemaphoreSubmitInfo signal{
-				.sType	   = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-				.semaphore = backend.frame.timeline,
-				.value	   = value,
-				.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-			};
-
-			const VkSubmitInfo2 submit_info{
-				.sType					  = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-				.commandBufferInfoCount	  = 1,
-				.pCommandBufferInfos	  = &cmd_info,
-				.signalSemaphoreInfoCount = 1,
-				.pSignalSemaphoreInfos	  = &signal,
-			};
-
-			vk::note_result(backend, vkQueueSubmit2(backend.context.graphics.handle, 1, &submit_info, VK_NULL_HANDLE));
-		}
+		u64 flush_uploads(Backend& backend) noexcept { return vk::submit_uploads(backend); }
 	}
 
 	Device::Device(const DeviceDef& def) noexcept : Device(nullptr, def) {}
@@ -374,7 +345,8 @@ namespace ember::gpu
 
 		// Idle proves every handed-out timeline value signalled, so batch and page
 		// recycling may reclaim everything the frame pacing hadn't caught up to yet.
-		m_backend->frame.completed = m_backend->frame.timeline_value;
+		m_backend->frame.completed	 = m_backend->frame.timeline_value;
+		m_backend->staging.completed = m_backend->staging.value;
 		m_backend->destroy_queue.drain(
 			m_backend->context, m_backend->descriptor_heap, m_backend->resources, UINT64_MAX);
 	}
@@ -450,6 +422,10 @@ namespace ember::gpu
 
 		for (VkCommandPool pool : frame.slots[slot].pools)
 			EMBER_VK_CHECK(vkResetCommandPool(m_backend->context.device, pool, 0));
+
+		// A counter read, not a wait: uploads that landed since last frame become reclaimable
+		// here, and nothing stalls when they have not.
+		vk::poll_uploads(*m_backend);
 
 		// The graveyard rides the frame pacing and needs no extra queries.
 		m_backend->destroy_queue.drain(
@@ -548,9 +524,9 @@ namespace ember::gpu
 		// Seal the frame's CPU-written memory before the submit that publishes it: transient
 		// flushes and poisons, the upload batch closes stamped with this frame's value.
 		vk::transient_end_frame(*m_backend, value);
-		const VkCommandBuffer upload = vk::close_upload(*m_backend, value);
+		const u64 upload_value = vk::submit_uploads(*m_backend);
 
-		submit_frame(*m_backend, upload, {lists, list_count}, value);
+		submit_frame(*m_backend, upload_value, {lists, list_count}, value);
 		present_pending(*m_backend);
 
 		frame.slots[slot].submitted = value;

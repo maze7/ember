@@ -63,6 +63,16 @@ namespace ember::gpu::vk
 		UploadBatch batches[MAX_FRAMES_IN_FLIGHT + 1]{};
 		VkCommandBuffer open_cmd = VK_NULL_HANDLE;
 		u32 open_index			 = 0;
+
+		/**
+		 * Uploads keep their own clock. A batch submits on its own and signals the next value;
+		 * the frame waits for that value instead of carrying the copies itself. Two things fall
+		 * out: a copy reaches the GPU without a frame to ride, and asking whether one landed is
+		 * a counter read rather than a wait.
+		 */
+		VkSemaphore timeline = VK_NULL_HANDLE;
+		u64 value			 = 0; // last value handed to an upload submit
+		u64 completed		 = 0; // highest value proven signalled; polled, never waited on
 	};
 
 	[[nodiscard]] bool staging_boot(Backend& backend, u64 per_slot_bytes) noexcept;
@@ -89,7 +99,14 @@ namespace ember::gpu::vk
 	void staging_update_texture(
 		Backend& backend, const TextureUpload& upload, u32 mip, u32 layer, Span<const u8> data) noexcept;
 
-	/// Ends the open batch (exit barrier + vkEndCommandBuffer), stamps it with the value
-	/// the consuming submit will signal, and returns its command buffer. Null when nothing to do.
-	[[nodiscard]] VkCommandBuffer close_upload(Backend& backend, u64 value) noexcept;
+	/**
+	 * Closes the open batch and submits it on its own, signalling the next upload value, which
+	 * it returns. Returns the last value handed out when there was nothing to send, so a caller
+	 * can always wait on what comes back.
+	 */
+	u64 submit_uploads(Backend& backend) noexcept;
+
+	/// Reads how far the upload timeline has got. Never blocks; a frame that finds nothing new
+	/// simply carries the previous answer.
+	void poll_uploads(Backend& backend) noexcept;
 }
