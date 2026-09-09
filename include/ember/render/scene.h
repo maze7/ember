@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ember/containers/dirty_set.h>
 #include <ember/containers/pool.h>
 #include <ember/containers/span.h>
 #include <ember/core/common.h>
@@ -119,8 +120,13 @@ namespace ember::render
 	 * Slot reuse inside one frame is safe because uploads travel in the frame's command stream,
 	 * ordered before any GPU read of the tables.
 	 *
-	 * The scene is not thread-safe. Setters assert on stale handles in debug and ignore
-	 * them in release; a set on a destroyed proxy is a game lifetime bug.
+	 * Setters assert on stale handles in debug and ignore them in release; a set on a destroyed
+	 * proxy is a game lifetime bug.
+	 *
+	 * Threading: set_transform and set_material run on any frame thread at once, provided no two
+	 * calls name the same object; each one writes its own slot and marks a dirty bit. Creating and
+	 * destroying move bookkeeping every reader depends on, so they stay in the owner phase, and
+	 * dirty_slots()/clear_dirty() belong to the sync phase after the writers are joined.
 	 */
 	class RenderScene
 	{
@@ -141,7 +147,10 @@ namespace ember::render
 		/// Safe on null and stale handles.
 		void destroy_object(RenderObjectHandle handle) noexcept;
 
+		/// Parallel safe on distinct handles.
 		void set_transform(RenderObjectHandle handle, const glm::mat4& world) noexcept;
+
+		/// Parallel safe on distinct handles.
 		void set_material(RenderObjectHandle handle, MaterialHandle material) noexcept;
 
 		[[nodiscard]] bool is_valid(RenderObjectHandle handle) const noexcept;
@@ -166,20 +175,9 @@ namespace ember::render
 		[[nodiscard]] const TransformData& transform(u32 slot) const noexcept;
 
 	private:
-		void mark_dirty(u32 slot) noexcept;
-
 		Pool<RenderObject, ObjectData, ObjectCold, u32> m_objects;
-
-		// Bits deduplicate, the list preserves touch order for coalescing. Both
-		// live in one block so init makes a single allocation.
-		u64* m_dirty_bits = nullptr;
-		u32* m_dirty_list = nullptr;
-		u32 m_dirty_count = 0;
+		DirtySet m_dirty;
 
 		u32 m_slot_count = 0;
-
-		std::pmr::memory_resource* m_dirty_resource = nullptr;
-		void* m_dirty_block							= nullptr;
-		size_t m_dirty_block_size					= 0;
 	};
 }

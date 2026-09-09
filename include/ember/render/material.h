@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ember/containers/dirty_set.h>
 #include <ember/containers/pool.h>
 #include <ember/containers/span.h>
 #include <ember/core/common.h>
@@ -64,6 +65,11 @@ namespace ember::render
 	 * until reuse. It is a diagnostic state and never a lifetime system: a
 	 * material must outlive every object that references it, and after the
 	 * slot is reused a stale reference silently reads the new record.
+	 *
+	 * Threading: update() runs on any frame thread at once, provided no two calls name the same
+	 * material; each one writes its own shadow record and marks a dirty bit. create() and
+	 * destroy() move slot bookkeeping every reader depends on, so they stay in the owner phase,
+	 * and sync() belongs to the frame's render phase after the writers are joined.
 	 */
 	class MaterialPool
 	{
@@ -131,15 +137,13 @@ namespace ember::render
 
 		MaterialHandle m_error = {};
 
-		// One block: [dirty bits][dirty list][shadow records]. The shadow is
-		// the CPU truth sync uploads from; slot 0 doubles as the scrub source.
+		// The shadow is the CPU truth sync uploads from; slot 0 doubles as the
+		// scrub source.
 		std::pmr::memory_resource* m_resource = nullptr;
 		void* m_block						  = nullptr;
 		size_t m_block_size					  = 0;
+		u8* m_shadow						  = nullptr;
 
-		u64* m_dirty_bits = nullptr;
-		u32* m_dirty_list = nullptr;
-		u32 m_dirty_count = 0;
-		u8* m_shadow	  = nullptr;
+		DirtySet m_dirty;
 	};
 }
