@@ -216,12 +216,18 @@ namespace ember::gpu
 		}
 
 		/**
-		 * Streamed textures whose pixels have landed take their real view in the heap. Everything
+		 * Streamed textures whose pixels have landed take their real view in the heap, and the
+		 * graphics queue takes back ownership of the images the DMA family released. Anything
 		 * still in flight stays on the fallback and is retried next frame; nothing here waits.
 		 */
-		void promote_residents(Backend& backend) noexcept
+		void promote_residents(Device& device, Backend& backend) noexcept
 		{
-			u32 remaining = 0;
+			FrameState& frame = backend.frame;
+			const u32 slot	  = static_cast<u32>(frame.index % backend.context.frames_in_flight);
+
+			CommandList acquires;
+			VkCommandBuffer acquire_cmd = VK_NULL_HANDLE;
+			u32 remaining				= 0;
 
 			for (u32 i = 0; i < backend.pending_residency_count; ++i)
 			{
@@ -233,19 +239,54 @@ namespace ember::gpu
 					continue;
 				}
 
-				// The handle can have died while its pixels were in flight; the slot is then
-				// somebody else's business and the write would corrupt it.
-				vk::TextureCold* cold = backend.resources.textures.get_cold(pending.texture);
-				if (cold == nullptr)
-					continue;
+				if (pending.needs_acquire && acquire_cmd == VK_NULL_HANDLE)
+				{
+					// Claimed before anything else this frame, so ownership is back before a pass
+					// can read the image. device.cpp owns FrameState, so the buffer behind the
+					// list it just handed out is right here.
+					acquires = device.begin_command_list();
 
-				backend.descriptor_heap.write_sampled(
-					backend.context, pending.texture.index, pending.view, pending.layout, pending.type);
+					if (acquires.is_null())
+					{
+						// No list to record into: leave it pending rather than sample an image
+						// this queue does not own yet.
+						backend.pending_residency[remaining++] = pending;
+						continue;
+					}
 
-				cold->ready_value = 0;
+					acquire_cmd = frame.slots[slot].recordings[frame.lists_claimed - 1].commands;
+				}
+
+				if (pending.needs_acquire)
+				{
+					vk::staging_acquire_image(
+						backend,
+						acquire_cmd,
+						pending.image,
+						pending.aspect,
+						pending.mip_count,
+						pending.layer_count,
+						pending.layout);
+
+					frame.acquire_value = std::max(frame.acquire_value, pending.ready_value);
+				}
+
+				// The handle can have died while its pixels were in flight; the slot then belongs
+				// to somebody else and the write would corrupt it. The acquire above still had to
+				// happen: destruction runs on the graphics queue.
+				if (vk::TextureCold* cold = backend.resources.textures.get_cold(pending.texture))
+				{
+					backend.descriptor_heap.write_sampled(
+						backend.context, pending.texture.index, pending.view, pending.layout, pending.type);
+
+					cold->ready_value = 0;
+				}
 			}
 
 			backend.pending_residency_count = remaining;
+
+			if (!acquires.is_null())
+				device.submit(acquires);
 		}
 
 		u64 flush_uploads(Backend& backend) noexcept { return vk::submit_uploads(backend); }
@@ -471,7 +512,7 @@ namespace ember::gpu
 		// A counter read, not a wait: uploads that landed since last frame become reclaimable
 		// here, and nothing stalls when they have not.
 		vk::poll_uploads(*m_backend);
-		promote_residents(*m_backend);
+		frame.acquire_value = 0;
 
 		// The graveyard rides the frame pacing and needs no extra queries.
 		m_backend->destroy_queue.drain(
@@ -536,6 +577,10 @@ namespace ember::gpu
 			recording.open		  = false;
 		}
 
+		// After the frame is open, because taking ownership back needs a command list to record
+		// into, and it must be the first one claimed.
+		promote_residents(*this, *m_backend);
+
 		return {.frame_index = static_cast<u32>(frame.index), .slot = slot};
 	}
 
@@ -568,11 +613,16 @@ namespace ember::gpu
 		}
 
 		// Seal the frame's CPU-written memory before the submit that publishes it: transient
-		// flushes and poisons, the upload batch closes stamped with this frame's value.
+		// flushes and poisons, then the staged copies go out on their own submits.
 		vk::transient_end_frame(*m_backend, value);
-		const u64 upload_value = vk::submit_uploads(*m_backend);
 
-		submit_frame(*m_backend, upload_value, {lists, list_count}, value);
+		// Streamed uploads deliberately do not raise the critical watermark: the frame renders
+		// with the fallback rather than waiting for pixels it can live without.
+		(void)vk::submit_uploads(*m_backend);
+
+		const u64 upload_wait = std::max(m_backend->staging.critical_value, frame.acquire_value);
+
+		submit_frame(*m_backend, upload_wait, {lists, list_count}, value);
 		present_pending(*m_backend);
 
 		frame.slots[slot].submitted = value;

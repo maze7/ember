@@ -237,11 +237,16 @@ namespace ember::gpu
 			cold.ready_value = vk::pending_upload_value(m_backend->staging);
 
 			m_backend->pending_residency[m_backend->pending_residency_count++] = {
-				.texture	 = handle,
-				.view		 = view,
-				.layout		 = steady,
-				.type		 = def.type,
-				.ready_value = cold.ready_value,
+				.texture	   = handle,
+				.view		   = view,
+				.layout		   = steady,
+				.type		   = def.type,
+				.ready_value   = cold.ready_value,
+				.image		   = image,
+				.aspect		   = info.aspect,
+				.mip_count	   = def.mip_count,
+				.layer_count   = def.layers,
+				.needs_acquire = m_backend->staging.cross_family,
 			};
 		}
 

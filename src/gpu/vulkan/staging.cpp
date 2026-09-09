@@ -30,7 +30,7 @@ namespace ember::gpu::vk
 		 * proven any slice free, and load-time volume shouldn't be bounded by ring size
 		 * anyway. Load-time cost is dominated by IO and decode, not by VMA allocations.
 		 */
-		[[nodiscard]] StagingAlloc staging_alloc(Backend& backend, u64 size, u64 alignment) noexcept
+		[[nodiscard]] StagingAlloc staging_alloc(Backend& backend, u32 ring_index, u64 size, u64 alignment) noexcept
 		{
 			StagingRing& ring = backend.staging.ring;
 
@@ -69,9 +69,12 @@ namespace ember::gpu::vk
 				return {};
 			}
 
-			// The timeline_value + 1 is the submit that will consume this copy, so we can kill the
-			// buffer the moment that timeline_value has provably completed.
-			backend.destroy_queue.destroy(buffer, allocation);
+			// The batch that is about to copy out of this is the only reader, and its own value is
+			// what proves the copy done. The destroy queue runs on the frame clock and would free
+			// this too early.
+			UploadRing& upload = backend.staging.rings[ring_index];
+			EMBER_ASSERT(upload.open_cmd != VK_NULL_HANDLE && "a one-off belongs to an open batch");
+			upload.batches[upload.open_index].one_offs.push_back({buffer, allocation});
 
 			return {
 				.buffer		= buffer,
@@ -112,37 +115,42 @@ namespace ember::gpu::vk
 			vkCmdPipelineBarrier2(cmd, &dependency);
 		}
 
+		void free_one_offs(Backend& backend, UploadBatch& batch) noexcept
+		{
+			for (const OneOffStaging& one_off : batch.one_offs)
+				vmaDestroyBuffer(backend.context.allocator, one_off.buffer, one_off.allocation);
+
+			batch.one_offs.clear();
+		}
+
 		[[nodiscard]] VkCommandBuffer upload_cmd(Backend& backend, bool streamed) noexcept
 		{
-			Staging& staging = backend.staging;
+			Staging& staging   = backend.staging;
+			UploadRing& upload = staging.rings[streamed ? UPLOAD_RING_STREAMED : UPLOAD_RING_CRITICAL];
 
-			// One critical upload makes the whole batch critical: they share a submit, so the
-			// frame that needs one waits for all of them.
-			if (staging.open_cmd != VK_NULL_HANDLE)
-			{
-				staging.batches[staging.open_index].critical |= !streamed;
-				return staging.open_cmd;
-			}
+			if (upload.open_cmd != VK_NULL_HANDLE)
+				return upload.open_cmd;
 
 			for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT + 1; ++i)
 			{
 				// The upload clock, not the frame's: a batch is reusable once its own submit
 				// signalled, whether or not a frame has been anywhere near it.
-				if (staging.batches[i].value > staging.completed)
+				if (upload.batches[i].value > staging.completed)
 					continue;
+
+				free_one_offs(backend, upload.batches[i]);
 
 				VkCommandBufferBeginInfo begin_info{
 					.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 					.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, // implicit reset (pool flag)
 				};
 
-				EMBER_VK_CHECK(vkBeginCommandBuffer(staging.batches[i].cmd, &begin_info));
-				record_upload_barrier(staging.batches[i].cmd, true);
+				EMBER_VK_CHECK(vkBeginCommandBuffer(upload.batches[i].cmd, &begin_info));
+				record_upload_barrier(upload.batches[i].cmd, true);
 
-				staging.batches[i].critical = !streamed;
-				staging.open_cmd			= staging.batches[i].cmd;
-				staging.open_index			= i;
-				return staging.open_cmd;
+				upload.open_cmd	  = upload.batches[i].cmd;
+				upload.open_index = i;
+				return upload.open_cmd;
 			}
 
 			// fif+1 batches with at most fif in flight: unreachable unless the frame model broke.
@@ -160,21 +168,32 @@ namespace ember::gpu::vk
 			u32 layers,
 			VkImageLayout from,
 			VkImageLayout to,
-			bool entry) noexcept
+			bool entry,
+			u32 src_family = VK_QUEUE_FAMILY_IGNORED,
+			u32 dst_family = VK_QUEUE_FAMILY_IGNORED) noexcept
 		{
+			// A release names both families and leaves the destination scope empty: the acquire
+			// on the other queue supplies it, and the two halves must otherwise match exactly.
+			const bool release = src_family != dst_family;
+
 			// The exit side is broad because upload boundaries run per texture, not
 			// per frame; precision here would buy nothing.
 			const VkImageMemoryBarrier2 barrier{
-				.sType		   = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-				.srcStageMask  = entry ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_COPY_BIT,
-				.srcAccessMask = entry ? VK_ACCESS_2_NONE : VK_ACCESS_2_TRANSFER_WRITE_BIT,
-				.dstStageMask  = entry ? VK_PIPELINE_STAGE_2_COPY_BIT : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-				.dstAccessMask =
-					entry ? VK_ACCESS_2_TRANSFER_WRITE_BIT : VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-				.oldLayout		  = from,
-				.newLayout		  = to,
-				.image			  = image,
-				.subresourceRange = {aspect, base_mip, mips, base_layer, layers},
+				.sType				 = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+				.srcStageMask		 = entry ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_COPY_BIT,
+				.srcAccessMask		 = entry ? VK_ACCESS_2_NONE : VK_ACCESS_2_TRANSFER_WRITE_BIT,
+				.dstStageMask		 = release ? VK_PIPELINE_STAGE_2_NONE
+									   : entry ? VK_PIPELINE_STAGE_2_COPY_BIT
+											   : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+				.dstAccessMask		 = release ? VK_ACCESS_2_NONE
+									   : entry ? VK_ACCESS_2_TRANSFER_WRITE_BIT
+											   : VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+				.oldLayout			 = from,
+				.newLayout			 = to,
+				.srcQueueFamilyIndex = src_family,
+				.dstQueueFamilyIndex = dst_family,
+				.image				 = image,
+				.subresourceRange	 = {aspect, base_mip, mips, base_layer, layers},
 			};
 
 			const VkDependencyInfo dependency{
@@ -196,9 +215,10 @@ namespace ember::gpu::vk
 			const FormatInfo& info,
 			u32 mip,
 			u32 layer,
-			Span<const u8> bytes) noexcept
+			Span<const u8> bytes,
+			u32 ring) noexcept
 		{
-			const StagingAlloc src = staging_alloc(backend, bytes.size(), region_alignment(info));
+			const StagingAlloc src = staging_alloc(backend, ring, bytes.size(), region_alignment(info));
 
 			if (src.cpu == nullptr)
 			{
@@ -237,6 +257,53 @@ namespace ember::gpu::vk
 
 			vkCmdCopyBufferToImage2(cmd, &copy);
 			return true;
+		}
+
+		void submit_ring(Backend& backend, u32 ring) noexcept
+		{
+			Staging& staging   = backend.staging;
+			UploadRing& upload = staging.rings[ring];
+
+			if (upload.open_cmd == VK_NULL_HANDLE)
+				return;
+
+			record_upload_barrier(upload.open_cmd, false);
+			EMBER_VK_CHECK(vkEndCommandBuffer(upload.open_cmd));
+
+			const u64 value							= ++staging.value;
+			upload.batches[upload.open_index].value = value;
+
+			// Only critical work moves the watermark a frame waits on.
+			if (ring == UPLOAD_RING_CRITICAL)
+				staging.critical_value = value;
+
+			const VkCommandBufferSubmitInfo cmd_info{
+				.sType		   = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
+				.commandBuffer = upload.open_cmd,
+			};
+
+			const VkSemaphoreSubmitInfo signal{
+				.sType	   = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+				.semaphore = staging.timeline,
+				.value	   = value,
+				.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+			};
+
+			const VkSubmitInfo2 submit_info{
+				.sType					  = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+				.commandBufferInfoCount	  = 1,
+				.pCommandBufferInfos	  = &cmd_info,
+				.signalSemaphoreInfoCount = 1,
+				.pSignalSemaphoreInfos	  = &signal,
+			};
+
+			// Each ring submits to the family its pool was created for; nothing else is legal.
+			const VkQueue queue =
+				ring == UPLOAD_RING_STREAMED ? backend.context.transfer.handle : backend.context.graphics.handle;
+
+			note_result(backend, vkQueueSubmit2(queue, 1, &submit_info, VK_NULL_HANDLE));
+
+			upload.open_cmd = VK_NULL_HANDLE;
 		}
 	}
 
@@ -279,36 +346,46 @@ namespace ember::gpu::vk
 		set_name(
 			backend.context, VK_OBJECT_TYPE_BUFFER, reinterpret_cast<u64>(staging.ring.buffer), "ember.staging_ring");
 
-		// RESET_COMMAND_BUFFER breaks the whole-pool-reset pattern deliberately: batches
-		// cross frame-slot boundaries (out-of-frame recording), so slot pools can't own them.
-		const VkCommandPoolCreateInfo pool_info{
-			.sType			  = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-			.flags			  = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-			.queueFamilyIndex = backend.context.graphics.family,
-		};
+		// A pool serves one queue family, so each ring gets its own: critical work stays with
+		// graphics, streamed work goes to the DMA family. Without a dedicated transfer family the
+		// two are the same index and the second pool is simply a duplicate.
+		staging.cross_family = backend.context.transfer.family != backend.context.graphics.family;
 
-		if (vkCreateCommandPool(backend.context.device, &pool_info, nullptr, &staging.pool) != VK_SUCCESS)
+		const u32 families[UPLOAD_RING_COUNT] = {backend.context.graphics.family, backend.context.transfer.family};
+
+		for (u32 ring = 0; ring < UPLOAD_RING_COUNT; ++ring)
 		{
-			EMBER_ERROR("gpu: upload command pool creation failed");
-			return false;
+			UploadRing& upload = staging.rings[ring];
+
+			const VkCommandPoolCreateInfo pool_info{
+				.sType			  = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+				.flags			  = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+				.queueFamilyIndex = families[ring],
+			};
+
+			if (vkCreateCommandPool(backend.context.device, &pool_info, nullptr, &upload.pool) != VK_SUCCESS)
+			{
+				EMBER_ERROR("gpu: upload command pool creation failed");
+				return false;
+			}
+
+			VkCommandBuffer commands[MAX_FRAMES_IN_FLIGHT + 1];
+			const VkCommandBufferAllocateInfo allocate_info{
+				.sType				= VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+				.commandPool		= upload.pool,
+				.level				= VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+				.commandBufferCount = MAX_FRAMES_IN_FLIGHT + 1,
+			};
+
+			if (vkAllocateCommandBuffers(backend.context.device, &allocate_info, commands) != VK_SUCCESS)
+			{
+				EMBER_ERROR("gpu: upload command-buffer allocation failed");
+				return false;
+			}
+
+			for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT + 1; ++i)
+				upload.batches[i].cmd = commands[i];
 		}
-
-		VkCommandBuffer commands[MAX_FRAMES_IN_FLIGHT + 1];
-		const VkCommandBufferAllocateInfo allocate_info{
-			.sType				= VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-			.commandPool		= staging.pool,
-			.level				= VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-			.commandBufferCount = MAX_FRAMES_IN_FLIGHT + 1,
-		};
-
-		if (vkAllocateCommandBuffers(backend.context.device, &allocate_info, commands) != VK_SUCCESS)
-		{
-			EMBER_ERROR("gpu: upload command-buffer allocation failed");
-			return false;
-		}
-
-		for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT + 1; ++i)
-			staging.batches[i].cmd = commands[i];
 
 		const VkSemaphoreTypeCreateInfo timeline_type{
 			.sType		   = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
@@ -341,13 +418,41 @@ namespace ember::gpu::vk
 		if (staging.timeline != VK_NULL_HANDLE)
 			vkDestroySemaphore(ctx.device, staging.timeline, nullptr);
 
-		if (staging.pool != VK_NULL_HANDLE)
-			vkDestroyCommandPool(ctx.device, staging.pool, nullptr); // frees the batches with it
+		for (UploadRing& upload : staging.rings)
+		{
+			// Idle by contract, so anything still parked here has been read.
+			for (UploadBatch& batch : upload.batches)
+			{
+				for (const OneOffStaging& one_off : batch.one_offs)
+					vmaDestroyBuffer(ctx.allocator, one_off.buffer, one_off.allocation);
+
+				batch.one_offs.clear();
+			}
+
+			if (upload.pool != VK_NULL_HANDLE)
+				vkDestroyCommandPool(ctx.device, upload.pool, nullptr); // frees the batches with it
+		}
 
 		if (staging.ring.buffer != VK_NULL_HANDLE)
 			vmaDestroyBuffer(ctx.allocator, staging.ring.buffer, staging.ring.allocation);
 
-		staging = {};
+		// Field by field: the batches own PMR vectors, which a whole-struct reset cannot rebind.
+		staging.ring	 = {};
+		staging.timeline = VK_NULL_HANDLE;
+		staging.value = staging.completed = staging.critical_value = 0;
+
+		for (UploadRing& upload : staging.rings)
+		{
+			upload.pool		  = VK_NULL_HANDLE;
+			upload.open_cmd	  = VK_NULL_HANDLE;
+			upload.open_index = 0;
+
+			for (UploadBatch& batch : upload.batches)
+			{
+				batch.cmd	= VK_NULL_HANDLE;
+				batch.value = 0;
+			}
+		}
 	}
 
 	void staging_begin_frame(Staging& staging, u32 slot) noexcept
@@ -358,7 +463,13 @@ namespace ember::gpu::vk
 
 	void staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, Span<const u8> data, bool streamed) noexcept
 	{
-		const StagingAlloc src = staging_alloc(backend, data.size(), STAGING_ALIGN);
+		const u32 ring = streamed ? UPLOAD_RING_STREAMED : UPLOAD_RING_CRITICAL;
+
+		VkCommandBuffer cmd = upload_cmd(backend, streamed);
+		if (cmd == VK_NULL_HANDLE)
+			return;
+
+		const StagingAlloc src = staging_alloc(backend, ring, data.size(), STAGING_ALIGN);
 
 		if (src.cpu == nullptr)
 		{
@@ -375,10 +486,6 @@ namespace ember::gpu::vk
 		else if (!backend.staging.ring.coherent)
 			(void)vmaFlushAllocation(
 				backend.context.allocator, backend.staging.ring.allocation, src.offset, data.size());
-
-		VkCommandBuffer cmd = upload_cmd(backend, streamed);
-		if (cmd == VK_NULL_HANDLE)
-			return;
 
 		VkBufferCopy2 region{
 			.sType	   = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
@@ -398,65 +505,14 @@ namespace ember::gpu::vk
 		vkCmdCopyBuffer2(cmd, &copy_info);
 	}
 
-	VkCommandBuffer close_upload(Backend& backend, u64 value) noexcept
-	{
-		Staging& staging = backend.staging;
-
-		if (staging.open_cmd == VK_NULL_HANDLE)
-			return VK_NULL_HANDLE;
-
-		record_upload_barrier(staging.open_cmd, false);
-		EMBER_VK_CHECK(vkEndCommandBuffer(staging.open_cmd));
-
-		staging.batches[staging.open_index].value = value;
-
-		VkCommandBuffer cmd = staging.open_cmd;
-		staging.open_cmd	= VK_NULL_HANDLE;
-		return cmd;
-	}
-
 	u64 submit_uploads(Backend& backend) noexcept
 	{
-		Staging& staging = backend.staging;
-
-		if (staging.open_cmd == VK_NULL_HANDLE)
-			return staging.value;
-
 		EMBER_PROFILE_SCOPE_C("gpu: submit uploads", PROFILE_COLOR_IO);
 
-		record_upload_barrier(staging.open_cmd, false);
-		EMBER_VK_CHECK(vkEndCommandBuffer(staging.open_cmd));
+		submit_ring(backend, UPLOAD_RING_CRITICAL);
+		submit_ring(backend, UPLOAD_RING_STREAMED);
 
-		const u64 value							  = ++staging.value;
-		staging.batches[staging.open_index].value = value;
-
-		if (staging.batches[staging.open_index].critical)
-			staging.critical_value = value;
-
-		const VkCommandBufferSubmitInfo cmd_info{
-			.sType		   = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-			.commandBuffer = staging.open_cmd,
-		};
-
-		const VkSemaphoreSubmitInfo signal{
-			.sType	   = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-			.semaphore = staging.timeline,
-			.value	   = value,
-			.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-		};
-
-		const VkSubmitInfo2 submit_info{
-			.sType					  = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-			.commandBufferInfoCount	  = 1,
-			.pCommandBufferInfos	  = &cmd_info,
-			.signalSemaphoreInfoCount = 1,
-			.pSignalSemaphoreInfos	  = &signal,
-		};
-
-		note_result(backend, vkQueueSubmit2(backend.context.graphics.handle, 1, &submit_info, VK_NULL_HANDLE));
-
-		staging.open_cmd = VK_NULL_HANDLE;
-		return value;
+		return backend.staging.value;
 	}
 
 	void poll_uploads(Backend& backend) noexcept
@@ -474,6 +530,7 @@ namespace ember::gpu::vk
 	void
 	staging_upload_texture(Backend& backend, const TextureUpload& upload, Span<const u8> data, bool streamed) noexcept
 	{
+		const u32 ring		   = streamed ? UPLOAD_RING_STREAMED : UPLOAD_RING_CRITICAL;
 		const FormatInfo& info = format_info(upload.format);
 
 		VkCommandBuffer cmd = upload_cmd(backend, streamed);
@@ -519,12 +576,18 @@ namespace ember::gpu::vk
 			for (u32 mip = 0; mip < upload.mip_count; ++mip)
 			{
 				const u64 bytes = subresource_bytes(info, upload.extent, mip);
-				(void)copy_subresource(backend, cmd, upload, info, mip, layer, {data.data() + cursor, bytes});
+				(void)copy_subresource(backend, cmd, upload, info, mip, layer, {data.data() + cursor, bytes}, ring);
 				cursor += bytes;
 			}
 		}
 
 		EMBER_ASSERT(cursor == data.size() && "the caller validates the chain size; this is the tripwire");
+
+		// A streamed image leaves the DMA family here and the graphics queue takes it back when
+		// the texture is promoted. Both halves name the same layouts and the same families.
+		const bool release	 = streamed && backend.staging.cross_family;
+		const u32 src_family = release ? backend.context.transfer.family : VK_QUEUE_FAMILY_IGNORED;
+		const u32 dst_family = release ? backend.context.graphics.family : VK_QUEUE_FAMILY_IGNORED;
 
 		image_barrier(
 			cmd,
@@ -536,7 +599,9 @@ namespace ember::gpu::vk
 			upload.layer_count,
 			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			upload.steady,
-			false);
+			false,
+			src_family,
+			dst_family);
 	}
 
 	void staging_update_texture(
@@ -562,7 +627,7 @@ namespace ember::gpu::vk
 			upload.steady,
 			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			true);
-		(void)copy_subresource(backend, cmd, upload, info, mip, layer, data);
+		(void)copy_subresource(backend, cmd, upload, info, mip, layer, data, UPLOAD_RING_CRITICAL);
 		image_barrier(
 			cmd,
 			upload.image,
@@ -574,5 +639,39 @@ namespace ember::gpu::vk
 			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			upload.steady,
 			false);
+	}
+
+	void staging_acquire_image(
+		Backend& backend,
+		VkCommandBuffer cmd,
+		VkImage image,
+		VkImageAspectFlags aspect,
+		u32 mips,
+		u32 layers,
+		VkImageLayout layout) noexcept
+	{
+		// The acquire supplies the destination scope the release left empty; the source scope is
+		// empty in turn, because the release already made the writes available.
+		const VkImageMemoryBarrier2 barrier{
+			.sType				 = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+			.srcStageMask		 = VK_PIPELINE_STAGE_2_NONE,
+			.srcAccessMask		 = VK_ACCESS_2_NONE,
+			.dstStageMask		 = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+			.dstAccessMask		 = VK_ACCESS_2_MEMORY_READ_BIT,
+			.oldLayout			 = layout,
+			.newLayout			 = layout,
+			.srcQueueFamilyIndex = backend.context.transfer.family,
+			.dstQueueFamilyIndex = backend.context.graphics.family,
+			.image				 = image,
+			.subresourceRange	 = {aspect, 0, mips, 0, layers},
+		};
+
+		const VkDependencyInfo dependency{
+			.sType					 = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+			.imageMemoryBarrierCount = 1,
+			.pImageMemoryBarriers	 = &barrier,
+		};
+
+		vkCmdPipelineBarrier2(cmd, &dependency);
 	}
 }

@@ -4,6 +4,7 @@
 #include <ember/core/common.h>
 #include <ember/gpu/common.h>
 #include <ember/gpu/texture.h>
+#include <ember/memory/memory.h>
 #include <gpu/vulkan/common.h>
 
 #include <vk_mem_alloc.h>
@@ -15,6 +16,16 @@ namespace ember::gpu
 
 namespace ember::gpu::vk
 {
+	/**
+	 * A staging buffer only this batch reads. Out of frame uploads cannot use the ring, so they
+	 * get one of these instead.
+	 */
+	struct OneOffStaging
+	{
+		VkBuffer buffer			 = VK_NULL_HANDLE;
+		VmaAllocation allocation = VK_NULL_HANDLE;
+	};
+
 	/**
 	 * An upload batch: one command buffer of vkCmdCopyBuffer2 calls bracketed by fat global
 	 * barriers, submitted ahead of the frame's main commands (same vkQueueSubmit2).
@@ -32,10 +43,29 @@ namespace ember::gpu::vk
 		VkCommandBuffer cmd = VK_NULL_HANDLE;
 		u64 value			= 0; // reusable once the upload timeline passes this; 0 = never used.
 
-		/// True once anything in the batch has to be there for the next frame. A batch of
-		/// nothing but streamed content leaves it false and no frame waits on the batch at all.
-		bool critical = false;
+		/**
+		 * Freed when the batch's value passes, not through the destroy queue: the upload clock is
+		 * what proves these copies are done, and the frame clock knows nothing about them.
+		 */
+		Vector<OneOffStaging> one_offs{&memory::heap(MemoryTag::Graphics)};
 	};
+
+	/// One kind of batch. A command pool serves exactly one queue family, so critical work on the
+	/// graphics family and streamed work on the DMA family cannot share a ring.
+	struct UploadRing
+	{
+		VkCommandPool pool = VK_NULL_HANDLE; // RESET_COMMAND_BUFFER: batches reset individually
+											 // because they cross frame-slot boundaries.
+		UploadBatch batches[MAX_FRAMES_IN_FLIGHT + 1]{};
+		VkCommandBuffer open_cmd = VK_NULL_HANDLE;
+		u32 open_index			 = 0;
+	};
+
+	/// Ring 0 is critical work and rides the graphics queue; ring 1 is streamed and rides the DMA
+	/// queue. Indexed by the streamed flag, so the two never mix.
+	inline constexpr u32 UPLOAD_RING_CRITICAL = 0;
+	inline constexpr u32 UPLOAD_RING_STREAMED = 1;
+	inline constexpr u32 UPLOAD_RING_COUNT	  = 2;
 
 	/// A texture's shape, for the image staging paths.
 	struct TextureUpload
@@ -62,11 +92,7 @@ namespace ember::gpu::vk
 	struct Staging
 	{
 		StagingRing ring{};
-		VkCommandPool pool = VK_NULL_HANDLE; // RESET_COMMAND_BUFFER: batches reset individually
-											 // because they cross frame-slot boundaries.
-		UploadBatch batches[MAX_FRAMES_IN_FLIGHT + 1]{};
-		VkCommandBuffer open_cmd = VK_NULL_HANDLE;
-		u32 open_index			 = 0;
+		UploadRing rings[UPLOAD_RING_COUNT]{};
 
 		/**
 		 * Uploads keep their own clock. A batch submits on its own and signals the next value;
@@ -78,6 +104,11 @@ namespace ember::gpu::vk
 		u64 value			 = 0; // last value handed to an upload submit
 		u64 completed		 = 0; // highest value proven signalled; polled, never waited on
 		u64 critical_value	 = 0; // last value a frame must wait for; streamed uploads never raise it
+
+		/// The DMA family is its own: streamed images change hands on the way out and the
+		/// graphics queue takes them back at promotion. False when the adapter has no dedicated
+		/// transfer family, and then none of that machinery runs.
+		bool cross_family = false;
 	};
 
 	/// The value the batch now open will signal. A streamed resource records this at creation:
@@ -95,8 +126,8 @@ namespace ember::gpu::vk
 	/// Records a staged copy into the current upload batch (opening it if needed).
 	/// Source memory comes from the ring while a frame s open, else a one-off buffer that
 	/// rides the desttroy queue. Owner thread only.
-	void staging_upload(
-		Backend& backend, VkBuffer dst, u64 dst_offset, Span<const u8> data, bool streamed = false) noexcept;
+	void
+	staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, Span<const u8> data, bool streamed = false) noexcept;
 
 	/// Uploads the whole subresource chain (layer-major, mip-minor, tightly packed
 	/// blocks) and leaves the image in its steady layout. Empty data records only
@@ -120,4 +151,18 @@ namespace ember::gpu::vk
 	/// Reads how far the upload timeline has got. Never blocks; a frame that finds nothing new
 	/// simply carries the previous answer.
 	void poll_uploads(Backend& backend) noexcept;
+
+	/**
+	 * Records the graphics-side half of a streamed image's ownership transfer: the release the
+	 * DMA batch wrote hands the image over, and this takes it back. Layouts and families must
+	 * match the release exactly, which is why both halves live in this file.
+	 */
+	void staging_acquire_image(
+		Backend& backend,
+		VkCommandBuffer cmd,
+		VkImage image,
+		VkImageAspectFlags aspect,
+		u32 mips,
+		u32 layers,
+		VkImageLayout layout) noexcept;
 }

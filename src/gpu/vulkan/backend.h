@@ -140,6 +140,13 @@ namespace ember::gpu
 		VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 		TextureType type	 = TextureType::Texture2D;
 		u64 ready_value		 = 0;
+
+		/// The release half, replayed by promotion. Only set when the upload went to a DMA family.
+		VkImage image			  = VK_NULL_HANDLE;
+		VkImageAspectFlags aspect = 0;
+		u32 mip_count			  = 1;
+		u32 layer_count			  = 1;
+		bool needs_acquire		  = false;
 	};
 
 	/// Swapchains acquired this frame; end_frame clears, submits and presents them as a batch.
@@ -161,6 +168,10 @@ namespace ember::gpu
 		/// Lists handed out this frame. Claimed on the owner thread, so the order is the order
 		/// the caller asked for them in, and that is the order they reach the queue.
 		u32 lists_claimed = 0;
+
+		/// Highest upload value this frame took ownership back at. The submit waits on it, which
+		/// costs nothing because promotion only runs on uploads the timeline already passed.
+		u64 acquire_value = 0;
 
 		/// Highest timeline value proven complete (begin_frame waits, wait_idle). Batch and
 		/// page recycling key off this instead of querying the semaphore.

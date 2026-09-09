@@ -256,6 +256,9 @@ namespace ember::gpu
 		void begin_zone(const char* name, u32 color = 0) noexcept;
 		void end_zone() noexcept;
 
+		/// True when the list is not recording: default constructed, or already submitted.
+		[[nodiscard]] bool is_null() const noexcept { return m_recording == nullptr; }
+
 	private:
 		friend class Device;
 
