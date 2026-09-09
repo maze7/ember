@@ -217,6 +217,6 @@ TEST(FiberDeathTest, OverflowHitsGuardPage)
 			(void)neighbour;
 			fiber_switch(host, fiber);
 		},
-		testing::KilledBySignal(died_of_stack_fault(SIGSEGV)),
+		died_of_stack_fault,
 		"");
 }

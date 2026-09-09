@@ -4,6 +4,9 @@ if(EMBER_USE_TRACY)
 	set(TRACY_ENABLE ON)
 	set(TRACY_FIBERS ON)
 	add_subdirectory(tracy EXCLUDE_FROM_ALL)
+
+	# Tracy stamps the thread handle inside the client, so the call has to survive optimisation.
+	set_target_properties(TracyClient PROPERTIES INTERPROCEDURAL_OPTIMIZATION OFF)
 endif()
 
 # FMT is used by core for logging and string formatting.

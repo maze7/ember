@@ -41,19 +41,29 @@ namespace ember
 		// size argument supplies the decrement. Per-tag stats need the live map's record (level 2).
 		constinit Counters s_total_counters;
 
-		// Re-entrancy guard: the tracker's own logging allocates through the tracked heap.
-		thread_local bool t_in_tracker = false;
+		// Re-entrancy guard: the tracker's own logging allocates through the tracked heap. Reached
+		// through a call the optimiser cannot inline, because the guard belongs to the thread doing
+		// the allocating and a job may resume on another one.
+		EMBER_NOINLINE bool& in_tracker() noexcept
+		{
+			thread_local bool t_in_tracker = false;
+			return t_in_tracker;
+		}
 
 		class TrackerScope
 		{
 		public:
 			TrackerScope() noexcept
 			{
-				EMBER_ASSERT(!t_in_tracker);
-				t_in_tracker = true;
+				bool& check = in_tracker();
+				EMBER_ASSERT(!check);
+				check = true;
 			}
 
-			~TrackerScope() noexcept { t_in_tracker = false; }
+			~TrackerScope() noexcept
+			{
+				in_tracker() = false;
+			}
 
 			TrackerScope(const TrackerScope&)			 = delete;
 			TrackerScope& operator=(const TrackerScope&) = delete;
@@ -323,7 +333,7 @@ namespace ember
 
 		void on_alloc(void* ptr, size_t size, MemoryTag tag, bool poison) noexcept
 		{
-			if (ptr == nullptr || !tracking_enabled() || t_in_tracker)
+			if (ptr == nullptr || !tracking_enabled() || in_tracker())
 				return;
 
 			EMBER_PROFILE_ALLOC(ptr, size);
@@ -358,7 +368,7 @@ namespace ember
 
 		void on_free(void* ptr, size_t size) noexcept
 		{
-			if (ptr == nullptr || !tracking_enabled() || t_in_tracker)
+			if (ptr == nullptr || !tracking_enabled() || in_tracker())
 				return;
 
 	#if EMBER_MEMORY_TRACKING >= 2
@@ -372,7 +382,7 @@ namespace ember
 
 		void on_free_unpoisoned(void* ptr, size_t size) noexcept
 		{
-			if (ptr == nullptr || !tracking_enabled() || t_in_tracker)
+			if (ptr == nullptr || !tracking_enabled() || in_tracker())
 				return;
 
 	#if EMBER_MEMORY_TRACKING >= 2
@@ -388,7 +398,7 @@ namespace ember
 
 		void report(bool as_csv) noexcept
 		{
-			if (t_in_tracker)
+			if (in_tracker())
 				return;
 
 			TrackerScope scope;
@@ -484,7 +494,7 @@ namespace ember
 
 		u64 report_leaks() noexcept
 		{
-			if (t_in_tracker)
+			if (in_tracker())
 				return 0;
 
 			TrackerScope scope;

@@ -34,6 +34,8 @@ set_target_properties(rpmalloc PROPERTIES
     C_STANDARD_REQUIRED ON
     C_EXTENSIONS OFF
     POSITION_INDEPENDENT_CODE ON
+    # rpmalloc caches a heap per thread, so it stays outside the engine's LTO.
+    INTERPROCEDURAL_OPTIMIZATION OFF
 )
 
 if(NOT WIN32)

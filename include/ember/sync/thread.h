@@ -5,10 +5,12 @@
 namespace ember
 {
 	/**
-	 * Returns a fast, engine-assigned sequential integer ID for the current thread (1, 2, 3...).
 	 * Much faster than OS thread IDs and perfect for array indexing in thread-local allocators.
+	 *
+	 * Never inlined: a job resumes on whichever worker picks it up, so a thread local read the
+	 * optimiser hoisted out of a wait would hand back the thread the job started on.
 	 */
-	u32 current_thread_id();
+	EMBER_NOINLINE u32 current_thread_id();
 
 	/// Names the calling thread for debuggers and profilers. Linux keeps 15 characters.
 	void set_thread_name(const char* name) noexcept;

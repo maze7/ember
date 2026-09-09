@@ -3,6 +3,8 @@
 //   0 rsp   8 rip   16 rbx   24 rbp   32 r12   40 r13   48 r14   56 r15
 //   64 mxcsr (32 bit)   68 x87 control word (16 bit)
 
+#if defined(__x86_64__)
+
 #if defined(__APPLE__)
 	#define SYM(name) _##name
 #else
@@ -10,7 +12,6 @@
 #endif
 
 	.text
-
 // void ember_fiber_switch(FiberContext* from /* rdi */, FiberContext* to /* rsi */)
 	.globl SYM(ember_fiber_switch)
 #if !defined(__APPLE__)
@@ -64,6 +65,8 @@ SYM(ember_fiber_trampoline):
 #if !defined(__APPLE__)
 	.size SYM(ember_fiber_trampoline), .-SYM(ember_fiber_trampoline)
 #endif
+
+#endif // __x86_64__
 
 #if defined(__linux__)
 	.section .note.GNU-stack,"",@progbits

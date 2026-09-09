@@ -23,9 +23,12 @@ namespace ember
 	 * sotre on one side, an acquire load on the other. No lock, no allocation after init,
 	 * no ABA problem, because a ticket is never reused within a lap.
 	 *
-	 * try_push reports full and try_pop reports empty as of that instant. A producer that
-	 * has claimed a ticket but not yet published makes the queue look empty at its cell, so
-	 * consumers treat empty as a hint and come back through their own idle protocol.
+	 * try_push reports full and try_pop reports empty as of that instant, and both can also
+	 * fail while another thread sits between claiming a ticket and publishing its cell: a
+	 * producer mid push makes the queue look empty at its cell, and a consumer mid pop makes
+	 * it look full at that cell one lap later, whatever the count. A caller returning
+	 * something it owns retries, since the other side always finishes; a caller deciding
+	 * full or empty compares size_hint against capacity first.
 	 *
 	 * T is trivially copyable and default constructible: values move as plain copies under
 	 * the protocol. Capacity is a power of two. The memory resource must outlive the queue.
