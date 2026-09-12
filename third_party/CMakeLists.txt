@@ -11,6 +11,7 @@ endif()
 
 # FMT is used by core for logging and string formatting.
 add_subdirectory(fmt EXCLUDE_FROM_ALL)
+add_subdirectory(stb EXCLUDE_FROM_ALL)
 
 # ankerl::undordered_dense is used as an efficient
 # substitute for std::unordered_map
