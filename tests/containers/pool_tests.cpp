@@ -782,13 +782,11 @@ namespace
 
 		for (u32 index = 0; index < 16; ++index)
 		{
-			handles.push_back(textures.insert(
-				TextureHot{index},
-				TextureCold{
-					index + 1,
-					index + 2,
-					std::to_string(index),
-				}));
+			handles.push_back(textures.insert(TextureHot{index}, TextureCold{
+																	 index + 1,
+																	 index + 2,
+																	 std::to_string(index),
+																 }));
 		}
 
 		const auto source = handles.front();

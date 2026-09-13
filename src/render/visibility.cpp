@@ -61,8 +61,8 @@ namespace ember::render
 		m_cull = {};
 	}
 
-	ViewVisibility Visibility::cull(
-		RenderGraph& graph, const GpuScene& gpu_scene, const GeometryPool& geometry, const View& view) noexcept
+	ViewVisibility Visibility::cull(RenderGraph& graph, const GpuScene& gpu_scene, const GeometryPool& geometry,
+									const View& view) noexcept
 	{
 		EMBER_ASSERT(!m_cull.is_null() && "cull before init");
 
@@ -146,12 +146,8 @@ namespace ember::render
 				{
 					cmd.set_pipeline(m_cull);
 					cmd.set_constants(1, constants);
-					cmd.set_push_constants(
-						CullPush{
-							ctx.bindless(opaque.args),
-							ctx.bindless(opaque.count),
-							ctx.bindless(cutout.args),
-							ctx.bindless(cutout.count)});
+					cmd.set_push_constants(CullPush{ctx.bindless(opaque.args), ctx.bindless(opaque.count),
+													ctx.bindless(cutout.args), ctx.bindless(cutout.count)});
 					cmd.dispatch((slot_count + 63) / 64);
 				});
 

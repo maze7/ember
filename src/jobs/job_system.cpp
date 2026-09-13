@@ -4,8 +4,8 @@
 #include <ember/core/logger.h>
 #include <ember/core/profile.h>
 #include <ember/memory/memory.h>
-#include <ember/sync/spin_mutex.h>
 #include <ember/memory/pmr/block_allocator.h>
+#include <ember/sync/spin_mutex.h>
 #include <ember/sync/thread.h>
 #include <jobs/fiber.h>
 
@@ -43,10 +43,10 @@ namespace ember::jobs
 		JobCounter* wait_counter = nullptr;
 		u32 wait_generation		 = 0;
 		FiberRecord* next_waiter = nullptr;
-		Job handoff				 = {};		// a large job passed over by a small fiber
-		bool pool				 = false;	// a pool fiber; thread records are not fibers to the profiler
-		char name[24]			 = {};		// persistent, the profiler keys fibers by this pointer
-		const char* job_name	 = nullptr; // while a job runs on this fiber
+		Job handoff				 = {};				  // a large job passed over by a small fiber
+		bool pool				 = false;			  // a pool fiber; thread records are not fibers to the profiler
+		char name[24]			 = {};				  // persistent, the profiler keys fibers by this pointer
+		const char* job_name	 = nullptr;			  // while a job runs on this fiber
 		std::atomic<JobCounter*> stalled_on{nullptr}; // spinning in a wait that found no fiber; read by dumps
 	};
 
@@ -114,14 +114,14 @@ namespace ember::jobs
 		u32 counter_capacity = 0;
 		MpmcQueue<u32> free_counters{MemoryTag::Engine};
 		MpmcQueue<FiberRecord*> ready{MemoryTag::Engine};
-		MpmcQueue<FiberRecord*> free_fibers[STACK_COUNT] = {
-			MpmcQueue<FiberRecord*>(MemoryTag::Engine), MpmcQueue<FiberRecord*>(MemoryTag::Engine)};
+		MpmcQueue<FiberRecord*> free_fibers[STACK_COUNT] = {MpmcQueue<FiberRecord*>(MemoryTag::Engine),
+															MpmcQueue<FiberRecord*>(MemoryTag::Engine)};
 		alignas(EMBER_CACHE_LINE) std::atomic<u64> sleeping{0}; // one bit per worker parked in idle()
 		std::atomic<u32> parked{0};								// fibers linked into a wait list
 		std::atomic<u64> stalls{0};								// waits that found no fiber
 		std::atomic<bool> failing{false};						// a stalled worker is dumping and failing
-		MpmcQueue<Job> jobs[PRIORITY_COUNT] = {
-			MpmcQueue<Job>(MemoryTag::Engine), MpmcQueue<Job>(MemoryTag::Engine), MpmcQueue<Job>(MemoryTag::Engine)};
+		MpmcQueue<Job> jobs[PRIORITY_COUNT] = {MpmcQueue<Job>(MemoryTag::Engine), MpmcQueue<Job>(MemoryTag::Engine),
+											   MpmcQueue<Job>(MemoryTag::Engine)};
 
 		explicit Impl(const JobSystemDef& def) noexcept;
 		~Impl() noexcept;
@@ -243,7 +243,8 @@ namespace ember::jobs
 
 		const u32 hardware = std::max(1u, std::thread::hardware_concurrency());
 
-		worker_count = def.worker_count != 0 ? def.worker_count : hardware - std::min(def.reserved_threads, hardware - 1);
+		worker_count =
+			def.worker_count != 0 ? def.worker_count : hardware - std::min(def.reserved_threads, hardware - 1);
 		worker_count = std::min(worker_count, MAX_WORKERS);
 		EMBER_ASSERT(fiber_count >= worker_count && "every worker thread needs a fiber to run its loop");
 
@@ -814,9 +815,9 @@ namespace ember::jobs
 
 		while (mask != 0 && count != 0)
 		{
-			const u32 index	 = static_cast<u32>(std::countr_zero(mask));
-			const u64 bit	 = u64{1} << index;
-			mask			&= ~bit;
+			const u32 index = static_cast<u32>(std::countr_zero(mask));
+			const u64 bit	= u64{1} << index;
+			mask &= ~bit;
 
 			if ((sleeping.fetch_and(~bit, std::memory_order_acq_rel) & bit) == 0)
 				continue;
@@ -891,9 +892,9 @@ namespace ember::jobs
 		stalls.fetch_add(1, std::memory_order_relaxed);
 		self->stalled_on.store(&counter, std::memory_order_relaxed);
 
-		Worker& worker	   = *self->worker;
-		const auto since   = std::chrono::steady_clock::now();
-		FiberRecord* next  = nullptr;
+		Worker& worker	  = *self->worker;
+		const auto since  = std::chrono::steady_clock::now();
+		FiberRecord* next = nullptr;
 
 		for (u32 spin = 0;;)
 		{
@@ -930,8 +931,8 @@ namespace ember::jobs
 	// One turn of a spin that may not end: the clock is read every 1024 turns, and a spin
 	// older than stall_report_ms logs the state and fails. The first worker there reports;
 	// the others keep spinning for the moment the failure takes.
-	void JobSystem::Impl::spin_or_fail(
-		u32& spin, std::chrono::steady_clock::time_point since, const char* reason) noexcept
+	void JobSystem::Impl::spin_or_fail(u32& spin, std::chrono::steady_clock::time_point since,
+									   const char* reason) noexcept
 	{
 		if (def.stall_report_ms != 0 && (spin & 1023) == 1023 &&
 			std::chrono::steady_clock::now() - since >= std::chrono::milliseconds(def.stall_report_ms) &&
@@ -950,17 +951,10 @@ namespace ember::jobs
 
 		const JobStats snapshot = stats();
 
-		std::snprintf(
-			line,
-			sizeof(line),
-			"%s: %u small and %u large fibers free, %u parked, %u ready, %u jobs queued, %u batches live",
-			reason,
-			snapshot.free_small_fibers,
-			snapshot.free_large_fibers,
-			snapshot.parked_fibers,
-			snapshot.ready_fibers,
-			snapshot.queued_jobs,
-			snapshot.live_batches);
+		std::snprintf(line, sizeof(line),
+					  "%s: %u small and %u large fibers free, %u parked, %u ready, %u jobs queued, %u batches live",
+					  reason, snapshot.free_small_fibers, snapshot.free_large_fibers, snapshot.parked_fibers,
+					  snapshot.ready_fibers, snapshot.queued_jobs, snapshot.live_batches);
 		EMBER_ERROR("(ember::jobs) {}", line);
 
 		for (u32 index = 0; index < counter_capacity; ++index)
@@ -1078,9 +1072,9 @@ namespace ember::jobs
 			EMBER_ASSERT(job.fn != nullptr);
 			EMBER_ASSERT((job.stack != JobStack::Large || def.large_fibers != 0) && "no large fibers configured");
 
-			const bool pushed = push_or_full(
-				jobs[static_cast<u32>(job.priority)],
-				Job{.fn = job.fn, .data = job.data, .name = job.name, .batch = batch, .stack = job.stack});
+			const bool pushed =
+				push_or_full(jobs[static_cast<u32>(job.priority)],
+							 Job{.fn = job.fn, .data = job.data, .name = job.name, .batch = batch, .stack = job.stack});
 
 			if (!pushed)
 				fail("job queue full, raise JobSystemDef::queue_capacity");
@@ -1192,12 +1186,12 @@ namespace ember::jobs
 
 			ranges[i] = {.range = {begin, end, i}, .fn = fn, .data = data};
 			defs[i]	  = {
-				  .fn		= run_range,
-				  .data		= &ranges[i],
-				  .name		= def.name,
-				  .priority = def.priority,
-				  .stack	= def.stack,
-			  };
+				.fn		  = run_range,
+				.data	  = &ranges[i],
+				.name	  = def.name,
+				.priority = def.priority,
+				.stack	  = def.stack,
+			};
 
 			begin = end;
 		}

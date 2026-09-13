@@ -17,7 +17,7 @@ namespace
 
 	// Lifetime kinds. Frame memory is released at the top of every frame; the next kind added here
 	// gets 2, and per frame tags pack the frame number into the low half.
-	constexpr ember::HeapTag FRAME_TAG = ember::heap_tag(1);
+	constexpr ember::HeapTag FRAME_TAG		  = ember::heap_tag(1);
 	constinit std::atomic<bool> s_initialized = false;
 
 	[[nodiscard]] bool initialize(const ember::MemoryConfig& config) noexcept
@@ -81,8 +81,7 @@ namespace
 
 namespace ember
 {
-	MemorySystem::MemorySystem(const MemoryConfig& config) noexcept
-		: m_initialized(initialize(config)) {}
+	MemorySystem::MemorySystem(const MemoryConfig& config) noexcept : m_initialized(initialize(config)) {}
 
 	MemorySystem::~MemorySystem() noexcept
 	{
@@ -106,12 +105,8 @@ namespace ember
 
 	void out_of_memory(size_t size, size_t alignment, MemoryTag tag) noexcept
 	{
-		Logger::error(
-			std::source_location::current(),
-			"Out of memory: size={} alignment={} tag={}",
-			size,
-			alignment,
-			static_cast<u16>(tag));
+		Logger::error(std::source_location::current(), "Out of memory: size={} alignment={} tag={}", size, alignment,
+					  static_cast<u16>(tag));
 
 		EMBER_DEBUG_BREAK();
 		std::abort();

@@ -44,9 +44,8 @@ namespace
 				auto body  = [args](JobRange range)
 				{
 					for (u32 i = range.begin; i < range.end; ++i)
-						args->scene->set_transform(
-							(*args->handles)[i],
-							glm::translate(glm::mat4(1.0f), glm::vec3(f32(i), 0.0f, 0.0f)));
+						args->scene->set_transform((*args->handles)[i],
+												   glm::translate(glm::mat4(1.0f), glm::vec3(f32(i), 0.0f, 0.0f)));
 				};
 
 				parallel_for({.count = COUNT, .grain = 32, .name = "set_transform"}, body);

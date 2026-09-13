@@ -61,8 +61,8 @@ namespace ember
 		for (u32 i = 0; i < m_block_count; ++i)
 			std::destroy_at(&m_block_tags[i]);
 
-		memory::heap(m_tag).deallocate(
-			m_block_tags, m_block_count * sizeof(std::atomic<HeapTag>), alignof(std::atomic<HeapTag>));
+		memory::heap(m_tag).deallocate(m_block_tags, m_block_count * sizeof(std::atomic<HeapTag>),
+									   alignof(std::atomic<HeapTag>));
 
 		m_block_tags  = nullptr;
 		m_base		  = nullptr;
@@ -92,8 +92,8 @@ namespace ember
 
 			// Acquire pairs with the release in release()/free_blocks(), so the block's contents
 			// are ours to overwrite once the tag is.
-			if (!m_block_tags[first + i].compare_exchange_strong(
-					expected, tag, std::memory_order_acquire, std::memory_order_relaxed))
+			if (!m_block_tags[first + i].compare_exchange_strong(expected, tag, std::memory_order_acquire,
+																 std::memory_order_relaxed))
 				return i;
 		}
 
@@ -138,7 +138,8 @@ namespace ember
 
 					const u32 in_use = m_blocks_in_use.fetch_add(count, std::memory_order_relaxed) + count;
 					u32 peak		 = m_peak_blocks.load(std::memory_order_relaxed);
-					while (in_use > peak && !m_peak_blocks.compare_exchange_weak(peak, in_use, std::memory_order_relaxed))
+					while (in_use > peak &&
+						   !m_peak_blocks.compare_exchange_weak(peak, in_use, std::memory_order_relaxed))
 						;
 
 					return m_base + static_cast<size_t>(first) * m_block_size;

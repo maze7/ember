@@ -18,8 +18,8 @@ namespace ember::gpu::vk
 		/// Host-visible, persitently mapped, pool-registered. On ReBAR/SAM adapters the memory prefers VRAM
 		/// (the CPU writes across the bus once; the GPU reads it hot every draw). Pre-ReBAR we deliberately
 		/// prefer host memory: the legacy 256 MB BAR window is too scarce to spend on a ring.
-		[[nodiscard]] bool
-		create_transient_buffer(Backend& backend, u64 size, const char* name, TransientPage& out) noexcept
+		[[nodiscard]] bool create_transient_buffer(Backend& backend, u64 size, const char* name,
+												   TransientPage& out) noexcept
 		{
 			VkBufferCreateInfo buffer_info{
 				.sType		 = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -38,8 +38,8 @@ namespace ember::gpu::vk
 			VmaAllocation allocation = VK_NULL_HANDLE;
 			VmaAllocationInfo result{};
 
-			if (VkResult vr = vmaCreateBuffer(
-					backend.context.allocator, &buffer_info, &alloc_info, &buffer, &allocation, &result);
+			if (VkResult vr = vmaCreateBuffer(backend.context.allocator, &buffer_info, &alloc_info, &buffer,
+											  &allocation, &result);
 				vr != VK_SUCCESS)
 			{
 				EMBER_ERROR("gpu: transient buffer '{}' ({} bytes) failed: {}", name, size, result_name(vr));
@@ -102,12 +102,9 @@ namespace ember::gpu::vk
 
 		// Slices start at k * slice_bytes, so aligning the slice size to the strictest bindable
 		// alignment makes every slice start bindable by construction.
-		const u64 alignment = std::max<u64>(
-			256,
-			std::max(
-				backend.context.caps.constant_buffer_offset_alignment,
-				backend.context.caps.storage_buffer_offset_alignment));
-		u64 slice = ((per_slot_bytes + alignment - 1) / alignment) * alignment;
+		const u64 alignment = std::max<u64>(256, std::max(backend.context.caps.constant_buffer_offset_alignment,
+														  backend.context.caps.storage_buffer_offset_alignment));
+		u64 slice			= ((per_slot_bytes + alignment - 1) / alignment) * alignment;
 
 		// TransientAllocation::offset is 32-bit; a ring the u32 can't address is a config error
 		// worth surviving. Clamp loudly rather than fail.
@@ -140,8 +137,8 @@ namespace ember::gpu::vk
 		// Set 1's constant descriptors point at the ring once; draws vary dynamic offsets.
 		{
 			const BufferHot& hot = *backend.resources.buffers.get(ring.handle);
-			backend.descriptor_heap.bind_constants(
-				backend.context, hot.handle, backend.context.caps.max_constant_block_bytes);
+			backend.descriptor_heap.bind_constants(backend.context, hot.handle,
+												   backend.context.caps.max_constant_block_bytes);
 		}
 
 		return true;
@@ -236,13 +233,8 @@ namespace ember::gpu::vk
 		// Bind the frame's slice. The caller's timeline wait is what proved this slice's previous user
 		// retired; the allocator itself needs no further synchronization.
 		ring.frame_begin = u64{slot} * ring.slice_bytes;
-		backend.transient.bind(
-			ring.cpu,
-			ring.handle,
-			ring.frame_begin,
-			ring.frame_begin + ring.slice_bytes,
-			&transient_overflow,
-			&backend);
+		backend.transient.bind(ring.cpu, ring.handle, ring.frame_begin, ring.frame_begin + ring.slice_bytes,
+							   &transient_overflow, &backend);
 	}
 
 	void transient_end_frame(Backend& backend, u64 value) noexcept
@@ -282,9 +274,7 @@ namespace ember::gpu::vk
 		{
 			EMBER_WARN(
 				"gpu: transient ring overflowed by {} KiB (ring {}/{} KiB); raise DeviceDef::transient_ring_bytes",
-				ring.overflow_bytes / 1024,
-				used / 1024,
-				ring.slice_bytes / 1024);
+				ring.overflow_bytes / 1024, used / 1024, ring.slice_bytes / 1024);
 			ring.overflow_bytes = 0;
 		}
 	}

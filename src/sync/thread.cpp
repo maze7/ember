@@ -27,7 +27,7 @@ namespace ember
 	{
 #if defined(EMBER_PLATFORM_WINDOWS)
 		wchar_t wide[64];
-		size_t	length = 0;
+		size_t length = 0;
 
 		for (; name[length] != 0 && length < 63; ++length)
 			wide[length] = static_cast<wchar_t>(name[length]);
@@ -37,7 +37,7 @@ namespace ember
 #elif defined(EMBER_PLATFORM_MACOS)
 		pthread_setname_np(name);
 #else
-		char   short_name[16];
+		char short_name[16];
 		size_t length = 0;
 
 		for (; name[length] != 0 && length < 15; ++length)

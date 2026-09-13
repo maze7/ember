@@ -61,8 +61,8 @@ namespace ember::gpu::vk
 			VmaAllocation allocation = VK_NULL_HANDLE;
 			VmaAllocationInfo result{};
 
-			if (auto vr = vmaCreateBuffer(
-					backend.context.allocator, &buffer_info, &alloc_info, &buffer, &allocation, &result);
+			if (auto vr = vmaCreateBuffer(backend.context.allocator, &buffer_info, &alloc_info, &buffer, &allocation,
+										  &result);
 				vr != VK_SUCCESS)
 			{
 				EMBER_ERROR("gpu: one-off staging of {} bytes failed: {}", size, result_name(vr));
@@ -158,19 +158,9 @@ namespace ember::gpu::vk
 			return VK_NULL_HANDLE;
 		}
 
-		void image_barrier(
-			VkCommandBuffer cmd,
-			VkImage image,
-			VkImageAspectFlags aspect,
-			u32 base_mip,
-			u32 mips,
-			u32 base_layer,
-			u32 layers,
-			VkImageLayout from,
-			VkImageLayout to,
-			bool entry,
-			u32 src_family = VK_QUEUE_FAMILY_IGNORED,
-			u32 dst_family = VK_QUEUE_FAMILY_IGNORED) noexcept
+		void image_barrier(VkCommandBuffer cmd, VkImage image, VkImageAspectFlags aspect, u32 base_mip, u32 mips,
+						   u32 base_layer, u32 layers, VkImageLayout from, VkImageLayout to, bool entry,
+						   u32 src_family = VK_QUEUE_FAMILY_IGNORED, u32 dst_family = VK_QUEUE_FAMILY_IGNORED) noexcept
 		{
 			// A release names both families and leaves the destination scope empty: the acquire
 			// on the other queue supplies it, and the two halves must otherwise match exactly.
@@ -208,15 +198,9 @@ namespace ember::gpu::vk
 		/// Stages one subresource and records its copy. One region per call keeps
 		/// the ring and one-off paths uniform: each region names its own buffer,
 		/// so ring exhaustion degrades per mip instead of per texture.
-		[[nodiscard]] bool copy_subresource(
-			Backend& backend,
-			VkCommandBuffer cmd,
-			const TextureUpload& upload,
-			const FormatInfo& info,
-			u32 mip,
-			u32 layer,
-			Span<const u8> bytes,
-			u32 ring) noexcept
+		[[nodiscard]] bool copy_subresource(Backend& backend, VkCommandBuffer cmd, const TextureUpload& upload,
+											const FormatInfo& info, u32 mip, u32 layer, Span<const u8> bytes,
+											u32 ring) noexcept
 		{
 			const StagingAlloc src = staging_alloc(backend, ring, bytes.size(), region_alignment(info));
 
@@ -231,8 +215,8 @@ namespace ember::gpu::vk
 			if (src.allocation != VK_NULL_HANDLE)
 				(void)vmaFlushAllocation(backend.context.allocator, src.allocation, 0, bytes.size());
 			else if (!backend.staging.ring.coherent)
-				(void)vmaFlushAllocation(
-					backend.context.allocator, backend.staging.ring.allocation, src.offset, bytes.size());
+				(void)vmaFlushAllocation(backend.context.allocator, backend.staging.ring.allocation, src.offset,
+										 bytes.size());
 
 			const VkBufferImageCopy2 region{
 				.sType			  = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
@@ -323,13 +307,8 @@ namespace ember::gpu::vk
 		alloc_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
 
 		VmaAllocationInfo result{};
-		if (auto vr = vmaCreateBuffer(
-				backend.context.allocator,
-				&buffer_info,
-				&alloc_info,
-				&staging.ring.buffer,
-				&staging.ring.allocation,
-				&result);
+		if (auto vr = vmaCreateBuffer(backend.context.allocator, &buffer_info, &alloc_info, &staging.ring.buffer,
+									  &staging.ring.allocation, &result);
 			vr != VK_SUCCESS)
 		{
 			EMBER_ERROR("gpu: staging ring ({} bytes) failed: {}", buffer_info.size, result_name(vr));
@@ -343,8 +322,8 @@ namespace ember::gpu::vk
 		staging.ring.slice_bytes = per_slot_bytes;
 		staging.ring.coherent	 = (properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
 
-		set_name(
-			backend.context, VK_OBJECT_TYPE_BUFFER, reinterpret_cast<u64>(staging.ring.buffer), "ember.staging_ring");
+		set_name(backend.context, VK_OBJECT_TYPE_BUFFER, reinterpret_cast<u64>(staging.ring.buffer),
+				 "ember.staging_ring");
 
 		// A pool serves one queue family, so each ring gets its own: critical work stays with
 		// graphics, streamed work goes to the DMA family. Without a dedicated transfer family the
@@ -404,11 +383,8 @@ namespace ember::gpu::vk
 			return false;
 		}
 
-		set_name(
-			backend.context,
-			VK_OBJECT_TYPE_SEMAPHORE,
-			reinterpret_cast<u64>(staging.timeline),
-			"ember.upload_timeline");
+		set_name(backend.context, VK_OBJECT_TYPE_SEMAPHORE, reinterpret_cast<u64>(staging.timeline),
+				 "ember.upload_timeline");
 
 		return true;
 	}
@@ -484,8 +460,8 @@ namespace ember::gpu::vk
 		if (src.allocation != VK_NULL_HANDLE)
 			(void)vmaFlushAllocation(backend.context.allocator, src.allocation, 0, data.size());
 		else if (!backend.staging.ring.coherent)
-			(void)vmaFlushAllocation(
-				backend.context.allocator, backend.staging.ring.allocation, src.offset, data.size());
+			(void)vmaFlushAllocation(backend.context.allocator, backend.staging.ring.allocation, src.offset,
+									 data.size());
 
 		VkBufferCopy2 region{
 			.sType	   = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
@@ -527,8 +503,8 @@ namespace ember::gpu::vk
 			staging.completed = counter;
 	}
 
-	void
-	staging_upload_texture(Backend& backend, const TextureUpload& upload, Span<const u8> data, bool streamed) noexcept
+	void staging_upload_texture(Backend& backend, const TextureUpload& upload, Span<const u8> data,
+								bool streamed) noexcept
 	{
 		const u32 ring		   = streamed ? UPLOAD_RING_STREAMED : UPLOAD_RING_CRITICAL;
 		const FormatInfo& info = format_info(upload.format);
@@ -541,34 +517,16 @@ namespace ember::gpu::vk
 		// Depth targets take this path, so the color-only rule starts below it.
 		if (data.empty())
 		{
-			image_barrier(
-				cmd,
-				upload.image,
-				info.aspect,
-				0,
-				upload.mip_count,
-				0,
-				upload.layer_count,
-				VK_IMAGE_LAYOUT_UNDEFINED,
-				upload.steady,
-				false);
+			image_barrier(cmd, upload.image, info.aspect, 0, upload.mip_count, 0, upload.layer_count,
+						  VK_IMAGE_LAYOUT_UNDEFINED, upload.steady, false);
 			return;
 		}
 
 		EMBER_ASSERT(info.aspect == VK_IMAGE_ASPECT_COLOR_BIT && "depth-stencil uploads are out of contract");
 
 		// One barrier pair brackets the whole chain; the copies land in between.
-		image_barrier(
-			cmd,
-			upload.image,
-			info.aspect,
-			0,
-			upload.mip_count,
-			0,
-			upload.layer_count,
-			VK_IMAGE_LAYOUT_UNDEFINED,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			true);
+		image_barrier(cmd, upload.image, info.aspect, 0, upload.mip_count, 0, upload.layer_count,
+					  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, true);
 
 		u64 cursor = 0;
 		for (u32 layer = 0; layer < upload.layer_count; ++layer)
@@ -589,23 +547,12 @@ namespace ember::gpu::vk
 		const u32 src_family = release ? backend.context.transfer.family : VK_QUEUE_FAMILY_IGNORED;
 		const u32 dst_family = release ? backend.context.graphics.family : VK_QUEUE_FAMILY_IGNORED;
 
-		image_barrier(
-			cmd,
-			upload.image,
-			info.aspect,
-			0,
-			upload.mip_count,
-			0,
-			upload.layer_count,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			upload.steady,
-			false,
-			src_family,
-			dst_family);
+		image_barrier(cmd, upload.image, info.aspect, 0, upload.mip_count, 0, upload.layer_count,
+					  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, upload.steady, false, src_family, dst_family);
 	}
 
-	void staging_update_texture(
-		Backend& backend, const TextureUpload& upload, u32 mip, u32 layer, Span<const u8> data) noexcept
+	void staging_update_texture(Backend& backend, const TextureUpload& upload, u32 mip, u32 layer,
+								Span<const u8> data) noexcept
 	{
 		const FormatInfo& info = format_info(upload.format);
 		EMBER_ASSERT(info.aspect == VK_IMAGE_ASPECT_COLOR_BIT && "depth-stencil uploads are out of contract");
@@ -616,39 +563,15 @@ namespace ember::gpu::vk
 			return;
 
 		// Round-trip the one subresource so whole-image layout tracking stays true.
-		image_barrier(
-			cmd,
-			upload.image,
-			info.aspect,
-			mip,
-			1,
-			layer,
-			1,
-			upload.steady,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			true);
+		image_barrier(cmd, upload.image, info.aspect, mip, 1, layer, 1, upload.steady,
+					  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, true);
 		(void)copy_subresource(backend, cmd, upload, info, mip, layer, data, UPLOAD_RING_CRITICAL);
-		image_barrier(
-			cmd,
-			upload.image,
-			info.aspect,
-			mip,
-			1,
-			layer,
-			1,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			upload.steady,
-			false);
+		image_barrier(cmd, upload.image, info.aspect, mip, 1, layer, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					  upload.steady, false);
 	}
 
-	void staging_acquire_image(
-		Backend& backend,
-		VkCommandBuffer cmd,
-		VkImage image,
-		VkImageAspectFlags aspect,
-		u32 mips,
-		u32 layers,
-		VkImageLayout layout) noexcept
+	void staging_acquire_image(Backend& backend, VkCommandBuffer cmd, VkImage image, VkImageAspectFlags aspect,
+							   u32 mips, u32 layers, VkImageLayout layout) noexcept
 	{
 		// The acquire supplies the destination scope the release left empty; the source scope is
 		// empty in turn, because the release already made the writes available.

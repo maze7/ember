@@ -1,12 +1,30 @@
 #pragma once
 
-#include <ember/platform/platform.h>
 #include <ember/app/app.h>
+#include <ember/platform/platform.h>
 
 #include <chrono>
 
 namespace ember
 {
+	enum class RuntimeStage : u8
+	{
+		Configuration,
+		Memory,
+		Jobs,
+		Platform,
+		Device,
+		Window,
+		Swapchain,
+		Renderer,
+	};
+
+	struct RuntimeError
+	{
+		RuntimeStage stage;
+		std::error_code cause;
+	};
+
 	/**
 	 * Owns the engine services shared by one application instance.
 	 *
@@ -24,50 +42,38 @@ namespace ember
 		Runtime(Runtime&&) = delete;
 		Runtime& operator=(Runtime&&) = delete;
 
-		[[nodiscard]] explicit operator bool() const noexcept
-        {
-            return m_valid;
-        }
+		[[nodiscard]] explicit operator bool() const noexcept { return m_valid; }
 
 		int run(App& app) noexcept;
 
-		const Args& args() const noexcept
-		{
-			return m_args;
-		}
+		const Args& args() const noexcept { return m_args; }
 
-		Platform& platform() noexcept
-		{
-			return m_platform;
-		}
+		Platform& platform() noexcept { return m_platform; }
 
 	private:
 		friend class App;
 
 		class FrameScope final
-        {
-        public:
-            explicit FrameScope(Runtime& runtime) noexcept;
-            ~FrameScope() noexcept;
+		{
+		public:
+			explicit FrameScope(Runtime& runtime) noexcept;
+			~FrameScope() noexcept;
 
-            FrameScope(const FrameScope&) = delete;
-            FrameScope& operator=(const FrameScope&) = delete;
-            FrameScope(FrameScope&&) = delete;
-            FrameScope& operator=(FrameScope&&) = delete;
+			FrameScope(const FrameScope&) = delete;
+			FrameScope& operator=(const FrameScope&) = delete;
+			FrameScope(FrameScope&&) = delete;
+			FrameScope& operator=(FrameScope&&) = delete;
 
-            [[nodiscard]] const gpu::FrameInfo& info() const noexcept
-            {
-                return m_info;
-            }
+			[[nodiscard]] const gpu::FrameInfo& info() const noexcept { return m_info; }
 
-        private:
-            Runtime& m_runtime;
-            gpu::FrameInfo m_info = {};
-        };
+		private:
+			Runtime& m_runtime;
+			gpu::FrameInfo m_info = {};
+		};
 
-        void request_quit(int exit_code) noexcept;
-        void close_frame() noexcept;
-        void frame_loop(App& app) noexcept;
+		void request_quit(int exit_code) noexcept;
+		void close_frame() noexcept;
+		void frame_loop(App& app) noexcept;
 
 		// Declaration order is initialization order. The job system follows the allocator
 		// so its workers outlive every service that can kick a job.
@@ -91,8 +97,7 @@ namespace ember
 		int m_exit_code = 0;
 
 		bool m_frame_open = false;
-        bool m_quit_requested = false;
-        bool m_has_run = false;
-        bool m_valid = false;
+		bool m_quit_requested = false;
+		bool m_valid = false;
 	};
 }

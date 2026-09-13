@@ -22,8 +22,8 @@ namespace
 		const std::vector<u32> sorted(slots);
 		std::vector<SlotRun> runs;
 
-		for_each_slot_run(
-			{sorted.data(), sorted.size()}, [&](u32 first, u32 count) { runs.push_back({first, count}); });
+		for_each_slot_run({sorted.data(), sorted.size()},
+						  [&](u32 first, u32 count) { runs.push_back({first, count}); });
 
 		return runs;
 	}

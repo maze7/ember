@@ -82,20 +82,16 @@ namespace ember::render
 			{slots, count},
 			[&](u32 first, u32 run) noexcept
 			{
-				device.update_buffer(
-					m_objects,
-					u64{first} * sizeof(ObjectData),
-					{reinterpret_cast<const u8*>(&scene.object(first)), run * sizeof(ObjectData)});
+				device.update_buffer(m_objects, u64{first} * sizeof(ObjectData),
+									 {reinterpret_cast<const u8*>(&scene.object(first)), run * sizeof(ObjectData)});
 
-				device.update_buffer(
-					m_transforms,
-					u64{first} * sizeof(TransformData),
-					{reinterpret_cast<const u8*>(transforms + cursor), run * sizeof(TransformData)});
+				device.update_buffer(m_transforms, u64{first} * sizeof(TransformData),
+									 {reinterpret_cast<const u8*>(transforms + cursor), run * sizeof(TransformData)});
 
-				cursor					  += run;
-				m_last_sync.slot_runs	  += 1;
+				cursor += run;
+				m_last_sync.slot_runs += 1;
 				m_last_sync.copy_commands += 2;
-				m_last_sync.bytes		  += run * (sizeof(ObjectData) + sizeof(TransformData));
+				m_last_sync.bytes += run * (sizeof(ObjectData) + sizeof(TransformData));
 			});
 
 		m_last_sync.dirty_slots = count;

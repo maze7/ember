@@ -49,8 +49,8 @@ namespace ember::gpu
 		}
 
 		/// Requested mode when the surface offers it; FIFO otherwise (the only guaranteed mode).
-		[[nodiscard]] VkPresentModeKHR
-		choose_present_mode(VkPhysicalDevice adapter, VkSurfaceKHR surface, PresentMode requested) noexcept
+		[[nodiscard]] VkPresentModeKHR choose_present_mode(VkPhysicalDevice adapter, VkSurfaceKHR surface,
+														   PresentMode requested) noexcept
 		{
 			if (requested == PresentMode::VSync)
 				return VK_PRESENT_MODE_FIFO_KHR;
@@ -93,8 +93,8 @@ namespace ember::gpu
 		}
 
 		/// The window's pixel size, clamped to surface limits. {0,0} = minimized (suspend).
-		[[nodiscard]] VkExtent2D resolve_extent(
-			const Platform& platform, const vk::SwapchainData& data, const VkSurfaceCapabilitiesKHR& caps) noexcept
+		[[nodiscard]] VkExtent2D resolve_extent(const Platform& platform, const vk::SwapchainData& data,
+												const VkSurfaceCapabilitiesKHR& caps) noexcept
 		{
 			// 0xFFFFFFFF means "the surface follows the swapchain" (Wayland); the window is
 			// the authority then. Otherwise the surface dictates exactly.
@@ -274,8 +274,8 @@ namespace ember::gpu
 						.owns_image = false, // the swapchain owns these; destroy() must skip them
 					});
 
-				vk::set_name(
-					backend.context, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<u64>(images[i]), "ember.backbuffer");
+				vk::set_name(backend.context, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<u64>(images[i]),
+							 "ember.backbuffer");
 			}
 
 			data.image_count = count;
@@ -310,8 +310,8 @@ namespace ember::gpu
 		data.preferred_image_count = def.image_count;
 
 		// Surface first: it outlives every swapchain generation for this window.
-		data.surface = platform::vk::create_surface(
-			m_backend->context.platform->native_window(def.window), m_backend->context.instance);
+		data.surface = platform::vk::create_surface(m_backend->context.platform->native_window(def.window),
+													m_backend->context.instance);
 
 		if (data.surface == VK_NULL_HANDLE)
 		{
@@ -382,20 +382,15 @@ namespace ember::gpu
 		for (u32 attempt = 0; attempt < 2; ++attempt)
 		{
 			u32 image_index		  = vk::NO_IMAGE;
-			const VkResult result = vkAcquireNextImageKHR(
-				m_backend->context.device,
-				data.swapchain,
-				UINT64_MAX,
-				data.acquire_semaphores[slot],
-				VK_NULL_HANDLE,
-				&image_index);
+			const VkResult result = vkAcquireNextImageKHR(m_backend->context.device, data.swapchain, UINT64_MAX,
+														  data.acquire_semaphores[slot], VK_NULL_HANDLE, &image_index);
 
 			if (result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR)
 			{
 				// SUBOPTIMAL still signaled: render and present this frame, recreate next.
 				data.needs_recreate |= result == VK_SUBOPTIMAL_KHR;
-				data.acquired_image	 = image_index;
-				data.acquired_frame	 = frame_token;
+				data.acquired_image = image_index;
+				data.acquired_frame = frame_token;
 
 				EMBER_ASSERT(m_backend->frame.pending_present_count < MAX_SWAPCHAINS);
 				m_backend->frame.pending_presents[m_backend->frame.pending_present_count++] = {

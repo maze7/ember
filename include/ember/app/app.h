@@ -16,28 +16,28 @@ namespace ember
 
 	struct UpdateContext
 	{
-		f32 dt			= 0.0f;
+		f32 dt = 0.0f;
 		u64 frame_index = 0;
 	};
 
 	struct RenderContext
 	{
-		f32 dt			= 0.0f;
+		f32 dt = 0.0f;
 		u64 frame_index = 0;
-		u32 frame_slot	= 0;
+		u32 frame_slot = 0;
 
-		TextureHandle backbuffer   = {};
+		TextureHandle backbuffer = {};
 		Extent2D backbuffer_extent = {};
 	};
 
 	struct AppConfig
 	{
-		MemoryConfig memory			  = {};
-		jobs::JobSystemDef jobs		  = {};
-		WindowDef window			  = {};
-		gpu::DeviceDef gpu			  = {};
+		MemoryConfig memory = {};
+		jobs::JobSystemDef jobs = {};
+		WindowDef window = {};
+		gpu::DeviceDef gpu = {};
 		gpu::PresentMode present_mode = gpu::PresentMode::VSync;
-		f32 max_delta_seconds		  = 0.1f;
+		f32 max_delta_seconds = 0.1f;
 	};
 
 	/**
@@ -52,10 +52,10 @@ namespace ember
 	public:
 		virtual ~App() noexcept = default;
 
-		App(const App&)			   = delete;
+		App(const App&) = delete;
 		App& operator=(const App&) = delete;
-		App(App&&)				   = delete;
-		App& operator=(App&&)	   = delete;
+		App(App&&) = delete;
+		App& operator=(App&&) = delete;
 
 		/**
 		 * Applications inherit this default, so configuration is optional.

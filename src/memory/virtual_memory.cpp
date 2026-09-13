@@ -14,25 +14,13 @@ namespace ember::virtual_memory
 		return s_info;
 	}
 
-	size_t page_size() noexcept
-	{
-		return page_info().page_size;
-	}
+	size_t page_size() noexcept { return page_info().page_size; }
 
-	size_t allocation_granularity() noexcept
-	{
-		return page_info().allocation_granularity;
-	}
+	size_t allocation_granularity() noexcept { return page_info().allocation_granularity; }
 
-	size_t round_to_page_size(size_t size) noexcept
-	{
-		return align_up(size, page_size());
-	}
+	size_t round_to_page_size(size_t size) noexcept { return align_up(size, page_size()); }
 
-	size_t round_to_allocation_granularity(size_t size) noexcept
-	{
-		return align_up(size, allocation_granularity());
-	}
+	size_t round_to_allocation_granularity(size_t size) noexcept { return align_up(size, allocation_granularity()); }
 
 	void* reserve_and_commit(size_t size, PageAccess access) noexcept
 	{

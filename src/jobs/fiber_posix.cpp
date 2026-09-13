@@ -151,8 +151,8 @@ namespace
 	{
 		#if defined(EMBER_PLATFORM_MACOS)
 		const pthread_t self = pthread_self();
-		size					= pthread_get_stacksize_np(self);
-		bottom					= static_cast<const u8*>(pthread_get_stackaddr_np(self)) - size;
+		size				 = pthread_get_stacksize_np(self);
+		bottom				 = static_cast<const u8*>(pthread_get_stackaddr_np(self)) - size;
 		#else
 		pthread_attr_t attributes;
 		void* address = nullptr;

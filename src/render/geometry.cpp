@@ -93,14 +93,13 @@ namespace ember::render
 			return {};
 		}
 
-		const GeometryHandle handle = m_records.insert(
-			GeometryData{
-				.first_index  = first_index,
-				.index_count  = index_count,
-				.first_vertex = first_vertex,
-				.vertex_count = vertex_count,
-				.sphere		  = def.sphere,
-			});
+		const GeometryHandle handle = m_records.insert(GeometryData{
+			.first_index  = first_index,
+			.index_count  = index_count,
+			.first_vertex = first_vertex,
+			.vertex_count = vertex_count,
+			.sphere		  = def.sphere,
+		});
 
 		if (handle.is_null()) [[unlikely]]
 		{
@@ -125,16 +124,12 @@ namespace ember::render
 			rebased[i] = def.indices[i] + first_vertex;
 		}
 
-		device.update_buffer(
-			m_indices,
-			u64{first_index} * sizeof(u32),
-			{reinterpret_cast<const u8*>(rebased), index_count * sizeof(u32)});
+		device.update_buffer(m_indices, u64{first_index} * sizeof(u32),
+							 {reinterpret_cast<const u8*>(rebased), index_count * sizeof(u32)});
 
 		const GeometryData* record = m_records.get(handle);
-		device.update_buffer(
-			m_table,
-			u64{handle.index} * sizeof(GeometryData),
-			{reinterpret_cast<const u8*>(record), sizeof(GeometryData)});
+		device.update_buffer(m_table, u64{handle.index} * sizeof(GeometryData),
+							 {reinterpret_cast<const u8*>(record), sizeof(GeometryData)});
 
 		return handle;
 	}
@@ -151,10 +146,8 @@ namespace ember::render
 		// Scrub the table so an object still referencing this slot culls to an
 		// empty draw instead of reading recycled ranges.
 		const GeometryData dead{};
-		device.update_buffer(
-			m_table,
-			u64{handle.index} * sizeof(GeometryData),
-			{reinterpret_cast<const u8*>(&dead), sizeof(GeometryData)});
+		device.update_buffer(m_table, u64{handle.index} * sizeof(GeometryData),
+							 {reinterpret_cast<const u8*>(&dead), sizeof(GeometryData)});
 
 		const bool erased = m_records.erase(handle);
 		EMBER_ASSERT(erased);

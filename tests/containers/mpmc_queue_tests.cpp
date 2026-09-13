@@ -143,9 +143,9 @@ TEST(MpmcQueue, ManyProducersManyConsumers)
 	u32 missing = 0, duplicated = 0;
 	for (auto& hit : hits)
 	{
-		const u32 count	 = hit.load();
-		missing			+= count == 0;
-		duplicated		+= count > 1;
+		const u32 count = hit.load();
+		missing += count == 0;
+		duplicated += count > 1;
 	}
 
 	EXPECT_EQ(missing, 0u);

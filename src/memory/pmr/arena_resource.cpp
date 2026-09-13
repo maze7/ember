@@ -1,8 +1,8 @@
-#include <ember/core/profile.h>
-#include <ember/sync/thread.h>
 #include <ember/core/bits.h>
+#include <ember/core/profile.h>
 #include <ember/memory/pmr/arena_resource.h>
 #include <ember/memory/virtual_memory.h>
+#include <ember/sync/thread.h>
 
 #include <algorithm>
 #include <cstring>

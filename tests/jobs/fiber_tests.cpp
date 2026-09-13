@@ -82,15 +82,15 @@ namespace
 		{
 			fiber_switch(f.a, f.host);
 
-			const u64 step	= f.step;
-			v0			   += step;
-			v1			   += step + 1;
-			v2			   += step + 2;
-			v3			   += step + 3;
-			v4			   += step + 4;
-			v5			   += step + 5;
-			d0			   += f64(step);
-			d1			   += 0.5;
+			const u64 step = f.step;
+			v0 += step;
+			v1 += step + 1;
+			v2 += step + 2;
+			v3 += step + 3;
+			v4 += step + 4;
+			v5 += step + 5;
+			d0 += f64(step);
+			d1 += 0.5;
 		}
 
 		const u64 steps = 999 * 1000 / 2;
@@ -217,6 +217,5 @@ TEST(FiberDeathTest, OverflowHitsGuardPage)
 			(void)neighbour;
 			fiber_switch(host, fiber);
 		},
-		died_of_stack_fault,
-		"");
+		died_of_stack_fault, "");
 }

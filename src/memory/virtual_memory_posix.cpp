@@ -1,14 +1,14 @@
 #if defined(EMBER_PLATFORM_LINUX) || defined(EMBER_PLATFORM_MACOS)
-// POSIX emulation of the Win32 reserve/commit model: mmap with PROT_NONE reserves address space
-// without making it accessible, and mprotect grants access on commit (physical pages materialize
-// on first touch). decommit pairs madvise (return pages to the OS) with mprotect(PROT_NONE) so
-// stale use of decommitted memory faults loudly, mirroring Win32 MEM_DECOMMIT semantics.
-#include <ember/core/common.h>
-#include <ember/core/bits.h>
-#include <ember/memory/virtual_memory.h>
+	// POSIX emulation of the Win32 reserve/commit model: mmap with PROT_NONE reserves address space
+	// without making it accessible, and mprotect grants access on commit (physical pages materialize
+	// on first touch). decommit pairs madvise (return pages to the OS) with mprotect(PROT_NONE) so
+	// stale use of decommitted memory faults loudly, mirroring Win32 MEM_DECOMMIT semantics.
+	#include <ember/core/bits.h>
+	#include <ember/core/common.h>
+	#include <ember/memory/virtual_memory.h>
 
-#include <sys/mman.h>
-#include <unistd.h>
+	#include <sys/mman.h>
+	#include <unistd.h>
 
 namespace
 {
@@ -80,7 +80,7 @@ namespace ember::virtual_memory
 	{
 		assert_page_range(address, size);
 
-		const int advice_result  = madvise(address, size, decommit_advice());
+		const int advice_result	 = madvise(address, size, decommit_advice());
 		const int protect_result = mprotect(address, size, PROT_NONE);
 
 		return advice_result == 0 && protect_result == 0;

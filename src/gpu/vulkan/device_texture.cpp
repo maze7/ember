@@ -105,11 +105,8 @@ namespace ember::gpu
 
 			if (def.initial_data.size() != expected)
 			{
-				EMBER_ERROR(
-					"gpu: texture '{}' initial_data is {} bytes, the subresource chain needs {}",
-					def.name,
-					def.initial_data.size(),
-					expected);
+				EMBER_ERROR("gpu: texture '{}' initial_data is {} bytes, the subresource chain needs {}", def.name,
+							def.initial_data.size(), expected);
 				return {};
 			}
 		}
@@ -271,22 +268,22 @@ namespace ember::gpu
 					return {};
 				}
 
-				const TextureHandle entry = m_backend->resources.textures.insert(
-					vk::TextureHot{.image = image, .storage_view = mip_view},
-					vk::TextureCold{
-						.extent =
-							{
-								std::max(def.extent.width >> mip, 1u),
-								std::max(def.extent.height >> mip, 1u),
-								std::max(def.extent.depth >> mip, 1u),
-							},
-						.format		= info.vk,
-						.api_format = def.format,
-						.layout		= steady,
-						.owns_image = false,
-						.type		= def.type,
-						.parent		= handle,
-					});
+				const TextureHandle entry =
+					m_backend->resources.textures.insert(vk::TextureHot{.image = image, .storage_view = mip_view},
+														 vk::TextureCold{
+															 .extent =
+																 {
+																	 std::max(def.extent.width >> mip, 1u),
+																	 std::max(def.extent.height >> mip, 1u),
+																	 std::max(def.extent.depth >> mip, 1u),
+																 },
+															 .format	 = info.vk,
+															 .api_format = def.format,
+															 .layout	 = steady,
+															 .owns_image = false,
+															 .type		 = def.type,
+															 .parent	 = handle,
+														 });
 
 				if (entry.is_null())
 				{
@@ -311,8 +308,8 @@ namespace ember::gpu
 		{
 			if (def.mip_count * def.layers > 128)
 			{
-				EMBER_ERROR(
-					"gpu: texture '{}' attachment matrix {}x{} exceeds 128 slices", def.name, def.mip_count, def.layers);
+				EMBER_ERROR("gpu: texture '{}' attachment matrix {}x{} exceeds 128 slices", def.name, def.mip_count,
+							def.layers);
 				destroy(handle);
 				return {};
 			}
@@ -345,19 +342,16 @@ namespace ember::gpu
 
 		// Data lands and/or the image transitions into its steady layout; either way
 		// every texture leaves creation resting in a known layout.
-		vk::staging_upload_texture(
-			*m_backend,
-			{
-				.image		 = image,
-				.format		 = def.format,
-				.extent		 = def.extent,
-				.mip_count	 = def.mip_count,
-				.layer_count = def.layers,
-				.steady		 = steady,
-			},
-			def.initial_data,
-			deferred
-		);
+		vk::staging_upload_texture(*m_backend,
+								   {
+									   .image		= image,
+									   .format		= def.format,
+									   .extent		= def.extent,
+									   .mip_count	= def.mip_count,
+									   .layer_count = def.layers,
+									   .steady		= steady,
+								   },
+								   def.initial_data, deferred);
 
 		vk::set_name(m_backend->context, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<u64>(image), def.name);
 
@@ -441,19 +435,16 @@ namespace ember::gpu
 			return;
 		}
 
-		vk::staging_update_texture(
-			*m_backend,
-			{
-				.image		 = m_backend->resources.textures.get(handle)->image,
-				.format		 = cold->api_format,
-				.extent		 = extent,
-				.mip_count	 = cold->mip_count,
-				.layer_count = cold->layer_count,
-				.steady		 = cold->layout,
-			},
-			mip,
-			layer,
-			data);
+		vk::staging_update_texture(*m_backend,
+								   {
+									   .image		= m_backend->resources.textures.get(handle)->image,
+									   .format		= cold->api_format,
+									   .extent		= extent,
+									   .mip_count	= cold->mip_count,
+									   .layer_count = cold->layer_count,
+									   .steady		= cold->layout,
+								   },
+								   mip, layer, data);
 	}
 
 	u32 Device::storage_index(TextureHandle handle, u32 mip) const noexcept

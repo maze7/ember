@@ -69,25 +69,22 @@ namespace ember::render
 		const u32 indices[6] = {0, 2, 1, 1, 2, 3};
 
 		m_quad = renderer.geometry().create(
-			gpu,
-			{
-				.name		= "sprite.quad",
-				.positions	= {reinterpret_cast<const u8*>(positions), sizeof(positions)},
-				.attributes = {reinterpret_cast<const u8*>(attributes), sizeof(attributes)},
-				.indices	= {indices, 6},
-				.sphere		= SPRITE_QUAD_SPHERE,
-			});
+			gpu, {
+					 .name		 = "sprite.quad",
+					 .positions	 = {reinterpret_cast<const u8*>(positions), sizeof(positions)},
+					 .attributes = {reinterpret_cast<const u8*>(attributes), sizeof(attributes)},
+					 .indices	 = {indices, 6},
+					 .sphere	 = SPRITE_QUAD_SPHERE,
+				 });
 
 		const SpriteMaterial error{};
 
-		m_materials.init(
-			gpu,
-			{
-				.name		  = "sprite.materials",
-				.stride		  = sizeof(SpriteMaterial),
-				.capacity	  = def.material_capacity,
-				.error_record = {reinterpret_cast<const u8*>(&error), sizeof(SpriteMaterial)},
-			});
+		m_materials.init(gpu, {
+								  .name			= "sprite.materials",
+								  .stride		= sizeof(SpriteMaterial),
+								  .capacity		= def.material_capacity,
+								  .error_record = {reinterpret_cast<const u8*>(&error), sizeof(SpriteMaterial)},
+							  });
 	}
 
 	void SpriteFeature::shutdown(gpu::Device& device) noexcept
@@ -115,19 +112,16 @@ namespace ember::render
 
 		auto& pass = frame.graph.pass("sprite")
 						 .color({.texture = frame.resources.scene_color, .load = gpu::LoadOp::Load})
-						 .depth(
-							 {.texture = frame.resources.scene_depth,
-							  .load	   = gpu::LoadOp::Load,
-							  .store   = gpu::StoreOp::DontCare});
+						 .depth({.texture = frame.resources.scene_depth,
+								 .load	  = gpu::LoadOp::Load,
+								 .store	  = gpu::StoreOp::DontCare});
 
 		read(pass, frame.visibility[0].cutout);
 
 		const SpriteConstants constants{.view_proj = frame.views[0].view_projection};
 
 		pass.record(
-			[constants,
-			 pipeline	  = m_pipeline,
-			 stream		  = frame.visibility[0].cutout,
+			[constants, pipeline = m_pipeline, stream = frame.visibility[0].cutout,
 			 index_buffer = frame.geometry.index_buffer(),
 			 push =
 				 SpritePush{

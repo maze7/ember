@@ -18,26 +18,25 @@ namespace ember::render
 		m_scene.init(def.object_capacity);
 		m_geometry.init(device, def.geometry);
 		m_gpu_scene.init(device, {.object_capacity = def.object_capacity});
-		m_visibility.init(
-			device,
-			{
-				.cull_shader	  = def.cull_shader.empty() ? embedded::cull_shader() : def.cull_shader,
-				.command_capacity = def.command_capacity,
-			});
+		m_visibility.init(device,
+						  {
+							  .cull_shader		= def.cull_shader.empty() ? embedded::cull_shader() : def.cull_shader,
+							  .command_capacity = def.command_capacity,
+						  });
 		m_readback.init(device);
 
-		const u8 white[4]= {255, 255, 255, 255};
-		m_white = device.create_texture({
-			.name = "renderer.white",
-			.extent = {1, 1, 1},
-			.format = gpu::TextureFormat::RGBA8Unorm,
-			.mip_count = 1,
-			.usage = gpu::TextureUsage::Sampled,
+		const u8 white[4] = {255, 255, 255, 255};
+		m_white			  = device.create_texture({
+			.name		  = "renderer.white",
+			.extent		  = {1, 1, 1},
+			.format		  = gpu::TextureFormat::RGBA8Unorm,
+			.mip_count	  = 1,
+			.usage		  = gpu::TextureUsage::Sampled,
 			.initial_data = {white, sizeof(white)},
 		});
 
 		m_point_sampler = device.create_sampler({
-			.name = "renderer.point",
+			.name		= "renderer.point",
 			.min_filter = gpu::Filter::Nearest,
 			.mag_filter = gpu::Filter::Nearest,
 		});

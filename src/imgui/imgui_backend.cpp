@@ -2,9 +2,9 @@
 
 #include <ember/core/logger.h>
 #include <ember/gpu/device.h>
+#include <ember/imgui/embedded_shader.h>
 #include <ember/input/input.h>
 #include <ember/platform/platform.h>
-#include <ember/imgui/embedded_shader.h>
 
 #include <algorithm>
 #include <cfloat>
@@ -277,9 +277,7 @@ namespace ember::imgui
 				// and updates are bursty while new glyphs rasterize, so the full
 				// image goes up rather than the dirty rects.
 				device.update_texture(
-					unpack_handle(texture->BackendUserData),
-					0,
-					0,
+					unpack_handle(texture->BackendUserData), 0, 0,
 					{static_cast<const u8*>(texture->GetPixels()), static_cast<u64>(texture->GetSizeInBytes())});
 
 				texture->SetStatus(ImTextureStatus_OK);
@@ -311,12 +309,12 @@ namespace ember::imgui
 		IMGUI_CHECKVERSION();
 		ImGui::CreateContext();
 
-		ImGuiIO& io				= ImGui::GetIO();
-		io.BackendPlatformName	= "ember";
-		io.BackendRendererName	= "ember::gpu";
-		io.BackendFlags		   |= ImGuiBackendFlags_HasMouseCursors | ImGuiBackendFlags_RendererHasVtxOffset |
-								  ImGuiBackendFlags_RendererHasTextures;
-		io.ConfigFlags		   |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
+		ImGuiIO& io			   = ImGui::GetIO();
+		io.BackendPlatformName = "ember";
+		io.BackendRendererName = "ember::gpu";
+		io.BackendFlags |= ImGuiBackendFlags_HasMouseCursors | ImGuiBackendFlags_RendererHasVtxOffset |
+						   ImGuiBackendFlags_RendererHasTextures;
+		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
 
 		ImGuiPlatformIO& platform_io			= ImGui::GetPlatformIO();
 		platform_io.Platform_GetClipboardTextFn = get_clipboard;
@@ -398,10 +396,9 @@ namespace ember::imgui
 		s_state.window = window;
 
 		ImGuiIO& io	   = ImGui::GetIO();
-		io.DisplaySize = ImVec2(
-			static_cast<f32>(display.width > 0 ? display.width : 1),
-			static_cast<f32>(display.height > 0 ? display.height : 1));
-		io.DeltaTime = dt > 0.0f ? dt : 1.0f / 60.0f;
+		io.DisplaySize = ImVec2(static_cast<f32>(display.width > 0 ? display.width : 1),
+								static_cast<f32>(display.height > 0 ? display.height : 1));
+		io.DeltaTime   = dt > 0.0f ? dt : 1.0f / 60.0f;
 
 		const Mouse& mouse = input.mouse();
 		if (mouse.window() == window)
@@ -415,11 +412,8 @@ namespace ember::imgui
 			int index;
 		};
 		constexpr ButtonMap BUTTONS[] = {
-			{MouseButton::Left, 0},
-			{MouseButton::Right, 1},
-			{MouseButton::Middle, 2},
-			{MouseButton::X1, 3},
-			{MouseButton::X2, 4},
+			{MouseButton::Left, 0}, {MouseButton::Right, 1}, {MouseButton::Middle, 2},
+			{MouseButton::X1, 3},	{MouseButton::X2, 4},
 		};
 
 		for (const auto& [button, index] : BUTTONS)
@@ -525,17 +519,13 @@ namespace ember::imgui
 		u32 index_cursor  = 0;
 		for (const ImDrawList* list : draw_data->CmdLists)
 		{
-			std::memcpy(
-				vertices.data + vertex_cursor,
-				list->VtxBuffer.Data,
-				static_cast<size_t>(list->VtxBuffer.Size) * sizeof(ImDrawVert));
-			std::memcpy(
-				indices.data + index_cursor,
-				list->IdxBuffer.Data,
-				static_cast<size_t>(list->IdxBuffer.Size) * sizeof(ImDrawIdx));
+			std::memcpy(vertices.data + vertex_cursor, list->VtxBuffer.Data,
+						static_cast<size_t>(list->VtxBuffer.Size) * sizeof(ImDrawVert));
+			std::memcpy(indices.data + index_cursor, list->IdxBuffer.Data,
+						static_cast<size_t>(list->IdxBuffer.Size) * sizeof(ImDrawIdx));
 
 			vertex_cursor += static_cast<u32>(list->VtxBuffer.Size);
-			index_cursor  += static_cast<u32>(list->IdxBuffer.Size);
+			index_cursor += static_cast<u32>(list->IdxBuffer.Size);
 		}
 
 		EMBER_GPU_ZONE(cmd, "imgui");
@@ -593,7 +583,7 @@ namespace ember::imgui
 			}
 
 			list_vertex += static_cast<u32>(list->VtxBuffer.Size);
-			list_index	+= static_cast<u32>(list->IdxBuffer.Size);
+			list_index += static_cast<u32>(list->IdxBuffer.Size);
 		}
 	}
 

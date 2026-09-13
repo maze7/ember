@@ -288,8 +288,8 @@ namespace ember
 		{
 			bool expected = false;
 
-			if (!s_platform_claimed.compare_exchange_strong(
-					expected, true, std::memory_order_acq_rel, std::memory_order_acquire))
+			if (!s_platform_claimed.compare_exchange_strong(expected, true, std::memory_order_acq_rel,
+															std::memory_order_acquire))
 			{
 				EMBER_ERROR("Only one Ember Platform may exist at a time");
 				return;
@@ -487,10 +487,9 @@ namespace ember
 			{
 				SDL_CloseGamepad(native);
 
-				EMBER_WARN(
-					"Ignoring gamepad {} because all "
-					"Ember input slots are in use",
-					id.value);
+				EMBER_WARN("Ignoring gamepad {} because all "
+						   "Ember input slots are in use",
+						   id.value);
 
 				return;
 			}
@@ -605,11 +604,9 @@ namespace ember
 
 					if (!window.is_null())
 					{
-						input.on_composition(
-							event.edit.text != nullptr ? std::string_view{event.edit.text} : std::string_view{},
-							event.edit.start,
-							event.edit.length,
-							window);
+						input.on_composition(event.edit.text != nullptr ? std::string_view{event.edit.text}
+																		: std::string_view{},
+											 event.edit.start, event.edit.length, window);
 					}
 
 					break;
@@ -635,8 +632,7 @@ namespace ember
 								event.motion.xrel,
 								event.motion.yrel,
 							},
-							window,
-							event.motion.timestamp);
+							window, event.motion.timestamp);
 					}
 
 					break;
@@ -684,8 +680,7 @@ namespace ember
 							event.wheel.x * direction,
 							event.wheel.y * direction,
 						},
-						window,
-						event.wheel.timestamp);
+						window, event.wheel.timestamp);
 
 					break;
 				}
@@ -712,11 +707,9 @@ namespace ember
 						break;
 					}
 
-					input.on_gamepad_button(
-						GamepadId{static_cast<u32>(event.gbutton.which)},
-						static_cast<GamepadButton>(event.gbutton.button),
-						event.gbutton.down,
-						event.gbutton.timestamp);
+					input.on_gamepad_button(GamepadId{static_cast<u32>(event.gbutton.which)},
+											static_cast<GamepadButton>(event.gbutton.button), event.gbutton.down,
+											event.gbutton.timestamp);
 
 					break;
 				}
@@ -731,11 +724,8 @@ namespace ember
 					const f32 value = event.gaxis.value >= 0 ? static_cast<f32>(event.gaxis.value) / 32767.0f
 															 : static_cast<f32>(event.gaxis.value) / 32768.0f;
 
-					input.on_gamepad_axis(
-						GamepadId{static_cast<u32>(event.gaxis.which)},
-						static_cast<GamepadAxis>(event.gaxis.axis),
-						value,
-						event.gaxis.timestamp);
+					input.on_gamepad_axis(GamepadId{static_cast<u32>(event.gaxis.which)},
+										  static_cast<GamepadAxis>(event.gaxis.axis), value, event.gaxis.timestamp);
 
 					break;
 				}
@@ -1109,10 +1099,8 @@ namespace ember
 
 		for (size_t row = 0; row < height; ++row)
 		{
-			std::memcpy(
-				destination + row * static_cast<size_t>(surface->pitch),
-				image.rgba8.data() + row * source_pitch,
-				row_bytes);
+			std::memcpy(destination + row * static_cast<size_t>(surface->pitch),
+						image.rgba8.data() + row * source_pitch, row_bytes);
 		}
 
 		SDL_Cursor* native = SDL_CreateColorCursor(surface, image.hotspot.x, image.hotspot.y);
@@ -1322,8 +1310,8 @@ namespace ember
 		if (native == nullptr)
 			return;
 
-		if (!SDL_RumbleGamepad(
-				native->handle, rumble_intensity(low_intensity), rumble_intensity(high_intensity), duration_ms))
+		if (!SDL_RumbleGamepad(native->handle, rumble_intensity(low_intensity), rumble_intensity(high_intensity),
+							   duration_ms))
 		{
 			log_sdl_failure("SDL_RumbleGamepad");
 		}

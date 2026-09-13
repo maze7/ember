@@ -67,11 +67,11 @@ namespace ember::jobs
 
 	struct JobDef
 	{
-		JobFn fn			 = nullptr;
-		void* data			 = nullptr;
-		const char* name	 = nullptr;
+		JobFn fn = nullptr;
+		void* data = nullptr;
+		const char* name = nullptr;
 		JobPriority priority = JobPriority::Normal;
-		JobStack stack		 = JobStack::Small;
+		JobStack stack = JobStack::Small;
 	};
 
 	/// Names a batch: a counter slot and the generation it was kicked with.
@@ -79,16 +79,16 @@ namespace ember::jobs
 
 	struct JobSystemDef
 	{
-		u32 worker_count	 = 0;	  // 0 derives it from the hardware thread count
-		u32 reserved_threads = 1;	  // hardware threads left to the OS and engine threads when derived
-		u32 small_fibers	 = 128;
-		u32 large_fibers	 = 32;
-		size_t small_stack	 = 64_kb;
-		size_t large_stack	 = 512_kb;
-		u32 queue_capacity	 = 4096;  // jobs queued per priority
-		u32 counter_capacity = 1024;  // batches alive at once
-		u32 stall_report_ms	 = 1000;  // a wait with no fiber and no progress for this long logs the state and fails
-		bool pin_workers	 = false; // lock each worker thread to a core, as on consoles
+		u32 worker_count = 0;	  // 0 derives it from the hardware thread count
+		u32 reserved_threads = 1; // hardware threads left to the OS and engine threads when derived
+		u32 small_fibers = 128;
+		u32 large_fibers = 32;
+		size_t small_stack = 64_kb;
+		size_t large_stack = 512_kb;
+		u32 queue_capacity = 4096;	 // jobs queued per priority
+		u32 counter_capacity = 1024; // batches alive at once
+		u32 stall_report_ms = 1000;	 // a wait with no fiber and no progress for this long logs the state and fails
+		bool pin_workers = false;	 // lock each worker thread to a core, as on consoles
 	};
 
 	/// The half open index range one job of a parallel_for covers, and that job's index in the
@@ -96,7 +96,7 @@ namespace ember::jobs
 	struct JobRange
 	{
 		u32 begin = 0;
-		u32 end	  = 0;
+		u32 end = 0;
 		u32 index = 0;
 
 		[[nodiscard]] u32 count() const noexcept { return end - begin; }
@@ -109,11 +109,11 @@ namespace ember::jobs
 
 	struct ParallelForDef
 	{
-		u32 count			 = 0; // items, indexed [0, count)
-		u32 grain			 = 1; // items one job is worth; sets the job count
-		const char* name	 = nullptr;
+		u32 count = 0; // items, indexed [0, count)
+		u32 grain = 1; // items one job is worth; sets the job count
+		const char* name = nullptr;
 		JobPriority priority = JobPriority::Normal;
-		JobStack stack		 = JobStack::Small;
+		JobStack stack = JobStack::Small;
 	};
 
 	/// A snapshot for debug views. Every count is approximate while jobs run.
@@ -121,11 +121,11 @@ namespace ember::jobs
 	{
 		u32 free_small_fibers = 0;
 		u32 free_large_fibers = 0;
-		u32 parked_fibers	  = 0; // waiting on a counter
-		u32 ready_fibers	  = 0; // woken, not yet picked up by a worker
-		u32 queued_jobs		  = 0;
-		u32 live_batches	  = 0;
-		u64 stalls			  = 0; // waits that found no fiber
+		u32 parked_fibers = 0; // waiting on a counter
+		u32 ready_fibers = 0;  // woken, not yet picked up by a worker
+		u32 queued_jobs = 0;
+		u32 live_batches = 0;
+		u64 stalls = 0; // waits that found no fiber
 	};
 
 	/**
@@ -141,7 +141,7 @@ namespace ember::jobs
 		explicit JobSystem(const JobSystemDef& def = {}) noexcept;
 		~JobSystem() noexcept;
 
-		JobSystem(const JobSystem&)			   = delete;
+		JobSystem(const JobSystem&) = delete;
 		JobSystem& operator=(const JobSystem&) = delete;
 
 		/// Makes the calling thread worker 0, runs main there and returns when main returns.
@@ -195,7 +195,7 @@ namespace ember::jobs
 		static_assert(!std::is_const_v<F>, "the callable is the job's data and may be mutated");
 
 		return {
-			.fn	  = [](void* data) { (*static_cast<F*>(data))(); },
+			.fn = [](void* data) { (*static_cast<F*>(data))(); },
 			.data = &fn,
 			.name = name,
 		};
@@ -236,14 +236,14 @@ namespace ember::jobs
 			if (this != &other)
 			{
 				reset();
-				m_handle	   = other.m_handle;
+				m_handle = other.m_handle;
 				other.m_handle = {};
 			}
 
 			return *this;
 		}
 
-		JobBatch(const JobBatch&)			 = delete;
+		JobBatch(const JobBatch&) = delete;
 		JobBatch& operator=(const JobBatch&) = delete;
 
 		[[nodiscard]] JobHandle handle() const noexcept { return m_handle; }

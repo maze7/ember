@@ -37,31 +37,28 @@ namespace
 {
 	struct State
 	{
-		std::atomic<u32>  ran{0};
-		std::thread::id	  main_thread;
-		u32				  worker_in_main	   = NO_WORKER;
-		bool			  complete_after_kick  = true;
-		u32				  ran_after_two		   = 0;
-		bool			  large_ok			   = false;
-		bool			  small_ok			   = false;
-		bool			  stale_reads_complete = false;
-		bool			  slot_reused		   = false;
-		bool			  moved_from_is_null   = false;
-		std::atomic<u64>  worker_mask{0};
-		std::atomic<u32>  started{0};
+		std::atomic<u32> ran{0};
+		std::thread::id main_thread;
+		u32 worker_in_main		  = NO_WORKER;
+		bool complete_after_kick  = true;
+		u32 ran_after_two		  = 0;
+		bool large_ok			  = false;
+		bool small_ok			  = false;
+		bool stale_reads_complete = false;
+		bool slot_reused		  = false;
+		bool moved_from_is_null	  = false;
+		std::atomic<u64> worker_mask{0};
+		std::atomic<u32> started{0};
 		std::atomic<bool> timed_out{false};
-		u32				  parallel_count = 0;
-		std::atomic<u32>  named_ok{0};
-		std::atomic<u32>  pinned_ok{0};
-		std::atomic<u32>  on_workers{0};
+		u32 parallel_count = 0;
+		std::atomic<u32> named_ok{0};
+		std::atomic<u32> pinned_ok{0};
+		std::atomic<u32> on_workers{0};
 	};
 
 	void nop_job(void*) {}
 
-	void count_job(void* data)
-	{
-		static_cast<State*>(data)->ran.fetch_add(1, std::memory_order_relaxed);
-	}
+	void count_job(void* data) { static_cast<State*>(data)->ran.fetch_add(1, std::memory_order_relaxed); }
 
 	void fill(JobDef* decls, u32 count, void* data)
 	{
@@ -155,8 +152,8 @@ namespace
 
 		// The pool has two slots: the next batch takes the other one, the one after reuses
 		// the first slot with a new generation, so the old handle still reads as complete.
-		JobHandle second = kick(decls);
-		JobHandle third	 = kick(decls);
+		JobHandle second  = kick(decls);
+		JobHandle third	  = kick(decls);
 		state.slot_reused = third.index == first.index && third != first && is_complete(first) && !is_complete(third);
 		wait(second);
 		wait(third);
@@ -327,12 +324,12 @@ namespace
 
 	struct RangeState
 	{
-		std::vector<u8>	 hits;
-		u32				 grain = 1;
+		std::vector<u8> hits;
+		u32 grain = 1;
 		std::atomic<u32> visited{0};
 		std::atomic<u32> jobs{0};
 		std::atomic<u32> bad_index{0};
-		u32				 sizes[MAX_RANGE_JOBS] = {};
+		u32 sizes[MAX_RANGE_JOBS] = {};
 	};
 
 	void main_parallel_for(void* data)
@@ -385,10 +382,10 @@ namespace
 	{
 		auto& state = *static_cast<State*>(data);
 
-		u32	 first	= 0;
-		u32	 second = 0;
-		auto a		= [&] { first = 1; };
-		auto b		= [&] { second = 2; };
+		u32 first  = 0;
+		u32 second = 0;
+		auto a	   = [&] { first = 1; };
+		auto b	   = [&] { second = 2; };
 
 		const JobDef decls[] = {make_job(a, "a"), make_job(b, "b")};
 
@@ -434,7 +431,7 @@ namespace
 
 		const u64 os_before = os_thread_id();
 		const u32 id_before = current_thread_id();
-		void*	  block		= memory::heap(MemoryTag::Engine).allocate(64, 16);
+		void* block			= memory::heap(MemoryTag::Engine).allocate(64, 16);
 
 		JobBatch child({.fn = spin_job, .name = "spin"});
 		child.wait();
@@ -466,13 +463,10 @@ namespace
 	struct StallState
 	{
 		std::atomic<u32> ran{0};
-		JobStats		 stats;
+		JobStats stats;
 	};
 
-	void stall_child(void* data)
-	{
-		static_cast<StallState*>(data)->ran.fetch_add(1, std::memory_order_relaxed);
-	}
+	void stall_child(void* data) { static_cast<StallState*>(data)->ran.fetch_add(1, std::memory_order_relaxed); }
 
 	void stall_parent(void* data)
 	{
@@ -585,7 +579,7 @@ namespace
 
 		{
 			constexpr u32 iterations = 100'000;
-			const auto	  start		 = std::chrono::steady_clock::now();
+			const auto start		 = std::chrono::steady_clock::now();
 			for (u32 i = 0; i < iterations; ++i)
 			{
 				JobBatch batch({.fn = nop_job});
@@ -597,7 +591,7 @@ namespace
 
 		{
 			constexpr u32 batches = 4'000;
-			JobDef		  decls[64];
+			JobDef decls[64];
 			for (JobDef& decl : decls)
 				decl = {.fn = nop_job};
 
@@ -607,15 +601,15 @@ namespace
 				JobBatch batch(decls);
 				batch.wait();
 			}
-			bench.per_job_ns =
-				std::chrono::duration<f64, std::nano>(std::chrono::steady_clock::now() - start).count() / (batches * 64.0);
+			bench.per_job_ns = std::chrono::duration<f64, std::nano>(std::chrono::steady_clock::now() - start).count() /
+							   (batches * 64.0);
 		}
 	}
 }
 
 TEST(JobSystem, KickAndWaitRunsEveryJob)
 {
-	State	  state;
+	State state;
 	JobSystem jobs({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
 	jobs.run(main_kick_and_wait, &state);
 
@@ -628,7 +622,7 @@ TEST(JobSystem, KickAndWaitRunsEveryJob)
 
 TEST(JobSystem, NestedKicksAndWaits)
 {
-	State	  state;
+	State state;
 	JobSystem jobs({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
 	jobs.run(main_nested, &state);
 
@@ -637,7 +631,7 @@ TEST(JobSystem, NestedKicksAndWaits)
 
 TEST(JobSystem, LargeJobsRunOnLargeStacks)
 {
-	State	  state;
+	State state;
 	JobSystem jobs({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
 	jobs.run(main_stack_classes, &state);
 
@@ -647,7 +641,7 @@ TEST(JobSystem, LargeJobsRunOnLargeStacks)
 
 TEST(JobSystem, FibersAreRecycled)
 {
-	State	  state;
+	State state;
 	JobSystem jobs({.worker_count = 4, .small_fibers = 8, .large_fibers = 2});
 	jobs.run(main_recycle, &state);
 
@@ -656,7 +650,7 @@ TEST(JobSystem, FibersAreRecycled)
 
 TEST(JobSystem, RunsTwice)
 {
-	State	  state;
+	State state;
 	JobSystem jobs({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
 	jobs.run(main_nested, &state);
 	jobs.run(main_nested, &state);
@@ -666,7 +660,7 @@ TEST(JobSystem, RunsTwice)
 
 TEST(JobSystem, StaleHandlesReadComplete)
 {
-	State	  state;
+	State state;
 	JobSystem jobs({.worker_count = 1, .small_fibers = 4, .large_fibers = 2, .counter_capacity = 2});
 	jobs.run(main_stale_handles, &state);
 
@@ -677,7 +671,7 @@ TEST(JobSystem, StaleHandlesReadComplete)
 
 TEST(JobSystem, DetachedBatchesFreeThemselves)
 {
-	State	  state;
+	State state;
 	JobSystem jobs({.worker_count = 1, .small_fibers = 4, .large_fibers = 2, .counter_capacity = 2});
 	jobs.run(main_detached, &state);
 
@@ -687,7 +681,7 @@ TEST(JobSystem, DetachedBatchesFreeThemselves)
 
 TEST(JobSystem, BatchesMove)
 {
-	State	  state;
+	State state;
 	JobSystem jobs({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
 	jobs.run(main_moves, &state);
 
@@ -697,7 +691,7 @@ TEST(JobSystem, BatchesMove)
 
 TEST(JobSystem, JobsRunInParallel)
 {
-	State	  state;
+	State state;
 	JobSystem jobs({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
 	jobs.run(main_parallel, &state);
 
@@ -707,7 +701,7 @@ TEST(JobSystem, JobsRunInParallel)
 
 TEST(JobSystem, JobsSpreadAcrossWorkers)
 {
-	State	  state;
+	State state;
 	JobSystem jobs({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
 	jobs.run(main_spread, &state);
 
@@ -717,7 +711,7 @@ TEST(JobSystem, JobsSpreadAcrossWorkers)
 
 TEST(JobSystem, KicksFromAnotherThreadWithoutRun)
 {
-	State	  state;
+	State state;
 	JobSystem jobs({.worker_count = 3, .small_fibers = 16, .large_fibers = 2});
 
 	std::thread producer(
@@ -743,7 +737,7 @@ TEST(JobSystem, KicksFromAnotherThreadWithoutRun)
 
 TEST(JobSystem, WaitsFromAThreadOutsideTheSystem)
 {
-	State	  state;
+	State state;
 	JobSystem jobs({.worker_count = 3, .small_fibers = 16, .large_fibers = 2});
 
 	std::thread outsider(
@@ -766,7 +760,7 @@ TEST(JobSystem, WaitsFromAThreadOutsideTheSystem)
 
 TEST(JobSystem, WorkersAreNamedAndPinned)
 {
-	State	  state;
+	State state;
 	JobSystem jobs({.worker_count = 4, .small_fibers = 16, .large_fibers = 2, .pin_workers = true});
 	jobs.run(main_inspect_threads, &state);
 
@@ -777,7 +771,7 @@ TEST(JobSystem, WorkersAreNamedAndPinned)
 
 TEST(JobSystem, StressNestedBatches)
 {
-	State	  state;
+	State state;
 	JobSystem jobs({.worker_count = 8, .small_fibers = 48, .large_fibers = 4});
 	jobs.run(main_stress, &state);
 
@@ -786,7 +780,7 @@ TEST(JobSystem, StressNestedBatches)
 
 TEST(JobSystem, Bench)
 {
-	Bench	  bench;
+	Bench bench;
 	JobSystem jobs({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
 	jobs.run(main_bench, &bench);
 	std::printf("[          ] %.1f ns per one-job kick+wait, %.1f ns per job in 64-job batches, 4 workers\n",
@@ -922,8 +916,7 @@ TEST(JobSystemDeathTest, StuckWaitsReportTheStateAndFail)
 			JobSystem jobs({.worker_count = 2, .small_fibers = 4, .large_fibers = 1, .stall_report_ms = 200});
 			jobs.run(main_cycle, &state);
 		},
-		died_fatally,
-		"stalled");
+		died_fatally, "stalled");
 }
 
 TEST(JobSystemDeathTest, FullJobQueueIsFatal)
@@ -938,8 +931,7 @@ TEST(JobSystemDeathTest, FullJobQueueIsFatal)
 
 			(void)kick(decls);
 		},
-		died_fatally,
-		"job queue full");
+		died_fatally, "job queue full");
 }
 
 TEST(JobSystemDeathTest, CounterPoolExhaustionIsFatal)
@@ -953,6 +945,5 @@ TEST(JobSystemDeathTest, CounterPoolExhaustionIsFatal)
 			(void)first;
 			(void)kick(decl);
 		},
-		died_fatally,
-		"counter pool exhausted");
+		died_fatally, "counter pool exhausted");
 }

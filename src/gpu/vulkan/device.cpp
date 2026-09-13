@@ -27,13 +27,12 @@ namespace ember::gpu
 			};
 			EMBER_VK_CHECK(vkBeginCommandBuffer(cmd, &begin_info));
 
-			const VkClearColorValue clear{
-				.float32 = {
-					0.02f,
-					0.025f,
-					0.035f,
-					1.0f,
-				}};
+			const VkClearColorValue clear{.float32 = {
+											  0.02f,
+											  0.025f,
+											  0.035f,
+											  1.0f,
+										  }};
 
 			for (u32 i = 0; i < backend.frame.pending_present_count; ++i)
 			{
@@ -259,14 +258,8 @@ namespace ember::gpu
 
 				if (pending.needs_acquire)
 				{
-					vk::staging_acquire_image(
-						backend,
-						acquire_cmd,
-						pending.image,
-						pending.aspect,
-						pending.mip_count,
-						pending.layer_count,
-						pending.layout);
+					vk::staging_acquire_image(backend, acquire_cmd, pending.image, pending.aspect, pending.mip_count,
+											  pending.layer_count, pending.layout);
 
 					frame.acquire_value = std::max(frame.acquire_value, pending.ready_value);
 				}
@@ -276,8 +269,8 @@ namespace ember::gpu
 				// happen: destruction runs on the graphics queue.
 				if (vk::TextureCold* cold = backend.resources.textures.get_cold(pending.texture))
 				{
-					backend.descriptor_heap.write_sampled(
-						backend.context, pending.texture.index, pending.view, pending.layout, pending.type);
+					backend.descriptor_heap.write_sampled(backend.context, pending.texture.index, pending.view,
+														  pending.layout, pending.type);
 
 					cold->ready_value = 0;
 				}
@@ -336,8 +329,8 @@ namespace ember::gpu
 
 			// Idle means everything signaled: even entries stamped for a submit that never
 			// happened (an open frame at teardown) are safe now.
-			m_backend->destroy_queue.drain(
-				m_backend->context, m_backend->descriptor_heap, m_backend->resources, UINT64_MAX);
+			m_backend->destroy_queue.drain(m_backend->context, m_backend->descriptor_heap, m_backend->resources,
+										   UINT64_MAX);
 		}
 
 		Backend* dead = std::exchange(m_backend, nullptr);
@@ -421,8 +414,8 @@ namespace ember::gpu
 		// recycling may reclaim everything the frame pacing hadn't caught up to yet.
 		m_backend->frame.completed	 = m_backend->frame.timeline_value;
 		m_backend->staging.completed = m_backend->staging.value;
-		m_backend->destroy_queue.drain(
-			m_backend->context, m_backend->descriptor_heap, m_backend->resources, UINT64_MAX);
+		m_backend->destroy_queue.drain(m_backend->context, m_backend->descriptor_heap, m_backend->resources,
+									   UINT64_MAX);
 	}
 
 	bool Device::is_resident(TextureHandle handle) const noexcept
@@ -515,8 +508,8 @@ namespace ember::gpu
 		frame.acquire_value = 0;
 
 		// The graveyard rides the frame pacing and needs no extra queries.
-		m_backend->destroy_queue.drain(
-			m_backend->context, m_backend->descriptor_heap, m_backend->resources, frame.completed);
+		m_backend->destroy_queue.drain(m_backend->context, m_backend->descriptor_heap, m_backend->resources,
+									   frame.completed);
 
 		// Resolve the slot's zones from the frame that just retired, then hand the
 		// query range back. Consuming zone_count keeps a later placeholder frame
@@ -533,14 +526,8 @@ namespace ember::gpu
 			u64 ticks[MAX_GPU_ZONES * 2];
 
 			const VkResult result = vkGetQueryPoolResults(
-				m_backend->context.device,
-				frame.timestamps,
-				base,
-				recording.zone_count * 2,
-				sizeof(u64) * recording.zone_count * 2,
-				ticks,
-				sizeof(u64),
-				VK_QUERY_RESULT_64_BIT);
+				m_backend->context.device, frame.timestamps, base, recording.zone_count * 2,
+				sizeof(u64) * recording.zone_count * 2, ticks, sizeof(u64), VK_QUERY_RESULT_64_BIT);
 
 			if (result == VK_SUCCESS)
 			{
@@ -663,15 +650,8 @@ namespace ember::gpu
 		// set_constants.
 		for (const VkPipelineBindPoint bind_point : {VK_PIPELINE_BIND_POINT_GRAPHICS, VK_PIPELINE_BIND_POINT_COMPUTE})
 		{
-			vkCmdBindDescriptorSets(
-				cmd,
-				bind_point,
-				m_backend->descriptor_heap.pipeline_layout(),
-				0,
-				static_cast<u32>(std::size(sets)),
-				sets,
-				CONSTANT_BUFFER_SLOTS,
-				zero_offsets);
+			vkCmdBindDescriptorSets(cmd, bind_point, m_backend->descriptor_heap.pipeline_layout(), 0,
+									static_cast<u32>(std::size(sets)), sets, CONSTANT_BUFFER_SLOTS, zero_offsets);
 		}
 
 		recording = Recording{.commands = recording.commands, .index = index, .open = true};

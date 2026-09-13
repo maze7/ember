@@ -43,7 +43,7 @@ namespace ember
 		explicit MpmcQueue(std::pmr::memory_resource& resource) noexcept : m_resource(&resource) {}
 		~MpmcQueue() noexcept;
 
-		MpmcQueue(const MpmcQueue&)			   = delete;
+		MpmcQueue(const MpmcQueue&) = delete;
 		MpmcQueue& operator=(const MpmcQueue&) = delete;
 
 		/// Allocates the cells. Runs once; capacity is a power of two of at least 2.
@@ -66,9 +66,9 @@ namespace ember
 		};
 
 		std::pmr::memory_resource* m_resource = nullptr;
-		Cell* m_cells						  = nullptr;
-		size_t m_mask						  = 0;
-		size_t m_capacity					  = 0;
+		Cell* m_cells = nullptr;
+		size_t m_mask = 0;
+		size_t m_capacity = 0;
 
 		alignas(EMBER_CACHE_LINE) std::atomic<size_t> m_enqueue{0};
 		alignas(EMBER_CACHE_LINE) std::atomic<size_t> m_dequeue{0};
@@ -85,8 +85,8 @@ namespace ember
 		EMBER_ASSERT(m_cells == nullptr && "init runs once");
 		EMBER_ASSERT(capacity >= 2 && is_power_of_two(capacity));
 
-		m_cells	   = static_cast<Cell*>(m_resource->allocate(capacity * sizeof(Cell), EMBER_CACHE_LINE));
-		m_mask	   = capacity - 1;
+		m_cells = static_cast<Cell*>(m_resource->allocate(capacity * sizeof(Cell), EMBER_CACHE_LINE));
+		m_mask = capacity - 1;
 		m_capacity = capacity;
 
 		for (size_t index = 0; index < capacity; ++index)
@@ -109,7 +109,7 @@ namespace ember
 			cell = m_cells + (pos & m_mask);
 
 			const size_t sequence = cell->sequence.load(std::memory_order_acquire);
-			const intptr_t diff	  = static_cast<intptr_t>(sequence) - static_cast<intptr_t>(pos);
+			const intptr_t diff = static_cast<intptr_t>(sequence) - static_cast<intptr_t>(pos);
 
 			if (diff == 0)
 			{
@@ -137,7 +137,7 @@ namespace ember
 			cell = m_cells + (pos & m_mask);
 
 			const size_t sequence = cell->sequence.load(std::memory_order_acquire);
-			const intptr_t diff	  = static_cast<intptr_t>(sequence) - static_cast<intptr_t>(pos + 1);
+			const intptr_t diff = static_cast<intptr_t>(sequence) - static_cast<intptr_t>(pos + 1);
 
 			if (diff == 0)
 			{

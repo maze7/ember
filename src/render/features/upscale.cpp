@@ -1,6 +1,6 @@
-#include <ember/render/embedded_shaders.h>
 #include <ember/core/logger.h>
 #include <ember/gpu/device.h>
+#include <ember/render/embedded_shaders.h>
 #include <ember/render/features/upscale.h>
 
 namespace ember::render
@@ -27,7 +27,7 @@ namespace ember::render
 	UpscaleFeature::UpscaleFeature(Renderer& renderer, const Def& def) noexcept
 		: m_resolution(def.resolution), m_subtexel_offset(def.subtexel_offset)
 	{
-		auto& gpu = renderer.gpu();
+		auto& gpu	 = renderer.gpu();
 		auto& shader = def.shader.empty() ? embedded::upscale_shader() : def.shader;
 
 		m_pipeline = gpu.create_graphics_pipeline({
@@ -83,27 +83,25 @@ namespace ember::render
 
 		const UpscaleConstants constants{
 			.scene_size = {static_cast<f32>(m_resolution.width), static_cast<f32>(m_resolution.height)},
-			.scale =
-				{std::max(1.0f, static_cast<f32>(output.width) / static_cast<f32>(m_resolution.width)),
-				 std::max(1.0f, static_cast<f32>(output.height) / static_cast<f32>(m_resolution.height))},
+			.scale		= {std::max(1.0f, static_cast<f32>(output.width) / static_cast<f32>(m_resolution.width)),
+						   std::max(1.0f, static_cast<f32>(output.height) / static_cast<f32>(m_resolution.height))},
 			.subtexel_offset = m_subtexel_offset != nullptr ? *m_subtexel_offset : glm::vec2{},
-			.pad = {},
+			.pad			 = {},
 		};
 
 		frame.graph.pass("upscale")
 			.read(frame.resources.scene_color)
 			.color({.texture = frame.resources.output, .load = gpu::LoadOp::DontCare})
 			.record(
-				[constants, pipeline = m_pipeline, sampler = m_sampler, scene_color = frame.resources.scene_color](
-					gpu::CommandList& cmd, const PassContext& ctx)
+				[constants, pipeline = m_pipeline, sampler = m_sampler,
+				 scene_color = frame.resources.scene_color](gpu::CommandList& cmd, const PassContext& ctx)
 				{
 					cmd.set_pipeline(pipeline);
 					cmd.set_constants(1, constants);
-					cmd.set_push_constants(
-						UpscalePush{
-							.scene_color   = ctx.bindless(scene_color),
-							.scene_sampler = bindless_index(sampler),
-						});
+					cmd.set_push_constants(UpscalePush{
+						.scene_color   = ctx.bindless(scene_color),
+						.scene_sampler = bindless_index(sampler),
+					});
 					cmd.draw(3);
 				});
 	}

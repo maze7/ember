@@ -39,7 +39,7 @@ namespace ember
 			m_resource->deallocate(m_block, m_block_size, alignof(std::atomic<u64>));
 		}
 
-		DirtySet(const DirtySet&)			 = delete;
+		DirtySet(const DirtySet&) = delete;
 		DirtySet& operator=(const DirtySet&) = delete;
 
 		/// Sizes the set once. Capacity is the number of slots, not of marks: every slot can be
@@ -52,10 +52,10 @@ namespace ember
 			const size_t bits_bytes = word_count(capacity) * sizeof(std::atomic<u64>);
 
 			m_block_size = bits_bytes + capacity * sizeof(u32);
-			m_block		 = m_resource->allocate(m_block_size, alignof(std::atomic<u64>));
-			m_bits		 = static_cast<std::atomic<u64>*>(m_block);
-			m_list		 = reinterpret_cast<u32*>(static_cast<std::byte*>(m_block) + bits_bytes);
-			m_capacity	 = capacity;
+			m_block = m_resource->allocate(m_block_size, alignof(std::atomic<u64>));
+			m_bits = static_cast<std::atomic<u64>*>(m_block);
+			m_list = reinterpret_cast<u32*>(static_cast<std::byte*>(m_block) + bits_bytes);
+			m_capacity = capacity;
 
 			for (size_t i = 0; i < word_count(capacity); ++i)
 				std::construct_at(&m_bits[i], u64{0});
@@ -67,7 +67,7 @@ namespace ember
 			EMBER_ASSERT(slot < m_capacity);
 
 			std::atomic<u64>& word = m_bits[slot >> 6];
-			const u64 bit		   = u64{1} << (slot & 63);
+			const u64 bit = u64{1} << (slot & 63);
 
 			if ((word.fetch_or(bit, std::memory_order_relaxed) & bit) != 0)
 				return;
@@ -105,12 +105,12 @@ namespace ember
 		[[nodiscard]] static constexpr size_t word_count(u32 capacity) noexcept { return (capacity + 63) / 64; }
 
 		std::atomic<u64>* m_bits = nullptr;
-		u32* m_list				 = nullptr;
+		u32* m_list = nullptr;
 		std::atomic<u32> m_count = 0;
-		u32 m_capacity			 = 0;
+		u32 m_capacity = 0;
 
 		std::pmr::memory_resource* m_resource = nullptr;
-		void* m_block						  = nullptr;
-		size_t m_block_size					  = 0;
+		void* m_block = nullptr;
+		size_t m_block_size = 0;
 	};
 }

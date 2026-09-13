@@ -14,12 +14,7 @@ namespace
 	TEST(Packing, OctahedralRoundTripsTheAxes)
 	{
 		const glm::vec3 axes[] = {
-			{1, 0, 0},
-			{-1, 0, 0},
-			{0, 1, 0},
-			{0, -1, 0},
-			{0, 0, 1},
-			{0, 0, -1},
+			{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1},
 		};
 
 		for (const glm::vec3& axis : axes)

@@ -55,11 +55,11 @@ namespace ember::gpu
 			/// Logs every missing feature by name so one boot reports the full gap list.
 			[[nodiscard]] bool check_required(const char* adapter_name) const noexcept
 			{
-				bool ok	 = true;
-				ok		&= check(m_features2.features, REQUIRED_10, adapter_name);
-				ok		&= check(m_vulkan11, REQUIRED_11, adapter_name);
-				ok		&= check(m_vulkan12, REQUIRED_12, adapter_name);
-				ok		&= check(m_vulkan13, REQUIRED_13, adapter_name);
+				bool ok = true;
+				ok &= check(m_features2.features, REQUIRED_10, adapter_name);
+				ok &= check(m_vulkan11, REQUIRED_11, adapter_name);
+				ok &= check(m_vulkan12, REQUIRED_12, adapter_name);
+				ok &= check(m_vulkan13, REQUIRED_13, adapter_name);
 				return ok;
 			}
 
@@ -189,8 +189,8 @@ namespace ember::gpu
 			 * its complete gap list in one boot instead of one feature per attempt.
 			 */
 			template <typename S, size_t N>
-			[[nodiscard]] static bool
-			check(const S& available, const FeatureRef<S> (&required)[N], const char* adapter_name) noexcept
+			[[nodiscard]] static bool check(const S& available, const FeatureRef<S> (&required)[N],
+											const char* adapter_name) noexcept
 			{
 				bool ok = true;
 
@@ -253,18 +253,14 @@ namespace ember::gpu
 
 		[[nodiscard]] bool has_layer(Span<const VkLayerProperties> layers, const char* name) noexcept
 		{
-			return std::any_of(
-				layers.begin(),
-				layers.end(),
-				[name](const VkLayerProperties& layer) { return std::strcmp(layer.layerName, name) == 0; });
+			return std::any_of(layers.begin(), layers.end(), [name](const VkLayerProperties& layer)
+							   { return std::strcmp(layer.layerName, name) == 0; });
 		}
 
 		[[nodiscard]] bool has_extension(Span<const VkExtensionProperties> extensions, const char* name) noexcept
 		{
-			return std::any_of(
-				extensions.begin(),
-				extensions.end(),
-				[name](const VkExtensionProperties& ext) { return std::strcmp(ext.extensionName, name) == 0; });
+			return std::any_of(extensions.begin(), extensions.end(), [name](const VkExtensionProperties& ext)
+							   { return std::strcmp(ext.extensionName, name) == 0; });
 		}
 
 		/// Appends the instance extensions exposed by `layer` (null = loader + implicit layers)
@@ -277,11 +273,10 @@ namespace ember::gpu
 			out.insert(out.end(), found.begin(), found.end());
 		}
 
-		VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
-			VkDebugUtilsMessageSeverityFlagBitsEXT severity,
-			VkDebugUtilsMessageTypeFlagsEXT /*types*/,
-			const VkDebugUtilsMessengerCallbackDataEXT* data,
-			void* user) noexcept
+		VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+													  VkDebugUtilsMessageTypeFlagsEXT /*types*/,
+													  const VkDebugUtilsMessengerCallbackDataEXT* data,
+													  void* user) noexcept
 		{
 			DebugState& debug = *static_cast<DebugState*>(user);
 			const char* id	  = data->pMessageIdName != nullptr ? data->pMessageIdName : "?";
@@ -336,10 +331,8 @@ namespace ember::gpu
 			u32 loader_version = volkGetInstanceVersion();
 			if (loader_version < vk::API_VERSION)
 			{
-				EMBER_ERROR(
-					"vulkan: loader supports {}.{}, Vulkan 1.3 is required",
-					VK_API_VERSION_MAJOR(loader_version),
-					VK_API_VERSION_MINOR(loader_version));
+				EMBER_ERROR("vulkan: loader supports {}.{}, Vulkan 1.3 is required",
+							VK_API_VERSION_MAJOR(loader_version), VK_API_VERSION_MINOR(loader_version));
 				return false;
 			}
 
@@ -443,9 +436,8 @@ namespace ember::gpu
 				}
 				else
 				{
-					EMBER_WARN(
-						"vulkan: synchronization validation requested but {} is unavailable",
-						VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
+					EMBER_WARN("vulkan: synchronization validation requested but {} is unavailable",
+							   VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME);
 				}
 			}
 
@@ -574,8 +566,8 @@ namespace ember::gpu
 			}
 		}
 
-		[[nodiscard]] u32 find_queue_family(
-			Span<const VkQueueFamilyProperties> families, VkQueueFlags required, VkQueueFlags forbidden) noexcept
+		[[nodiscard]] u32 find_queue_family(Span<const VkQueueFamilyProperties> families, VkQueueFlags required,
+											VkQueueFlags forbidden) noexcept
 		{
 			for (u32 i = 0; i < families.size(); ++i)
 			{
@@ -589,8 +581,8 @@ namespace ember::gpu
 		}
 
 		/// Rejects adapters that cannot run ember's contract. Fills `out` for the ones that can.
-		[[nodiscard]] bool query_adapter(
-			const Context& ctx, const DeviceLimits& limits, VkPhysicalDevice handle, AdapterInfo& out) noexcept
+		[[nodiscard]] bool query_adapter(const Context& ctx, const DeviceLimits& limits, VkPhysicalDevice handle,
+										 AdapterInfo& out) noexcept
 		{
 			out.handle = handle;
 			vkGetPhysicalDeviceProperties(handle, &out.properties);
@@ -600,11 +592,9 @@ namespace ember::gpu
 
 			if (out.properties.apiVersion < vk::API_VERSION)
 			{
-				EMBER_INFO(
-					"vulkan: skipping {}: Vulkan {}.{} < 1.3",
-					name,
-					VK_API_VERSION_MAJOR(out.properties.apiVersion),
-					VK_API_VERSION_MINOR(out.properties.apiVersion));
+				EMBER_INFO("vulkan: skipping {}: Vulkan {}.{} < 1.3", name,
+						   VK_API_VERSION_MAJOR(out.properties.apiVersion),
+						   VK_API_VERSION_MINOR(out.properties.apiVersion));
 				return false;
 			}
 
@@ -660,10 +650,8 @@ namespace ember::gpu
 
 			if (out.graphics_family == VK_QUEUE_FAMILY_IGNORED)
 			{
-				EMBER_INFO(
-					"vulkan: skipping {}: no graphics+compute{} queue family",
-					name,
-					ctx.platform != nullptr ? "+present" : "");
+				EMBER_INFO("vulkan: skipping {}: no graphics+compute{} queue family", name,
+						   ctx.platform != nullptr ? "+present" : "");
 				return false;
 			}
 
@@ -704,22 +692,17 @@ namespace ember::gpu
 				return false;
 			};
 
-			bool heap_ok  = true;
-			heap_ok		 &= check_uab(
-				props12.maxDescriptorSetUpdateAfterBindSampledImages,
-				limits.max_textures * SAMPLED_ARRAY_COUNT,
-				"sampled images");
-			heap_ok &= check_uab(
-				props12.maxDescriptorSetUpdateAfterBindStorageImages,
-				limits.max_textures * STORAGE_ARRAY_COUNT,
-				"storage images");
+			bool heap_ok = true;
+			heap_ok &= check_uab(props12.maxDescriptorSetUpdateAfterBindSampledImages,
+								 limits.max_textures * SAMPLED_ARRAY_COUNT, "sampled images");
+			heap_ok &= check_uab(props12.maxDescriptorSetUpdateAfterBindStorageImages,
+								 limits.max_textures * STORAGE_ARRAY_COUNT, "storage images");
 			heap_ok &=
 				check_uab(props12.maxDescriptorSetUpdateAfterBindStorageBuffers, limits.max_buffers, "storage buffers");
 			heap_ok &= check_uab(props12.maxDescriptorSetUpdateAfterBindSamplers, limits.max_samplers, "samplers");
-			heap_ok &= check_uab(
-				props12.maxPerStageUpdateAfterBindResources,
-				limits.max_textures * (SAMPLED_ARRAY_COUNT + STORAGE_ARRAY_COUNT) + limits.max_buffers,
-				"per-stage resources");
+			heap_ok &= check_uab(props12.maxPerStageUpdateAfterBindResources,
+								 limits.max_textures * (SAMPLED_ARRAY_COUNT + STORAGE_ARRAY_COUNT) + limits.max_buffers,
+								 "per-stage resources");
 
 			if (!heap_ok)
 				return false;
@@ -731,8 +714,8 @@ namespace ember::gpu
 		 * Filter-then-score: query_adapter rejects anything that cannot run the contract, then
 		 * the best-scoring survivor wins. Strictly-greater keeps enumeration order on ties.
 		 */
-		[[nodiscard]] bool
-		select_adapter(const Context& ctx, const DeviceDef& def, const DeviceLimits& limits, AdapterInfo& out) noexcept
+		[[nodiscard]] bool select_adapter(const Context& ctx, const DeviceDef& def, const DeviceLimits& limits,
+										  AdapterInfo& out) noexcept
 		{
 			const auto adapters =
 				enumerate<VkPhysicalDevice>([&ctx](u32* count, VkPhysicalDevice* data)
@@ -915,12 +898,8 @@ namespace ember::gpu
 		{
 			const VkPhysicalDeviceLimits& limits = adapter.properties.limits;
 
-			std::snprintf(
-				caps.adapter_name,
-				sizeof(caps.adapter_name),
-				"%.*s",
-				static_cast<int>(sizeof(caps.adapter_name) - 1),
-				adapter.properties.deviceName);
+			std::snprintf(caps.adapter_name, sizeof(caps.adapter_name), "%.*s",
+						  static_cast<int>(sizeof(caps.adapter_name) - 1), adapter.properties.deviceName);
 			caps.vendor_id	  = adapter.properties.vendorID;
 			caps.device_id	  = adapter.properties.deviceID;
 			caps.api_version  = adapter.properties.apiVersion;
@@ -1154,17 +1133,12 @@ namespace ember::gpu
 			if (!vk::transient_boot(backend, def.transient_ring_bytes))
 				return false;
 
-			EMBER_INFO(
-				"vulkan: {} ({}) | {} | Vulkan {}.{}.{} | {} MB local{}{}",
-				ctx.caps.adapter_name,
-				enum_names<AdapterKind>()[static_cast<u32>(ctx.caps.adapter_kind)],
-				adapter.driver,
-				VK_API_VERSION_MAJOR(ctx.caps.api_version),
-				VK_API_VERSION_MINOR(ctx.caps.api_version),
-				VK_API_VERSION_PATCH(ctx.caps.api_version),
-				ctx.caps.device_local_bytes / (1024 * 1024),
-				ctx.caps.host_visible_device_local ? " (ReBAR)" : "",
-				ctx.caps.mesh_shaders ? " | mesh shaders" : "");
+			EMBER_INFO("vulkan: {} ({}) | {} | Vulkan {}.{}.{} | {} MB local{}{}", ctx.caps.adapter_name,
+					   enum_names<AdapterKind>()[static_cast<u32>(ctx.caps.adapter_kind)], adapter.driver,
+					   VK_API_VERSION_MAJOR(ctx.caps.api_version), VK_API_VERSION_MINOR(ctx.caps.api_version),
+					   VK_API_VERSION_PATCH(ctx.caps.api_version), ctx.caps.device_local_bytes / (1024 * 1024),
+					   ctx.caps.host_visible_device_local ? " (ReBAR)" : "",
+					   ctx.caps.mesh_shaders ? " | mesh shaders" : "");
 
 			return true;
 		}

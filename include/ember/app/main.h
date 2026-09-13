@@ -9,7 +9,6 @@ namespace ember
 	{
 		Span<const char* const> args;
 	};
-
 }
 
 /// Defined by the game, usually by EMBER_GAME. Owns everything between entry and exit.

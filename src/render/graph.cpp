@@ -24,8 +24,7 @@ namespace ember::render
 		};
 
 		/// Parks a derived run in frame memory, where it outlives this scope but not the frame.
-		template <class T>
-		[[nodiscard]] T* park(std::pmr::memory_resource& frame, const T* source, u32 count) noexcept
+		template <class T> [[nodiscard]] T* park(std::pmr::memory_resource& frame, const T* source, u32 count) noexcept
 		{
 			if (count == 0)
 				return nullptr;
@@ -236,8 +235,8 @@ namespace ember::render
 		return {static_cast<u16>(m_buffer_count++)};
 	}
 
-	GraphTexture RenderGraph::import(
-		TextureHandle texture, gpu::TextureState current, gpu::TextureState final_state, Extent2D extent) noexcept
+	GraphTexture RenderGraph::import(TextureHandle texture, gpu::TextureState current, gpu::TextureState final_state,
+									 Extent2D extent) noexcept
 	{
 		EMBER_ASSERT(m_texture_count < MAX_GRAPH_TEXTURES);
 		if (m_texture_count >= MAX_GRAPH_TEXTURES)
@@ -254,8 +253,8 @@ namespace ember::render
 		return {static_cast<u16>(m_texture_count++)};
 	}
 
-	GraphBuffer
-	RenderGraph::import(BufferHandle buffer, gpu::BufferState current, gpu::BufferState final_state, u64 size) noexcept
+	GraphBuffer RenderGraph::import(BufferHandle buffer, gpu::BufferState current, gpu::BufferState final_state,
+									u64 size) noexcept
 	{
 		EMBER_ASSERT(m_buffer_count < MAX_GRAPH_BUFFERS);
 		if (m_buffer_count >= MAX_GRAPH_BUFFERS)
@@ -552,9 +551,7 @@ namespace ember::render
 
 		// One list per chunk, claimed here in declaration order because claim order is the order
 		// they reach the queue. A frame with no passes still owes the resting barriers one list.
-		const u32 chunks = m_pass_count == 0
-							   ? 1u
-							   : std::min({m_pass_count, jobs::worker_count(), MAX_RECORD_CHUNKS});
+		const u32 chunks = m_pass_count == 0 ? 1u : std::min({m_pass_count, jobs::worker_count(), MAX_RECORD_CHUNKS});
 
 		gpu::CommandList lists[MAX_RECORD_CHUNKS];
 		for (u32 i = 0; i < chunks; ++i)
@@ -569,8 +566,7 @@ namespace ember::render
 
 			if (barrier.texture_count + barrier.buffer_count > 0)
 			{
-				cmd.barrier(
-					{barrier.textures, barrier.texture_count}, {barrier.buffers, barrier.buffer_count});
+				cmd.barrier({barrier.textures, barrier.texture_count}, {barrier.buffers, barrier.buffer_count});
 			}
 
 			const bool raster = pass.m_color_count > 0 || pass.m_has_depth;

@@ -62,32 +62,30 @@ namespace ember
 
 		/// Every component index is addressable; the u32 bookkeeping bounds what a
 		/// u32 component could otherwise name.
-		static constexpr u64 INDEX_SPACE  = u64{1} << std::numeric_limits<Component>::digits;
+		static constexpr u64 INDEX_SPACE = u64{1} << std::numeric_limits<Component>::digits;
 		static constexpr u32 MAX_CAPACITY = static_cast<u32>(std::min<u64>(INDEX_SPACE, 0xFFFF'FFFF));
 
-		using Hot		 = HotT;
-		using Cold		 = std::conditional_t<HAS_COLD_STORAGE, ColdT, NoColdStorage>;
+		using Hot = HotT;
+		using Cold = std::conditional_t<HAS_COLD_STORAGE, ColdT, NoColdStorage>;
 		using HandleType = Handle<Tag, Component>;
 
 		template <bool IsConst> class SlotIterator;
 
-		using Iterator		= SlotIterator<false>;
+		using Iterator = SlotIterator<false>;
 		using ConstIterator = SlotIterator<true>;
 
-		static_assert(
-			std::unsigned_integral<Component> && !std::same_as<Component, bool>,
-			"Pool handles use an unsigned integral component");
+		static_assert(std::unsigned_integral<Component> && !std::same_as<Component, bool>,
+					  "Pool handles use an unsigned integral component");
 
-		static_assert(
-			std::is_nothrow_destructible_v<Hot> && std::is_nothrow_destructible_v<Cold>,
-			"Pool values must be nothrow-destructible");
+		static_assert(std::is_nothrow_destructible_v<Hot> && std::is_nothrow_destructible_v<Cold>,
+					  "Pool values must be nothrow-destructible");
 
 		explicit Pool(MemoryTag tag = MemoryTag::Unknown) noexcept;
 		Pool(std::pmr::memory_resource& resource, MemoryTag tag = MemoryTag::Unknown) noexcept;
 		~Pool() noexcept;
 
 		// No copy
-		Pool(const Pool&)			 = delete;
+		Pool(const Pool&) = delete;
 		Pool& operator=(const Pool&) = delete;
 
 		Pool(Pool&& other) noexcept;
@@ -133,7 +131,6 @@ namespace ember
 		[[nodiscard]] EMBER_FINLINE const Cold* get_cold(HandleType handle) const noexcept
 			requires(HAS_COLD_STORAGE);
 
-		
 		/// Raw slot storage, liveness ignored. For mirror code (GPU table sync) that
 		/// addresses slots by index and must still read a destroyed slot's last bytes;
 		/// only meaningful while the value type is trivially destructible.
@@ -169,7 +166,7 @@ namespace ember
 		[[nodiscard]] EMBER_FINLINE ConstIterator end() const noexcept;
 
 	private:
-		static constexpr u32 INVALID_INDEX		= std::numeric_limits<u32>::max();
+		static constexpr u32 INVALID_INDEX = std::numeric_limits<u32>::max();
 		static constexpr size_t VALUE_ALIGNMENT = std::max(alignof(Hot), alignof(Cold));
 		static constexpr size_t BLOCK_ALIGNMENT = std::max(VALUE_ALIGNMENT, static_cast<size_t>(EMBER_CACHE_LINE));
 
@@ -183,7 +180,7 @@ namespace ember
 			size_t gens_offset = 0;
 			size_t free_offset = 0;
 			size_t live_offset = 0;
-			size_t total_size  = 0;
+			size_t total_size = 0;
 		};
 
 		[[nodiscard]] EMBER_FINLINE bool is_live(u32 index) const noexcept;
@@ -213,21 +210,21 @@ namespace ember
 
 		// Non-owning pointer to the PMR resource that backs this Pool
 		std::pmr::memory_resource* m_resource = nullptr;
-		MemoryTag m_tag						  = MemoryTag::Unknown;
+		MemoryTag m_tag = MemoryTag::Unknown;
 
-		void* m_block		= nullptr;
+		void* m_block = nullptr;
 		size_t m_block_size = 0;
 
-		Hot* m_hot						   = nullptr;
+		Hot* m_hot = nullptr;
 		[[no_unique_address]] Cold* m_cold = nullptr;
 
 		Component* m_generations = nullptr;
-		Component* m_free		 = nullptr;
-		u64* m_live				 = nullptr;
-		u32 m_free_head			 = 0;
-		u32 m_free_count		 = 0;
-		u32 m_retired			 = 0;
-		u32 m_capacity			 = 0;
+		Component* m_free = nullptr;
+		u64* m_live = nullptr;
+		u32 m_free_head = 0;
+		u32 m_free_count = 0;
+		u32 m_retired = 0;
+		u32 m_capacity = 0;
 	};
 }
 

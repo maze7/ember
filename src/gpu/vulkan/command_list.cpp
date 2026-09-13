@@ -27,41 +27,33 @@ namespace ember::gpu
 					// Source stage pins to COLOR_ATTACHMENT_OUTPUT so a backbuffer's first
 					// transition orders after the acquire semaphore, whose wait submit_frame
 					// scopes to that stage. Costs nothing for other first uses.
-					return {
-						VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_NONE, VK_IMAGE_LAYOUT_UNDEFINED};
+					return {VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_NONE,
+							VK_IMAGE_LAYOUT_UNDEFINED};
 
 				case TextureState::RenderTarget:
-					return {
-						VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-						VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-						VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+					return {VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+							VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
 
 				case TextureState::DepthTarget:
-					return {
-						VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-						VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-						VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+					return {VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+							VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+								VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+							VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
 
 				case TextureState::ShaderRead:
 					return {shader_stages, VK_ACCESS_2_SHADER_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 
 				case TextureState::ShaderWrite:
-					return {
-						shader_stages,
-						VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
-						VK_IMAGE_LAYOUT_GENERAL};
+					return {shader_stages, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
+							VK_IMAGE_LAYOUT_GENERAL};
 
 				case TextureState::CopySrc:
-					return {
-						VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
-						VK_ACCESS_2_TRANSFER_READ_BIT,
-						VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL};
+					return {VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+							VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL};
 
 				case TextureState::CopyDst:
-					return {
-						VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
-						VK_ACCESS_2_TRANSFER_WRITE_BIT,
-						VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL};
+					return {VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+							VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL};
 
 				case TextureState::Present:
 					// No destination work; the present semaphore takes over.
@@ -119,15 +111,9 @@ namespace ember::gpu
 
 			const VkDescriptorSet set = backend.descriptor_heap.constants_set();
 
-			vkCmdBindDescriptorSets(
-				recording.commands,
-				VK_PIPELINE_BIND_POINT_GRAPHICS,
-				backend.descriptor_heap.pipeline_layout(),
-				1,
-				1,
-				&set,
-				CONSTANT_BUFFER_SLOTS,
-				recording.constant_offsets);
+			vkCmdBindDescriptorSets(recording.commands, VK_PIPELINE_BIND_POINT_GRAPHICS,
+									backend.descriptor_heap.pipeline_layout(), 1, 1, &set, CONSTANT_BUFFER_SLOTS,
+									recording.constant_offsets);
 
 			recording.constants_dirty_graphics = false;
 		}
@@ -139,15 +125,9 @@ namespace ember::gpu
 
 			const VkDescriptorSet set = backend.descriptor_heap.constants_set();
 
-			vkCmdBindDescriptorSets(
-				recording.commands,
-				VK_PIPELINE_BIND_POINT_COMPUTE,
-				backend.descriptor_heap.pipeline_layout(),
-				1,
-				1,
-				&set,
-				CONSTANT_BUFFER_SLOTS,
-				recording.constant_offsets);
+			vkCmdBindDescriptorSets(recording.commands, VK_PIPELINE_BIND_POINT_COMPUTE,
+									backend.descriptor_heap.pipeline_layout(), 1, 1, &set, CONSTANT_BUFFER_SLOTS,
+									recording.constant_offsets);
 
 			recording.constants_dirty_compute = false;
 		}
@@ -157,8 +137,8 @@ namespace ember::gpu
 			if (!recording.index_dirty)
 				return;
 
-			vkCmdBindIndexBuffer(
-				recording.commands, recording.index_buffer, recording.index_offset, recording.index_type);
+			vkCmdBindIndexBuffer(recording.commands, recording.index_buffer, recording.index_offset,
+								 recording.index_type);
 			recording.index_dirty = false;
 		}
 
@@ -167,8 +147,8 @@ namespace ember::gpu
 		/// Vulkan; no caller ever sees the flip.
 		/// Single mip, single layer textures attach through their whole view; anything
 		/// larger goes through the slice matrix its creation built.
-		[[nodiscard]] VkImageView
-		attachment_view(const vk::TextureHot& hot, const vk::TextureCold& cold, u32 mip, u32 layer) noexcept
+		[[nodiscard]] VkImageView attachment_view(const vk::TextureHot& hot, const vk::TextureCold& cold, u32 mip,
+												  u32 layer) noexcept
 		{
 			if (cold.attachment_views.empty())
 			{
@@ -361,9 +341,8 @@ namespace ember::gpu
 				.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 				.loadOp		 = to_vk_load(attachment.load),
 				.storeOp	 = to_vk_store(attachment.store),
-				.clearValue =
-					{.color =
-						 {.float32 = {attachment.clear.r, attachment.clear.g, attachment.clear.b, attachment.clear.a}}},
+				.clearValue	 = {.color = {.float32 = {attachment.clear.r, attachment.clear.g, attachment.clear.b,
+													  attachment.clear.a}}},
 			};
 		}
 
@@ -459,8 +438,8 @@ namespace ember::gpu
 			return;
 
 		// Ember uses one layout engine-wide, so pushing never depends on which pipeline is bound.
-		vkCmdPushConstants(
-			m_recording->commands, m_backend->descriptor_heap.pipeline_layout(), VK_SHADER_STAGE_ALL, 0, size, data);
+		vkCmdPushConstants(m_recording->commands, m_backend->descriptor_heap.pipeline_layout(), VK_SHADER_STAGE_ALL, 0,
+						   size, data);
 	}
 
 	void CommandList::set_pipeline(GraphicsPipelineHandle pipeline) noexcept
@@ -522,8 +501,8 @@ namespace ember::gpu
 		vkCmdDraw(m_recording->commands, vertex_count, instance_count, first_vertex, first_instance);
 	}
 
-	void CommandList::draw_indexed(
-		u32 index_count, u32 instance_count, u32 first_index, i32 base_vertex, u32 first_instance) noexcept
+	void CommandList::draw_indexed(u32 index_count, u32 instance_count, u32 first_index, i32 base_vertex,
+								   u32 first_instance) noexcept
 	{
 		if (m_backend == nullptr)
 			return;
@@ -570,8 +549,8 @@ namespace ember::gpu
 		vkCmdDrawIndexedIndirect(m_recording->commands, native, offset, draw_count, stride);
 	}
 
-	void CommandList::draw_indirect_count(
-		BufferHandle args, u64 offset, BufferHandle count, u64 count_offset, u32 max_draw_count, u32 stride) noexcept
+	void CommandList::draw_indirect_count(BufferHandle args, u64 offset, BufferHandle count, u64 count_offset,
+										  u32 max_draw_count, u32 stride) noexcept
 	{
 		if (m_backend == nullptr)
 			return;
@@ -591,12 +570,12 @@ namespace ember::gpu
 			return;
 
 		flush_graphics(*m_backend, *m_recording);
-		vkCmdDrawIndirectCount(
-			m_recording->commands, native_args, offset, native_count, count_offset, max_draw_count, stride);
+		vkCmdDrawIndirectCount(m_recording->commands, native_args, offset, native_count, count_offset, max_draw_count,
+							   stride);
 	}
 
-	void CommandList::draw_indexed_indirect_count(
-		BufferHandle args, u64 offset, BufferHandle count, u64 count_offset, u32 max_draw_count, u32 stride) noexcept
+	void CommandList::draw_indexed_indirect_count(BufferHandle args, u64 offset, BufferHandle count, u64 count_offset,
+												  u32 max_draw_count, u32 stride) noexcept
 	{
 		if (m_backend == nullptr)
 			return;
@@ -618,8 +597,8 @@ namespace ember::gpu
 
 		flush_graphics(*m_backend, *m_recording);
 		flush_index(*m_recording);
-		vkCmdDrawIndexedIndirectCount(
-			m_recording->commands, native_args, offset, native_count, count_offset, max_draw_count, stride);
+		vkCmdDrawIndexedIndirectCount(m_recording->commands, native_args, offset, native_count, count_offset,
+									  max_draw_count, stride);
 	}
 
 	void CommandList::dispatch(u32 x, u32 y, u32 z) noexcept
@@ -760,8 +739,8 @@ namespace ember::gpu
 			const u32 slot	= static_cast<u32>(m_backend->frame.index % m_backend->context.frames_in_flight);
 			const u32 query = (slot * MAX_COMMAND_LISTS + recording.index) * MAX_GPU_ZONES * 2 + claimed * 2;
 
-			vkCmdWriteTimestamp2(
-				recording.commands, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, m_backend->frame.timestamps, query);
+			vkCmdWriteTimestamp2(recording.commands, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, m_backend->frame.timestamps,
+								 query);
 
 			recording.zones[claimed] = {
 				.name  = name,
@@ -795,8 +774,8 @@ namespace ember::gpu
 				const u32 slot	= static_cast<u32>(m_backend->frame.index % m_backend->context.frames_in_flight);
 				const u32 query = (slot * MAX_COMMAND_LISTS + recording.index) * MAX_GPU_ZONES * 2 + claimed * 2 + 1;
 
-				vkCmdWriteTimestamp2(
-					recording.commands, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, m_backend->frame.timestamps, query);
+				vkCmdWriteTimestamp2(recording.commands, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+									 m_backend->frame.timestamps, query);
 			}
 		}
 

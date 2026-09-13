@@ -1,6 +1,6 @@
-#include <ember/render/embedded_shaders.h>
 #include <ember/core/logger.h>
 #include <ember/gpu/device.h>
+#include <ember/render/embedded_shaders.h>
 #include <ember/render/features/mesh.h>
 
 namespace ember::render
@@ -27,9 +27,9 @@ namespace ember::render
 	MeshFeature::MeshFeature(Renderer& renderer, const Def& def) noexcept
 		: m_depth_format(def.depth_format), m_clear(def.clear)
 	{
-		auto& gpu = renderer.gpu();
+		auto& gpu	 = renderer.gpu();
 		auto& shader = def.shader.empty() ? embedded::mesh_shader() : def.shader;
-		m_pipeline = gpu.create_graphics_pipeline({
+		m_pipeline	 = gpu.create_graphics_pipeline({
 			.name		   = "mesh",
 			.vertex		   = {.code = shader, .entry = "vs_main"},
 			.fragment	   = {.code = shader, .entry = "fs_main"},
@@ -48,14 +48,12 @@ namespace ember::render
 
 		const MeshMaterial error{};
 
-		m_materials.init(
-			gpu,
-			{
-				.name		  = "mesh.materials",
-				.stride		  = sizeof(MeshMaterial),
-				.capacity	  = def.material_capacity,
-				.error_record = {reinterpret_cast<const u8*>(&error), sizeof(MeshMaterial)},
-			});
+		m_materials.init(gpu, {
+								  .name			= "mesh.materials",
+								  .stride		= sizeof(MeshMaterial),
+								  .capacity		= def.material_capacity,
+								  .error_record = {reinterpret_cast<const u8*>(&error), sizeof(MeshMaterial)},
+							  });
 	}
 
 	void MeshFeature::shutdown(gpu::Device& device) noexcept
@@ -93,9 +91,7 @@ namespace ember::render
 		const MeshConstants constants{.view_proj = frame.views[0].view_projection};
 
 		pass.record(
-			[constants,
-			 pipeline	  = m_pipeline,
-			 stream		  = frame.visibility[0].opaque,
+			[constants, pipeline = m_pipeline, stream = frame.visibility[0].opaque,
 			 index_buffer = frame.geometry.index_buffer(),
 			 push =
 				 MeshPush{

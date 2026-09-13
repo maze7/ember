@@ -1,9 +1,9 @@
-#include <ember/core/logger.h>
 #include <ember/core/common.h>
+#include <ember/core/logger.h>
 #include <ember/memory/memory.h>
 #include <ember/memory/memory_tracker.h>
-#include <ember/sync/spin_mutex.h>
 #include <ember/memory/tagged_heap.h>
+#include <ember/sync/spin_mutex.h>
 
 #if EMBER_MEMORY_TRACKING >= 1
 	#include <array>
@@ -60,10 +60,7 @@ namespace ember
 				check = true;
 			}
 
-			~TrackerScope() noexcept
-			{
-				in_tracker() = false;
-			}
+			~TrackerScope() noexcept { in_tracker() = false; }
 
 			TrackerScope(const TrackerScope&)			 = delete;
 			TrackerScope& operator=(const TrackerScope&) = delete;
@@ -96,23 +93,23 @@ namespace ember
 			return previous_bytes;
 		}
 
-#if EMBER_MEMORY_TRACKING >= 2
+	#if EMBER_MEMORY_TRACKING >= 2
 		void decrement_counters(Counters& counters, u64 size) noexcept
 		{
 			(void)counters.current_bytes.fetch_sub(size, std::memory_order_relaxed);
 			(void)counters.current_count.fetch_sub(1, std::memory_order_relaxed);
 		}
-#endif
+	#endif
 
-#if EMBER_MEMORY_TRACKING == 1
+	#if EMBER_MEMORY_TRACKING == 1
 		void decrement_atomic_saturating(std::atomic<u64>& counter, u64 amount) noexcept
 		{
 			u64 observed = counter.load(std::memory_order_relaxed);
 			while (observed != 0)
 			{
 				const u64 desired = observed > amount ? observed - amount : 0;
-				if (counter.compare_exchange_weak(
-						observed, desired, std::memory_order_relaxed, std::memory_order_relaxed))
+				if (counter.compare_exchange_weak(observed, desired, std::memory_order_relaxed,
+												  std::memory_order_relaxed))
 					return;
 			}
 		}
@@ -124,7 +121,7 @@ namespace ember
 			decrement_atomic_saturating(counters.current_bytes, size);
 			decrement_atomic_saturating(counters.current_count, 1);
 		}
-#endif
+	#endif
 
 		[[nodiscard]] memory_tracker::TagStats read_counters(const Counters& counters) noexcept
 		{
@@ -140,8 +137,7 @@ namespace ember
 		// The tracker's bookkeeping must not flow through the tracked heap: std::malloc
 		// keeps it invisible to the stats and immune to recursion. Debug-only code, so
 		// raw malloc performance is irrelevant.
-		template <typename T>
-		class UntrackedAllocator
+		template <typename T> class UntrackedAllocator
 		{
 			static_assert(alignof(T) <= alignof(std::max_align_t));
 
@@ -150,10 +146,7 @@ namespace ember
 
 			constexpr UntrackedAllocator() noexcept = default;
 
-			template <typename U>
-			constexpr UntrackedAllocator(const UntrackedAllocator<U>&) noexcept
-			{
-			}
+			template <typename U> constexpr UntrackedAllocator(const UntrackedAllocator<U>&) noexcept {}
 
 			[[nodiscard]] T* allocate(size_t count)
 			{
@@ -178,26 +171,23 @@ namespace ember
 
 		struct AllocationRecord
 		{
-			u64		  size			= 0;
-			MemoryTag tag			= MemoryTag::Unknown;
-			u64		  allocation_id = 0;
+			u64 size		  = 0;
+			MemoryTag tag	  = MemoryTag::Unknown;
+			u64 allocation_id = 0;
 		};
 
-		using AllocationMap = ankerl::unordered_dense::map<
-			void*,
-			AllocationRecord,
-			ankerl::unordered_dense::hash<void*>,
-			std::equal_to<void*>,
-			UntrackedAllocator<std::pair<void*, AllocationRecord>>>;
+		using AllocationMap =
+			ankerl::unordered_dense::map<void*, AllocationRecord, ankerl::unordered_dense::hash<void*>,
+										 std::equal_to<void*>, UntrackedAllocator<std::pair<void*, AllocationRecord>>>;
 
 		constinit std::atomic<bool> s_enabled			 = false;
-		constinit std::atomic<u64>	s_next_allocation_id = 1;
-		constinit std::atomic<u64>	s_break_allocation_id = 0;
-		constinit SpinMutex	s_allocation_mutex;
+		constinit std::atomic<u64> s_next_allocation_id	 = 1;
+		constinit std::atomic<u64> s_break_allocation_id = 0;
+		constinit SpinMutex s_allocation_mutex;
 		alignas(AllocationMap) std::byte s_allocation_storage[sizeof(AllocationMap)];
 		AllocationMap* s_allocations = nullptr;
 
-		constinit std::array<Counters, k_tag_count>			 s_tag_counters;
+		constinit std::array<Counters, k_tag_count> s_tag_counters;
 		constinit std::array<std::atomic<bool>, k_tag_count> s_budget_warned;
 
 		[[nodiscard]] size_t tag_index(MemoryTag tag) noexcept { return static_cast<size_t>(sanitize_tag(tag)); }
@@ -221,12 +211,8 @@ namespace ember
 
 			TrackerScope scope;
 			// Memory diagnostics bypass stripped log macros: tracking-gated or fatal, and too rare to strip.
-			Logger::warn(
-				std::source_location::current(),
-				"Memory tag {} crossed budget: current={} budget={}",
-				tag_name(tag),
-				current_bytes,
-				budget);
+			Logger::warn(std::source_location::current(), "Memory tag {} crossed budget: current={} budget={}",
+						 tag_name(tag), current_bytes, budget);
 		}
 
 		void reset_counters(Counters& counters) noexcept
@@ -406,87 +392,46 @@ namespace ember
 	#if EMBER_MEMORY_TRACKING >= 2
 			if (as_csv)
 			{
-				Logger::info(
-					std::source_location::current(), "tag,current_bytes,peak_bytes,current_count,total_count,budget");
+				Logger::info(std::source_location::current(),
+							 "tag,current_bytes,peak_bytes,current_count,total_count,budget");
 				for (size_t i = 0; i < k_tag_count; ++i)
 				{
-					const auto tag	   = static_cast<MemoryTag>(i);
+					const auto tag					   = static_cast<MemoryTag>(i);
 					const memory_tracker::TagStats row = memory_tracker::stats(tag);
-					Logger::info(
-						std::source_location::current(),
-						"{},{},{},{},{},{}",
-						tag_name(tag),
-						row.current_bytes,
-						row.peak_bytes,
-						row.current_count,
-						row.total_count,
-						MEMORY_TAG_BUDGETS[i]);
+					Logger::info(std::source_location::current(), "{},{},{},{},{},{}", tag_name(tag), row.current_bytes,
+								 row.peak_bytes, row.current_count, row.total_count, MEMORY_TAG_BUDGETS[i]);
 				}
 			}
 			else
 			{
-				Logger::info(
-					std::source_location::current(),
-					"{:<12} {:>14} {:>14} {:>12} {:>12} {:>14}",
-					"Tag",
-					"Current",
-					"Peak",
-					"Live",
-					"Total",
-					"Budget");
+				Logger::info(std::source_location::current(), "{:<12} {:>14} {:>14} {:>12} {:>12} {:>14}", "Tag",
+							 "Current", "Peak", "Live", "Total", "Budget");
 				for (size_t i = 0; i < k_tag_count; ++i)
 				{
-					const auto tag	   = static_cast<MemoryTag>(i);
+					const auto tag					   = static_cast<MemoryTag>(i);
 					const memory_tracker::TagStats row = memory_tracker::stats(tag);
-					Logger::info(
-						std::source_location::current(),
-						"{:<12} {:>14} {:>14} {:>12} {:>12} {:>14}",
-						tag_name(tag),
-						row.current_bytes,
-						row.peak_bytes,
-						row.current_count,
-						row.total_count,
-						MEMORY_TAG_BUDGETS[i]);
+					Logger::info(std::source_location::current(), "{:<12} {:>14} {:>14} {:>12} {:>12} {:>14}",
+								 tag_name(tag), row.current_bytes, row.peak_bytes, row.current_count, row.total_count,
+								 MEMORY_TAG_BUDGETS[i]);
 				}
 			}
 	#endif
 
 			const memory_tracker::TagStats totals = total();
 			if (as_csv)
-				Logger::info(
-					std::source_location::current(),
-					"Total,{},{},{},{}",
-					totals.current_bytes,
-					totals.peak_bytes,
-					totals.current_count,
-					totals.total_count);
+				Logger::info(std::source_location::current(), "Total,{},{},{},{}", totals.current_bytes,
+							 totals.peak_bytes, totals.current_count, totals.total_count);
 			else
-				Logger::info(
-					std::source_location::current(),
-					"{:<12} {:>14} {:>14} {:>12} {:>12}",
-					"Total",
-					totals.current_bytes,
-					totals.peak_bytes,
-					totals.current_count,
-					totals.total_count);
+				Logger::info(std::source_location::current(), "{:<12} {:>14} {:>14} {:>12} {:>12}", "Total",
+							 totals.current_bytes, totals.peak_bytes, totals.current_count, totals.total_count);
 
 			const TaggedHeap& blocks = memory::block_heap();
 			if (as_csv)
-				Logger::info(
-					std::source_location::current(),
-					"BlockHeap,{},{},{},{}",
-					blocks.used(),
-					blocks.peak(),
-					blocks.capacity(),
-					blocks.block_size());
+				Logger::info(std::source_location::current(), "BlockHeap,{},{},{},{}", blocks.used(), blocks.peak(),
+							 blocks.capacity(), blocks.block_size());
 			else
-				Logger::info(
-					std::source_location::current(),
-					"BlockHeap used={} peak={} capacity={} block={}",
-					blocks.used(),
-					blocks.peak(),
-					blocks.capacity(),
-					blocks.block_size());
+				Logger::info(std::source_location::current(), "BlockHeap used={} peak={} capacity={} block={}",
+							 blocks.used(), blocks.peak(), blocks.capacity(), blocks.block_size());
 		}
 
 	#if EMBER_MEMORY_TRACKING >= 2
@@ -516,12 +461,8 @@ namespace ember
 			}
 
 			for (const AllocationRecord& record : leaks)
-				Logger::warn(
-					std::source_location::current(),
-					"[{}] {} bytes, allocation #{}",
-					tag_name(record.tag),
-					record.size,
-					record.allocation_id);
+				Logger::warn(std::source_location::current(), "[{}] {} bytes, allocation #{}", tag_name(record.tag),
+							 record.size, record.allocation_id);
 
 			return static_cast<u64>(leaks.size());
 		}

@@ -32,8 +32,8 @@ namespace ember
 		{
 			// Memory diagnostics bypass stripped log macros: tracking-gated or fatal
 			// and too rare to strip.
-			Logger::error(
-				std::source_location::current(), "rpmalloc: {}", message != nullptr ? message : "unknown error");
+			Logger::error(std::source_location::current(), "rpmalloc: {}",
+						  message != nullptr ? message : "unknown error");
 		}
 
 		constinit rpmalloc_interface_t s_rpmalloc_interface = {
@@ -53,17 +53,16 @@ namespace ember
 		void ensure_initialized() noexcept
 		{
 #if EMBER_USE_RPMALLOC
-			std::call_once(
-				s_rpmalloc_once,
-				[]()
-				{
-					if (rpmalloc_initialize(&s_rpmalloc_interface) != 0) [[unlikely]]
-					{
-						Logger::error(std::source_location::current(), "rpmalloc init failed");
-						EMBER_DEBUG_BREAK();
-						std::abort();
-					}
-				});
+			std::call_once(s_rpmalloc_once,
+						   []()
+						   {
+							   if (rpmalloc_initialize(&s_rpmalloc_interface) != 0) [[unlikely]]
+							   {
+								   Logger::error(std::source_location::current(), "rpmalloc init failed");
+								   EMBER_DEBUG_BREAK();
+								   std::abort();
+							   }
+						   });
 #endif
 		}
 
@@ -130,25 +129,16 @@ namespace ember
 		// One heap view per tag, in MemoryTag declaration order. memory_resource's  destructor
 		// is not constexpr, so these are aggregate-initialized directly rather than through a factory.
 		constinit std::array<HeapResource, static_cast<size_t>(MemoryTag::Count)> s_heaps = {
-			HeapResource{MemoryTag::Unknown},
-			HeapResource{MemoryTag::Engine},
-			HeapResource{MemoryTag::Graphics},
-			HeapResource{MemoryTag::Audio},
-			HeapResource{MemoryTag::Physics},
-			HeapResource{MemoryTag::ECS},
-			HeapResource{MemoryTag::Gameplay},
-			HeapResource{MemoryTag::Assets},
-			HeapResource{MemoryTag::Scripting},
-			HeapResource{MemoryTag::Network},
-			HeapResource{MemoryTag::Platform},
-			HeapResource{MemoryTag::Input},
-			HeapResource{MemoryTag::Tools},
-			HeapResource{MemoryTag::Strings},
+			HeapResource{MemoryTag::Unknown},  HeapResource{MemoryTag::Engine},	  HeapResource{MemoryTag::Graphics},
+			HeapResource{MemoryTag::Audio},	   HeapResource{MemoryTag::Physics},  HeapResource{MemoryTag::ECS},
+			HeapResource{MemoryTag::Gameplay}, HeapResource{MemoryTag::Assets},	  HeapResource{MemoryTag::Scripting},
+			HeapResource{MemoryTag::Network},  HeapResource{MemoryTag::Platform}, HeapResource{MemoryTag::Input},
+			HeapResource{MemoryTag::Tools},	   HeapResource{MemoryTag::Strings},
 		};
 
 		// Ensure we don't drift from MemoryTag
-		static_assert(
-			static_cast<size_t>(MemoryTag::Count) == 14, "New MemoryTag: add its HeapResource to s_heaps above.");
+		static_assert(static_cast<size_t>(MemoryTag::Count) == 14,
+					  "New MemoryTag: add its HeapResource to s_heaps above.");
 	}
 
 	// Tracking accounts the usable (block) size rather than the requested size: it mirrors
@@ -255,18 +245,18 @@ namespace ember
 		{
 			ensure_initialized();
 
-	#if EMBER_USE_RPMALLOC
+#if EMBER_USE_RPMALLOC
 			if (!rpmalloc_is_thread_initialized())
 				rpmalloc_thread_initialize();
-	#endif // EMBER_USE_RPMALLOC
+#endif // EMBER_USE_RPMALLOC
 		}
 
 		void shutdown_thread() noexcept
 		{
-	#if EMBER_USE_RPMALLOC
+#if EMBER_USE_RPMALLOC
 			if (rpmalloc_is_thread_initialized())
 				rpmalloc_thread_finalize();
-	#endif // EMBER_USE_RPMALLOC
+#endif // EMBER_USE_RPMALLOC
 		}
 	}
 }

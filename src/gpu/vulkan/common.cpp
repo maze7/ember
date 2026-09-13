@@ -1,5 +1,5 @@
-#include <gpu/vulkan/common.h>
 #include <gpu/vulkan/backend.h>
+#include <gpu/vulkan/common.h>
 
 namespace ember::gpu::vk
 {

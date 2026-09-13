@@ -16,15 +16,8 @@ namespace ember::gpu::vk
 															VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT |
 															VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT;
 
-		void write_image(
-			const Context& ctx,
-			VkDescriptorSet set,
-			u32 binding,
-			u32 slot,
-			VkDescriptorType type,
-			VkImageView view,
-			VkSampler sampler,
-			VkImageLayout layout) noexcept
+		void write_image(const Context& ctx, VkDescriptorSet set, u32 binding, u32 slot, VkDescriptorType type,
+						 VkImageView view, VkSampler sampler, VkImageLayout layout) noexcept
 		{
 			const VkDescriptorImageInfo info{sampler, view, layout};
 
@@ -42,8 +35,8 @@ namespace ember::gpu::vk
 		}
 	}
 
-	bool
-	DescriptorHeap::init(const Context& ctx, u32 texture_capacity, u32 sampler_capacity, u32 buffer_capacity) noexcept
+	bool DescriptorHeap::init(const Context& ctx, u32 texture_capacity, u32 sampler_capacity,
+							  u32 buffer_capacity) noexcept
 	{
 		m_texture_capacity = texture_capacity;
 		m_sampler_capacity = sampler_capacity;
@@ -51,18 +44,12 @@ namespace ember::gpu::vk
 
 		const VkDescriptorSetLayoutBinding bindings[] = {
 			{BINDING_SAMPLED_2D, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_capacity, VK_SHADER_STAGE_ALL, nullptr},
-			{BINDING_SAMPLED_2D_ARRAY,
-			 VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-			 texture_capacity,
-			 VK_SHADER_STAGE_ALL,
+			{BINDING_SAMPLED_2D_ARRAY, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_capacity, VK_SHADER_STAGE_ALL,
 			 nullptr},
 			{BINDING_SAMPLED_CUBE, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_capacity, VK_SHADER_STAGE_ALL, nullptr},
 			{BINDING_SAMPLED_3D, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, texture_capacity, VK_SHADER_STAGE_ALL, nullptr},
 			{BINDING_STORAGE_2D, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, texture_capacity, VK_SHADER_STAGE_ALL, nullptr},
-			{BINDING_STORAGE_2D_ARRAY,
-			 VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			 texture_capacity,
-			 VK_SHADER_STAGE_ALL,
+			{BINDING_STORAGE_2D_ARRAY, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, texture_capacity, VK_SHADER_STAGE_ALL,
 			 nullptr},
 			{BINDING_STORAGE_3D, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, texture_capacity, VK_SHADER_STAGE_ALL, nullptr},
 			{BINDING_SAMPLERS, VK_DESCRIPTOR_TYPE_SAMPLER, sampler_capacity, VK_SHADER_STAGE_ALL, nullptr},
@@ -70,15 +57,8 @@ namespace ember::gpu::vk
 		};
 
 		const VkDescriptorBindingFlags binding_flags[] = {
-			BINDLESS_FLAGS,
-			BINDLESS_FLAGS,
-			BINDLESS_FLAGS,
-			BINDLESS_FLAGS,
-			BINDLESS_FLAGS,
-			BINDLESS_FLAGS,
-			BINDLESS_FLAGS,
-			BINDLESS_FLAGS,
-			BINDLESS_FLAGS,
+			BINDLESS_FLAGS, BINDLESS_FLAGS, BINDLESS_FLAGS, BINDLESS_FLAGS, BINDLESS_FLAGS,
+			BINDLESS_FLAGS, BINDLESS_FLAGS, BINDLESS_FLAGS, BINDLESS_FLAGS,
 		};
 
 		const VkDescriptorSetLayoutBindingFlagsCreateInfo heap_flags{
@@ -206,47 +186,26 @@ namespace ember::gpu::vk
 		m_constants		   = VK_NULL_HANDLE;
 	}
 
-	void DescriptorHeap::write_sampled(
-		const Context& ctx, u32 slot, VkImageView view, VkImageLayout layout, TextureType type) noexcept
+	void DescriptorHeap::write_sampled(const Context& ctx, u32 slot, VkImageView view, VkImageLayout layout,
+									   TextureType type) noexcept
 	{
 		EMBER_ASSERT(slot < m_texture_capacity);
-		write_image(
-			ctx,
-			m_set,
-			BINDING_SAMPLED_2D + static_cast<u32>(type),
-			slot,
-			VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-			view,
-			VK_NULL_HANDLE,
-			layout);
+		write_image(ctx, m_set, BINDING_SAMPLED_2D + static_cast<u32>(type), slot, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+					view, VK_NULL_HANDLE, layout);
 	}
 
 	void DescriptorHeap::write_storage(const Context& ctx, u32 slot, VkImageView view, TextureType type) noexcept
 	{
 		EMBER_ASSERT(slot < m_texture_capacity);
-		write_image(
-			ctx,
-			m_set,
-			BINDING_STORAGE_2D + storage_array(type),
-			slot,
-			VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-			view,
-			VK_NULL_HANDLE,
-			VK_IMAGE_LAYOUT_GENERAL);
+		write_image(ctx, m_set, BINDING_STORAGE_2D + storage_array(type), slot, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, view,
+					VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL);
 	}
 
 	void DescriptorHeap::write_sampler(const Context& ctx, u32 slot, VkSampler sampler) noexcept
 	{
 		EMBER_ASSERT(slot < m_sampler_capacity);
-		write_image(
-			ctx,
-			m_set,
-			BINDING_SAMPLERS,
-			slot,
-			VK_DESCRIPTOR_TYPE_SAMPLER,
-			VK_NULL_HANDLE,
-			sampler,
-			VK_IMAGE_LAYOUT_UNDEFINED);
+		write_image(ctx, m_set, BINDING_SAMPLERS, slot, VK_DESCRIPTOR_TYPE_SAMPLER, VK_NULL_HANDLE, sampler,
+					VK_IMAGE_LAYOUT_UNDEFINED);
 	}
 
 	void DescriptorHeap::write_buffer(const Context& ctx, u32 slot, VkBuffer buffer, u64 size) noexcept
@@ -276,29 +235,15 @@ namespace ember::gpu::vk
 		if ((mask & HeapArray::Sampled) != HeapArray::None)
 		{
 			for (u32 i = 0; i < SAMPLED_ARRAY_COUNT; ++i)
-				write_image(
-					ctx,
-					m_set,
-					BINDING_SAMPLED_2D + i,
-					slot,
-					VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-					m_fallbacks.sampled_views[i],
-					VK_NULL_HANDLE,
-					VK_IMAGE_LAYOUT_GENERAL);
+				write_image(ctx, m_set, BINDING_SAMPLED_2D + i, slot, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+							m_fallbacks.sampled_views[i], VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL);
 		}
 
 		if ((mask & HeapArray::Storage) != HeapArray::None)
 		{
 			for (u32 i = 0; i < STORAGE_ARRAY_COUNT; ++i)
-				write_image(
-					ctx,
-					m_set,
-					BINDING_STORAGE_2D + i,
-					slot,
-					VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-					m_fallbacks.storage_views[i],
-					VK_NULL_HANDLE,
-					VK_IMAGE_LAYOUT_GENERAL);
+				write_image(ctx, m_set, BINDING_STORAGE_2D + i, slot, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+							m_fallbacks.storage_views[i], VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL);
 		}
 		if ((mask & HeapArray::Sampler) != HeapArray::None)
 			write_sampler(ctx, slot, m_fallbacks.sampler_vk);
@@ -350,23 +295,14 @@ namespace ember::gpu::vk
 		// GENERAL everywhere: the fallbacks carry Storage usage, so one layout
 		// serves all arrays and no per-array bookkeeping exists.
 		for (u32 i = 0; i < SAMPLED_ARRAY_COUNT; ++i)
-			fill(
-				BINDING_SAMPLED_2D + i,
-				VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-				{VK_NULL_HANDLE, m_fallbacks.sampled_views[i], VK_IMAGE_LAYOUT_GENERAL},
-				m_texture_capacity);
+			fill(BINDING_SAMPLED_2D + i, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+				 {VK_NULL_HANDLE, m_fallbacks.sampled_views[i], VK_IMAGE_LAYOUT_GENERAL}, m_texture_capacity);
 
 		for (u32 i = 0; i < STORAGE_ARRAY_COUNT; ++i)
-			fill(
-				BINDING_STORAGE_2D + i,
-				VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-				{VK_NULL_HANDLE, m_fallbacks.storage_views[i], VK_IMAGE_LAYOUT_GENERAL},
-				m_texture_capacity);
-		fill(
-			BINDING_SAMPLERS,
-			VK_DESCRIPTOR_TYPE_SAMPLER,
-			{m_fallbacks.sampler_vk, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED},
-			m_sampler_capacity);
+			fill(BINDING_STORAGE_2D + i, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+				 {VK_NULL_HANDLE, m_fallbacks.storage_views[i], VK_IMAGE_LAYOUT_GENERAL}, m_texture_capacity);
+		fill(BINDING_SAMPLERS, VK_DESCRIPTOR_TYPE_SAMPLER,
+			 {m_fallbacks.sampler_vk, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED}, m_sampler_capacity);
 
 		VkDescriptorBufferInfo buffers[CHUNK];
 		for (VkDescriptorBufferInfo& entry : buffers)
@@ -415,11 +351,8 @@ namespace ember::gpu::vk
 	{
 		DescriptorHeap& heap = backend.descriptor_heap;
 
-		if (!heap.init(
-				backend.context,
-				backend.resources.textures.capacity(),
-				backend.resources.samplers.capacity(),
-				backend.resources.buffers.capacity()))
+		if (!heap.init(backend.context, backend.resources.textures.capacity(), backend.resources.samplers.capacity(),
+					   backend.resources.buffers.capacity()))
 			return false;
 
 		struct FallbackDef
@@ -509,16 +442,16 @@ namespace ember::gpu::vk
 			{
 				vkDestroyImageView(backend.context.device, hot->sampled_view, nullptr);
 				vkDestroyImageView(backend.context.device, hot->storage_view, nullptr);
-				vmaDestroyImage(
-					backend.context.allocator, hot->image, backend.resources.textures.get_cold(handle)->allocation);
+				vmaDestroyImage(backend.context.allocator, hot->image,
+								backend.resources.textures.get_cold(handle)->allocation);
 				(void)backend.resources.textures.erase(handle);
 			}
 		}
 
 		if (const BufferHot* hot = backend.resources.buffers.get(fb.buffer))
 		{
-			vmaDestroyBuffer(
-				backend.context.allocator, hot->handle, backend.resources.buffers.get_cold(fb.buffer)->allocation);
+			vmaDestroyBuffer(backend.context.allocator, hot->handle,
+							 backend.resources.buffers.get_cold(fb.buffer)->allocation);
 			(void)backend.resources.buffers.erase(fb.buffer);
 		}
 

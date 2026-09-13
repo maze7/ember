@@ -54,10 +54,8 @@ TEST(FrameMemoryJobs, WorkersAllocateInParallelWithoutOverlapping)
 		},
 		&args);
 
-	std::sort(
-		allocations.begin(),
-		allocations.end(),
-		[](const Allocation& a, const Allocation& b) { return a.begin < b.begin; });
+	std::sort(allocations.begin(), allocations.end(),
+			  [](const Allocation& a, const Allocation& b) { return a.begin < b.begin; });
 
 	for (size_t i = 0; i < allocations.size(); ++i)
 	{

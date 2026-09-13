@@ -1,6 +1,6 @@
+#include <cstdio>
 #include <ember/memory/memory.h>
 #include <gtest/gtest.h>
-#include <cstdio>
 
 using namespace ember;
 

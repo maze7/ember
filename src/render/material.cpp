@@ -1,8 +1,8 @@
 #include <ember/core/logger.h>
 #include <ember/gpu/device.h>
+#include <ember/memory/pmr/block_allocator.h>
 #include <ember/render/gpu_scene.h>
 #include <ember/render/material.h>
-#include <ember/memory/pmr/block_allocator.h>
 
 #include <algorithm>
 #include <cstring>
@@ -137,13 +137,12 @@ namespace ember::render
 		// Dedup already happened at mark, so each slot uploads exactly once
 		// with its final shadow bytes: last write wins, and a destroyed then
 		// reused slot lands as the new record.
-		for_each_slot_run(
-			{slots, count},
-			[&](u32 first, u32 run) noexcept
-			{
-				device.update_buffer(
-					m_table, u64{first} * m_stride, {m_shadow + u64{first} * m_stride, u64{run} * m_stride});
-			});
+		for_each_slot_run({slots, count},
+						  [&](u32 first, u32 run) noexcept
+						  {
+							  device.update_buffer(m_table, u64{first} * m_stride,
+												   {m_shadow + u64{first} * m_stride, u64{run} * m_stride});
+						  });
 
 		m_dirty.clear();
 	}
