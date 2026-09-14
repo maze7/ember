@@ -1,120 +1,169 @@
+#include <chrono>
 #include <ember/app/runtime.h>
 #include <ember/core/logger.h>
 #include <ember/core/profile.h>
 #include <ember/gpu/device.h>
 #include <ember/memory/pmr/arena_resource.h>
-
-#include <algorithm>
-#include <thread>
+#include <ember/platform/platform.h>
 
 namespace ember
 {
-	Runtime::Runtime(const AppConfig& config, const Args& args) noexcept
-		: m_memory(config.memory), m_jobs(config.jobs), m_platform(), m_gpu(m_platform, config.gpu), m_args(args),
-		  m_max_delta_seconds(config.max_delta_seconds)
+	Runtime::~Runtime() noexcept { shutdown(); }
+
+	Result<void, RuntimeError> Runtime::init(const AppConfig& config, const Args& args) noexcept
 	{
-		if (m_max_delta_seconds <= 0.0f)
+		if (m_state != State::Empty)
+			return fail(RuntimeError::AlreadyInit);
+
+		m_state				= State::Initializing;
+		m_args				= args;
+		m_max_delta_seconds = config.max_delta_seconds;
+
+		const auto rollback = [this](RuntimeError error) -> Result<void, RuntimeError>
 		{
-			EMBER_ERROR("(ember::Runtime): max_delta_seconds must be greater than zero");
-			return;
-		}
+			shutdown();
+			return fail(error);
+		};
 
-		if (!m_memory || !m_platform || !m_gpu)
-			return;
+		// Initialize the memory system
+		m_memory = memory::make_unique<MemorySystem>(MemoryTag::Engine, config.memory);
+		if (!m_memory)
+			return rollback(RuntimeError::MemoryInitFailed);
 
-		m_window = m_platform.create_window(config.window);
+		// Initialize the job system
+		m_jobs = memory::make_unique<jobs::JobSystem>(MemoryTag::Engine, config.jobs);
+
+		// Initialize the platform layer
+		m_platform = memory::make_unique<Platform>(MemoryTag::Engine);
+		if (!m_platform)
+			return rollback(RuntimeError::PlatformInitFailed);
+
+		// Create the primary window before booting presentation.
+		m_window = m_platform->create_window(config.window);
 		if (m_window.is_null())
-		{
-			EMBER_ERROR("(ember::Runtime): window creation failed");
-			return;
-		}
+			return rollback(RuntimeError::WindowInitFailed);
 
-		// Wirte Platform up to the GPU device so it can access window info
-		m_swapchain = m_gpu.create_swapchain({
+		// Initialize the GPU device
+		m_gpu = memory::make_unique<gpu::Device>(MemoryTag::Graphics, *m_platform, config.gpu);
+		if (!m_gpu)
+			return rollback(RuntimeError::DeviceInitFailed);
+
+		// Create the presentation swapchain
+		m_swapchain = m_gpu->create_swapchain({
 			.window		  = m_window,
 			.present_mode = config.present_mode,
 		});
 
 		if (m_swapchain.is_null())
-		{
-			EMBER_ERROR("runtime: swapchain creation failed");
-			return;
-		}
+			return rollback(RuntimeError::SwapchainInitFailed);
 
-		m_renderer.init(m_gpu, {});
+		// Initialize the renderer after the GPU is available.
+		m_renderer = memory::make_unique<render::Renderer>(MemoryTag::Graphics);
+		m_renderer->init(*m_gpu, {});
+		m_state = State::Ready;
 
-		m_valid = true;
+		return {};
 	}
 
-	Runtime::~Runtime() noexcept
+	void Runtime::shutdown() noexcept
 	{
-		close_frame();
+		if (m_gpu)
+			m_gpu->wait_idle();
 
-		m_renderer.shutdown(m_gpu);
+		if (m_renderer)
+		{
+			m_renderer->shutdown(*m_gpu);
+			m_renderer.reset();
+		}
 
 		if (m_gpu)
 		{
-			// Application resources are already gone when Runtime is destroyed.
-			m_gpu.wait_idle();
-
 			if (!m_swapchain.is_null())
-			{
-				m_gpu.destroy(m_swapchain);
-				m_swapchain = {};
-				m_gpu.wait_idle();
-			}
+				m_gpu->destroy(m_swapchain);
+
+			m_swapchain = {};
+
+			// Drain the deferred destruction generated above.
+			m_gpu->wait_idle();
+			m_gpu.reset();
 		}
 
-		if (!m_window.is_null())
+		if (m_platform)
 		{
-			m_platform.destroy_window(m_window);
+			// Close window before we kill platform
+			if (!m_window.is_null())
+				m_platform->destroy_window(m_window);
+
 			m_window = {};
+			m_platform.reset();
 		}
+
+		m_jobs.reset();
+		m_memory.reset();
+		m_input.clear();
+
+		// Reset all other class state
+		m_args				= {};
+		m_previous_frame	= {};
+		m_max_delta_seconds = 0.1f;
+		m_frame_index		= 0;
+		m_exit_code			= 0;
+		m_quit_requested	= false;
+		m_state				= State::Empty;
 	}
 
-	Runtime::FrameScope::FrameScope(Runtime& runtime) noexcept : m_runtime(runtime), m_info(runtime.m_gpu.begin_frame())
-	{
-		EMBER_ASSERT(!runtime.m_frame_open);
-		runtime.m_frame_open = true;
-	}
-
-	Runtime::FrameScope::~FrameScope() noexcept { m_runtime.close_frame(); }
+	bool Runtime::initialized() const noexcept { return m_state == State::Ready || m_state == State::Running; }
 
 	int Runtime::run(App& app) noexcept
 	{
-		if (!m_valid)
+		EMBER_ASSERT(m_state == State::Ready && "Runtime::run() requires successful initialization");
+		EMBER_ASSERT(app.m_runtime == nullptr && "App is already bound to a Runtime");
+
+		if (m_state != State::Ready || app.m_runtime != nullptr)
 			return 1;
 
-		EMBER_ASSERT(app.m_runtime == nullptr);
-		app.m_runtime = this;
+		m_exit_code		 = 0;
+		m_frame_index	 = 0;
+		m_quit_requested = false;
+		m_previous_frame = {};
+		m_state			 = State::Running;
+		app.m_runtime	 = this;
 
 		struct MainArgs
 		{
 			Runtime* runtime;
 			App* app;
-		} main_args{this, &app};
+		};
 
-		// The application runs as the job system's main, so a wait anywhere in init, update,
-		// render or shutdown parks this thread's stack and resumes on this same thread.
-		m_jobs.run(
+		MainArgs main_args{
+			.runtime = this,
+			.app	 = &app,
+		};
+
+		// Running main through the scheduler allows waits in application
+		// callbacks to park their fiber instead of blocking a worker.
+		m_jobs->run(
 			[](void* data)
 			{
-				auto* args = static_cast<MainArgs*>(data);
-				args->runtime->frame_loop(*args->app);
+				auto* main = static_cast<MainArgs*>(data);
+				main->runtime->frame_loop(*main->app);
 			},
 			&main_args);
+
+		app.m_runtime = nullptr;
+		m_state		  = State::Ready;
 
 		return m_exit_code;
 	}
 
 	void Runtime::frame_loop(App& app) noexcept
 	{
-		bool initialized = app.init();
+		const bool app_initialized = app.init();
 
-		// Initialization work must not become the first simulation delta.
+		// Initialization work must not contribute to the first simulation step.
 		m_previous_frame = std::chrono::steady_clock::now();
 
-		if (!initialized)
+		if (!app_initialized)
 		{
 			app.shutdown();
 
@@ -128,24 +177,28 @@ namespace ember
 		{
 			memory::frame_memory().reset();
 
+			// Platform event pump
 			{
 				EMBER_PROFILE_SCOPE_C("pump events", PROFILE_COLOR_INPUT);
-				if (m_platform.pump_events(m_input).quit_requested)
-				{
-					m_quit_requested = true;
-					break;
-				}
+				if (m_platform->pump_events(m_input).quit_requested)
+					request_quit(0);
 			}
 
-			auto tick = std::chrono::steady_clock::now();
-			f32 dt = std::clamp(std::chrono::duration<f32>(tick - m_previous_frame).count(), 0.0f, m_max_delta_seconds);
+			if (m_quit_requested)
+				break;
+
+			const auto tick = std::chrono::steady_clock::now();
+			const f32 dt =
+				std::clamp(std::chrono::duration<f32>(tick - m_previous_frame).count(), 0.0f, m_max_delta_seconds);
+
 			m_previous_frame = tick;
 
-			UpdateContext update{
+			const UpdateContext update{
 				.dt			 = dt,
 				.frame_index = m_frame_index++,
 			};
 
+			// App update tick
 			{
 				EMBER_PROFILE_SCOPE_C("update", PROFILE_COLOR_GAMEPLAY);
 				app.update(update);
@@ -154,36 +207,41 @@ namespace ember
 			if (m_quit_requested)
 				break;
 
-			auto pixels = m_platform.window_pixel_size(m_window);
-			if (pixels.x == 0 || pixels.y == 0)
+			Extent2D pixels = m_platform->window_pixel_size(m_window);
+			if (pixels.width == 0 || pixels.height == 0)
 			{
-				// A suspended window should not consume an entire CPU core.
+				// Sleeping prevents a minimized application from consuming an
+				// entire CPU core while no drawable surface is available.
 				std::this_thread::sleep_for(std::chrono::milliseconds(16));
+
+				EMBER_PROFILE_FRAME();
 				continue;
 			}
 
-			FrameScope frame(*this);
-			TextureHandle output = m_gpu.acquire(m_swapchain);
-			if (output.is_null())
-				continue;
+			const gpu::FrameInfo frame = m_gpu->begin_frame();
+			const TextureHandle output = m_gpu->acquire(m_swapchain);
 
-			RenderContext render{
-				.dt				   = dt,
-				.frame_index	   = frame.info().frame_index,
-				.frame_slot		   = frame.info().slot,
-				.backbuffer		   = output,
-				.backbuffer_extent = m_gpu.swapchain_extent(m_swapchain),
-			};
-
+			if (!output.is_null())
 			{
+				const RenderContext render{
+					.dt				   = dt,
+					.frame_index	   = frame.frame_index,
+					.frame_slot		   = frame.slot,
+					.backbuffer		   = output,
+					.backbuffer_extent = m_gpu->swapchain_extent(m_swapchain),
+				};
+
 				EMBER_PROFILE_SCOPE_C("render", PROFILE_COLOR_RENDER);
 				app.render(render);
 			}
-			if (m_gpu.device_lost())
+
+			// No control-flow statement may bypass this after begin_frame().
+			m_gpu->end_frame();
+
+			if (m_gpu->device_lost())
 			{
-				EMBER_ERROR("(ember::Runtime): GPU device lost");
-				m_exit_code		 = 1;
-				m_quit_requested = true;
+				EMBER_ERROR("GPU device lost");
+				request_quit(1);
 			}
 
 			EMBER_PROFILE_FRAME();
@@ -196,14 +254,5 @@ namespace ember
 	{
 		m_exit_code		 = exit_code;
 		m_quit_requested = true;
-	}
-
-	void Runtime::close_frame() noexcept
-	{
-		if (!m_frame_open)
-			return;
-
-		m_frame_open = false;
-		m_gpu.end_frame();
 	}
 }

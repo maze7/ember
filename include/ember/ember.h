@@ -27,8 +27,8 @@ namespace ember::detail
 		const AppConfig config = T::configure(args);
 
 		// This order keeps all engine services alive during App destruction.
-		Runtime runtime(config, args);
-		if (!runtime)
+		Runtime runtime;
+		if (!runtime.init(config, args))
 			return 1;
 
 		T app;

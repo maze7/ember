@@ -76,6 +76,45 @@ namespace ember
 	using f32 = float;
 	using f64 = double;
 
+	/// Small API-independent PODs.
+	struct Extent2D
+	{
+		u32 width  = 0;
+		u32 height = 0;
+	};
+
+	struct Extent3D
+	{
+		u32 width  = 1;
+		u32 height = 1;
+		u32 depth  = 1;
+	};
+
+	struct Offset3D
+	{
+		i32 x = 0;
+		i32 y = 0;
+		i32 z = 0;
+	};
+
+	struct Rect2D
+	{
+		i32 x	   = 0;
+		i32 y	   = 0;
+		u32 width  = 0;
+		u32 height = 0;
+	};
+
+	struct Viewport
+	{
+		f32 x		  = 0.0f;
+		f32 y		  = 0.0f;
+		f32 width	  = 0.0f;
+		f32 height	  = 0.0f;
+		f32 min_depth = 0.0f;
+		f32 max_depth = 1.0f;
+	};
+
 	consteval u64 operator""_kb(unsigned long long v) { return static_cast<u64>(v) * 1024; }
 	consteval u64 operator""_mb(unsigned long long v) { return static_cast<u64>(v) * 1024 * 1024; }
 	consteval u64 operator""_gb(unsigned long long v) { return static_cast<u64>(v) * 1024 * 1024 * 1024; }

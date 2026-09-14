@@ -833,7 +833,7 @@ namespace ember
 		return handle;
 	}
 
-	glm::uvec2 Platform::window_pixel_size(WindowHandle handle) const noexcept
+	Extent2D Platform::window_pixel_size(WindowHandle handle) const noexcept
 	{
 		if (m_impl == nullptr)
 			return {};
@@ -1270,7 +1270,7 @@ namespace ember
 			log_sdl_failure("SDL_SetClipboardText");
 	}
 
-	std::string Platform::clipboard_text() const noexcept
+	String Platform::clipboard_text() const noexcept
 	{
 		if (m_impl == nullptr)
 			return {};
@@ -1288,7 +1288,7 @@ namespace ember
 			return {};
 		}
 
-		std::string result{native};
+		String result{native};
 		SDL_free(native);
 		return result;
 	}

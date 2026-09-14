@@ -1,103 +1,85 @@
 #pragma once
 
+#include <ember/gpu/common.h>
 #include <ember/app/app.h>
+#include <ember/core/common.h>
+#include <ember/core/result.h>
+#include <ember/jobs/job_system.h>
+#include <ember/memory/unique.h>
 #include <ember/platform/platform.h>
 
 #include <chrono>
 
 namespace ember
 {
-	enum class RuntimeStage : u8
+	enum class RuntimeError : u8
 	{
-		Configuration,
-		Memory,
-		Jobs,
-		Platform,
-		Device,
-		Window,
-		Swapchain,
-		Renderer,
-	};
-
-	struct RuntimeError
-	{
-		RuntimeStage stage;
-		std::error_code cause;
+		AlreadyInit,
+		InvalidConfig,
+		MemoryInitFailed,
+		PlatformInitFailed,
+		DeviceInitFailed,
+		WindowInitFailed,
+		SwapchainInitFailed,
 	};
 
 	/**
 	 * Owns the engine services shared by one application instance.
 	 *
-	 * Runtime is constructed before before App and destroyed after App. That ordering
-	 * keeps the allocator, platform, and GPU live during application teardown.
+	 * init() constucts services in dependency order. shutdown() releases them
+	 * in reverse order and is safe after partial initialization.
 	 */
 	class Runtime final
 	{
 	public:
-		Runtime(const AppConfig& config, const Args& args) noexcept;
+		Runtime() noexcept = default;
 		~Runtime() noexcept;
 
-		Runtime(const Runtime&) = delete;
+		// Runtime is the main engine orchestrator, it should not be copied or moved.
+		Runtime(const Runtime&)			   = delete;
 		Runtime& operator=(const Runtime&) = delete;
-		Runtime(Runtime&&) = delete;
-		Runtime& operator=(Runtime&&) = delete;
+		Runtime(Runtime&&)				   = delete;
+		Runtime& operator=(Runtime&&)	   = delete;
 
-		[[nodiscard]] explicit operator bool() const noexcept { return m_valid; }
+		[[nodiscard]] Result<void, RuntimeError> init(const AppConfig& config, const Args& args) noexcept;
+		void shutdown() noexcept;
+
+		[[nodiscard]] bool initialized() const noexcept;
 
 		int run(App& app) noexcept;
-
-		const Args& args() const noexcept { return m_args; }
-
-		Platform& platform() noexcept { return m_platform; }
 
 	private:
 		friend class App;
 
-		class FrameScope final
+		enum class State : u8
 		{
-		public:
-			explicit FrameScope(Runtime& runtime) noexcept;
-			~FrameScope() noexcept;
-
-			FrameScope(const FrameScope&) = delete;
-			FrameScope& operator=(const FrameScope&) = delete;
-			FrameScope(FrameScope&&) = delete;
-			FrameScope& operator=(FrameScope&&) = delete;
-
-			[[nodiscard]] const gpu::FrameInfo& info() const noexcept { return m_info; }
-
-		private:
-			Runtime& m_runtime;
-			gpu::FrameInfo m_info = {};
+			Empty,
+			Initializing,
+			Ready,
+			Running,
 		};
 
 		void request_quit(int exit_code) noexcept;
-		void close_frame() noexcept;
 		void frame_loop(App& app) noexcept;
 
-		// Declaration order is initialization order. The job system follows the allocator
-		// so its workers outlive every service that can kick a job.
-		MemorySystem m_memory;
-		jobs::JobSystem m_jobs;
-		Platform m_platform;
-		gpu::Device m_gpu;
+		Unique<MemorySystem> m_memory;
+		Unique<jobs::JobSystem> m_jobs;
+		Unique<Platform> m_platform;
+		Unique<gpu::Device> m_gpu;
+		Unique<render::Renderer> m_renderer;
+
 		Input m_input;
-		render::Renderer m_renderer;
 
-		Args m_args;
-
-		WindowHandle m_window = {};
+		State m_state				= State::Empty;
+		Args m_args					= {};
+		WindowHandle m_window		= {};
 		SwapchainHandle m_swapchain = {};
 
 		std::chrono::steady_clock::time_point m_previous_frame = {};
 
 		f32 m_max_delta_seconds = 0.1f;
-		u64 m_frame_index = 0;
-
-		int m_exit_code = 0;
-
-		bool m_frame_open = false;
-		bool m_quit_requested = false;
-		bool m_valid = false;
+		u64 m_frame_index		= 0;
+		int m_exit_code			= 0;
+		bool m_quit_requested	= false;
 	};
 }

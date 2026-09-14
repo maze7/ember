@@ -1,7 +1,7 @@
 #pragma once
 
-#include "ember/gpu/common.h"
 #include <ember/core/result.h>
+#include <ember/gpu/common.h>
 #include <ember/input/cursor.h>
 #include <ember/input/input.h>
 #include <ember/platform/window.h>
@@ -27,7 +27,7 @@ namespace ember
 		Platform(Platform&& other) noexcept;
 		Platform& operator=(Platform&& other) noexcept;
 
-		[[nodiscard]] explicit operator bool() const noexcept { return m_impl != nullptr; }
+		explicit operator bool() const noexcept { return m_impl != nullptr; }
 
 		/**
 		 * Drains SDL once, folds physical input into Input::NextState,
@@ -44,7 +44,7 @@ namespace ember
 		void set_window_title(WindowHandle handle, const char* title) noexcept;
 		void set_window_size(WindowHandle handle, u32 width, u32 height) noexcept;
 		void set_cursor_mode(WindowHandle window, CursorMode mode) noexcept;
-		[[nodiscard]] glm::uvec2 window_pixel_size(WindowHandle handle) const noexcept;
+		Extent2D window_pixel_size(WindowHandle handle) const noexcept;
 
 		CursorHandle create_system_cursor(SystemCursor cursor) noexcept;
 		CursorHandle create_cursor(const CursorImageView& image) noexcept;
@@ -57,7 +57,7 @@ namespace ember
 		void stop_text_input(WindowHandle window) noexcept;
 
 		void set_clipboard_text(const char* text) noexcept;
-		std::string clipboard_text() const noexcept;
+		String clipboard_text() const noexcept;
 
 		void rumble(GamepadId gamepad, f32 low_intensity, f32 high_intensity, u32 duration_ms) noexcept;
 

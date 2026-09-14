@@ -161,9 +161,9 @@ namespace ember::gpu
 	{
 		VkSemaphore timeline   = VK_NULL_HANDLE; // frame N signals value N
 		VkQueryPool timestamps = VK_NULL_HANDLE; // zone ticks, sliced per slot; null without caps.timestamps
-		u64 timeline_value	 = 0;			   // last value handed to a submit
-		u64 index			 = 0;			   // slot = index % frames_in_flight
-		bool open			 = false;
+		u64 timeline_value	   = 0;				 // last value handed to a submit
+		u64 index			   = 0;				 // slot = index % frames_in_flight
+		bool open			   = false;
 
 		/// Lists handed out this frame. Claimed on the owner thread, so the order is the order
 		/// the caller asked for them in, and that is the order they reach the queue.
@@ -248,8 +248,11 @@ namespace ember::gpu
 		void destroy_boot_state(Backend& backend) noexcept;
 	}
 
-#define EMBER_GPU_GUARD(...)                                                                                           \
-	if (m_backend == nullptr)                                                                                          \
-		return __VA_ARGS__;                                                                                            \
-	EMBER_ASSERT(m_backend->owner_thread == current_thread_id())
-}
+	#define EMBER_GPU_GUARD(...)                                               \
+		do                                                                     \
+		{                                                                      \
+			if (m_backend == nullptr)                                           \
+				return __VA_ARGS__;                                            \
+                                                                           \
+		} while (false)
+	}

@@ -7,25 +7,25 @@ namespace ember
 	const Args& App::args() const noexcept
 	{
 		EMBER_ASSERT(m_runtime != nullptr);
-		return m_runtime->args();
+		return m_runtime->m_args;
 	}
 
 	Platform& App::platform() noexcept
 	{
 		EMBER_ASSERT(m_runtime != nullptr);
-		return m_runtime->m_platform;
+		return *m_runtime->m_platform;
 	}
 
 	gpu::Device& App::gpu() noexcept
 	{
 		EMBER_ASSERT(m_runtime != nullptr);
-		return m_runtime->m_gpu;
+		return *m_runtime->m_gpu;
 	}
 
 	render::Renderer& App::renderer() noexcept
 	{
 		EMBER_ASSERT(m_runtime != nullptr);
-		return m_runtime->m_renderer;
+		return *m_runtime->m_renderer;
 	}
 
 	const Input& App::input() const noexcept

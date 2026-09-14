@@ -101,11 +101,11 @@ namespace ember::gpu
 			if (caps.currentExtent.width != ~0u)
 				return caps.currentExtent;
 
-			const glm::uvec2 pixels = platform.window_pixel_size(data.window);
+			auto pixels = platform.window_pixel_size(data.window);
 
 			return {
-				std::clamp(pixels.x, caps.minImageExtent.width, caps.maxImageExtent.width),
-				std::clamp(pixels.y, caps.minImageExtent.height, caps.maxImageExtent.height),
+				std::clamp(pixels.width, caps.minImageExtent.width, caps.maxImageExtent.width),
+				std::clamp(pixels.height, caps.minImageExtent.height, caps.maxImageExtent.height),
 			};
 		}
 
@@ -361,12 +361,11 @@ namespace ember::gpu
 			return data.images[data.acquired_image];
 
 		// Minimized: report suspended without touching the swapchain; it revives on restore.
-		const glm::uvec2 pixels = m_backend->context.platform->window_pixel_size(data.window);
-		if (pixels.x == 0 || pixels.y == 0)
+		auto pixels = m_backend->context.platform->window_pixel_size(data.window);
+		if (pixels.width == 0 || pixels.height == 0)
 			return {};
 
-		const bool extent_changed = pixels.x != data.extent.width || pixels.y != data.extent.height;
-
+		bool extent_changed = pixels.width != data.extent.width || pixels.height != data.extent.height;
 		if (data.needs_recreate || extent_changed || data.swapchain == VK_NULL_HANDLE)
 		{
 			if (build(*m_backend, data) != Build::Ok)

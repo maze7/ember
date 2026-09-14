@@ -313,6 +313,9 @@ namespace ember::gpu
 	{
 		EMBER_GPU_GUARD();
 
+		if (m_backend == nullptr)
+			return;
+
 		// Partial boots may not have created a device; without one nothing was ever
 		// submitted or created, so only the boot-state teardown below has work.
 		if (m_backend->context.device != VK_NULL_HANDLE)
