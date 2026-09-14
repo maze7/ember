@@ -1,9 +1,9 @@
 #pragma once
 
-#include <ember/gpu/common.h>
 #include <ember/app/app.h>
 #include <ember/core/common.h>
 #include <ember/core/result.h>
+#include <ember/gpu/common.h>
 #include <ember/jobs/job_system.h>
 #include <ember/memory/unique.h>
 #include <ember/platform/platform.h>
@@ -24,10 +24,11 @@ namespace ember
 	};
 
 	/**
-	 * Owns the engine services shared by one application instance.
+	 * Owns the engine services used by an application session.
 	 *
-	 * init() constucts services in dependency order. shutdown() releases them
-	 * in reverse order and is safe after partial initialization.
+	 * Runtime becomes thread-affine after init() because the platform and GPU backends
+	 * must be driven and destroyed by their owner thread. Only one Runtime may be initialized
+	 * in a process at a time because several owned services publish process-wide state.
 	 */
 	class Runtime final
 	{
@@ -41,11 +42,38 @@ namespace ember
 		Runtime(Runtime&&)				   = delete;
 		Runtime& operator=(Runtime&&)	   = delete;
 
+		/**
+		 * Initializes the Runtime on the calling thread.
+		 *
+		 * Runtime borrows `args`; the argument array and its strings must remain valid
+		 * until shutdown(). Calling init() on a non-empty Runtime returns
+		 * Runtime::AlreadyInitialized without disturbing the active state.
+		 */
 		[[nodiscard]] Result<void, RuntimeError> init(const AppConfig& config, const Args& args) noexcept;
+
+		/**
+		 * Releases the services owned by the Runtime.
+		 *
+		 * Call only after run() has returned and every job that can access Runtime
+		 * owned state has completed.
+		 */
 		void shutdown() noexcept;
 
+		/** Returns true if the Runtime has initialized successfully. */
 		[[nodiscard]] bool initialized() const noexcept;
 
+		/**
+		 * Runs `app` synchronously until the platform or application requests exit.
+		 *
+		 * Lifecycle callbacks execute on the Runtime's owner thread under the job
+		 * scheduler. This allows jobs::wait() to park the main fiber without moving
+		 * thread-affine platform or GPU work to another thread.
+		 *
+		 * The App remains bound throughout its callbacks, and App::shutdown() is called
+		 * after every App::init() attempt, including failed initialization. Returns
+		 * the code requested through App::quit(), or one when the App cannot be run
+		 * successfully.
+		 */
 		int run(App& app) noexcept;
 
 	private:

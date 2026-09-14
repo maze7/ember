@@ -248,11 +248,11 @@ namespace ember::gpu
 		void destroy_boot_state(Backend& backend) noexcept;
 	}
 
-	#define EMBER_GPU_GUARD(...)                                               \
-		do                                                                     \
-		{                                                                      \
-			if (m_backend == nullptr)                                           \
-				return __VA_ARGS__;                                            \
-                                                                           \
-		} while (false)
-	}
+#define EMBER_GPU_GUARD(...)                                                                                           \
+	do                                                                                                                 \
+	{                                                                                                                  \
+		if (m_backend == nullptr)                                                                                      \
+			return __VA_ARGS__;                                                                                        \
+                                                                                                                       \
+	} while (false)
+}

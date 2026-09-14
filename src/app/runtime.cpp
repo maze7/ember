@@ -25,30 +25,24 @@ namespace ember
 			return fail(error);
 		};
 
-		// Initialize the memory system
 		m_memory = memory::make_unique<MemorySystem>(MemoryTag::Engine);
 		if (!m_memory->initialize(config.memory))
 			return rollback(RuntimeError::MemoryInitFailed);
 
-		// Initialize the job system
 		m_jobs = memory::make_unique<jobs::JobSystem>(MemoryTag::Engine, config.jobs);
 
-		// Initialize the platform layer
 		m_platform = memory::make_unique<Platform>(MemoryTag::Engine);
 		if (!m_platform)
 			return rollback(RuntimeError::PlatformInitFailed);
 
-		// Create the primary window before booting presentation.
 		m_window = m_platform->create_window(config.window);
 		if (m_window.is_null())
 			return rollback(RuntimeError::WindowInitFailed);
 
-		// Initialize the GPU device
 		m_gpu = memory::make_unique<gpu::Device>(MemoryTag::Graphics, *m_platform, config.gpu);
 		if (!m_gpu)
 			return rollback(RuntimeError::DeviceInitFailed);
 
-		// Create the presentation swapchain
 		m_swapchain = m_gpu->create_swapchain({
 			.window		  = m_window,
 			.present_mode = config.present_mode,
@@ -67,6 +61,8 @@ namespace ember
 
 	void Runtime::shutdown() noexcept
 	{
+		// Submitted frames may still reference renderer-owned resources,
+		// so quiesce the GPU before tearing the renderer down.
 		if (m_gpu)
 			m_gpu->wait_idle();
 
@@ -83,14 +79,14 @@ namespace ember
 
 			m_swapchain = {};
 
-			// Drain the deferred destruction generated above.
+			// Resource destruction is deferred. Drain the retirement queue before
+			// destroying the device that owns it.
 			m_gpu->wait_idle();
 			m_gpu.reset();
 		}
 
 		if (m_platform)
 		{
-			// Close window before we kill platform
 			if (!m_window.is_null())
 				m_platform->destroy_window(m_window);
 
@@ -98,11 +94,12 @@ namespace ember
 			m_platform.reset();
 		}
 
+		// Worker teardown may still touch engine allocators, so stop the scheduler
+		// before releasing the memory system.
 		m_jobs.reset();
 		m_memory.reset();
 		m_input.clear();
 
-		// Reset all other class state
 		m_args				= {};
 		m_previous_frame	= {};
 		m_max_delta_seconds = 0.1f;
@@ -140,8 +137,10 @@ namespace ember
 			.app	 = &app,
 		};
 
-		// Running main through the scheduler allows waits in application
-		// callbacks to park their fiber instead of blocking a worker.
+		// JobSystem::run() keeps main on worker 0 and does not return until
+		// frame_loop() finishes. Callback waits can yield to ready work without
+		// moving platform or GPU calls off the owner thread, and main_args remains
+		// alive for the scheduled entry point.
 		m_jobs->run(
 			[](void* data)
 			{
@@ -187,9 +186,9 @@ namespace ember
 			if (m_quit_requested)
 				break;
 
-			const auto tick = std::chrono::steady_clock::now();
-			const f32 dt =
-				std::clamp(std::chrono::duration<f32>(tick - m_previous_frame).count(), 0.0f, m_max_delta_seconds);
+			// A breakpoint or long hitch should not become an unbounded simulation step.
+			auto tick = std::chrono::steady_clock::now();
+			f32 dt = std::clamp(std::chrono::duration<f32>(tick - m_previous_frame).count(), 0.0f, m_max_delta_seconds);
 
 			m_previous_frame = tick;
 
@@ -198,7 +197,6 @@ namespace ember
 				.frame_index = m_frame_index++,
 			};
 
-			// App update tick
 			{
 				EMBER_PROFILE_SCOPE_C("update", PROFILE_COLOR_GAMEPLAY);
 				app.update(update);
@@ -210,8 +208,8 @@ namespace ember
 			Extent2D pixels = m_platform->window_pixel_size(m_window);
 			if (pixels.width == 0 || pixels.height == 0)
 			{
-				// Sleeping prevents a minimized application from consuming an
-				// entire CPU core while no drawable surface is available.
+				// A minimzed window has no drawable. Sleep to avoid a hot loop
+				// while continuing to poll for restore events.
 				std::this_thread::sleep_for(std::chrono::milliseconds(16));
 
 				EMBER_PROFILE_FRAME();
