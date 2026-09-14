@@ -26,8 +26,8 @@ namespace ember
 		};
 
 		// Initialize the memory system
-		m_memory = memory::make_unique<MemorySystem>(MemoryTag::Engine, config.memory);
-		if (!m_memory)
+		m_memory = memory::make_unique<MemorySystem>(MemoryTag::Engine);
+		if (!m_memory->initialize(config.memory))
 			return rollback(RuntimeError::MemoryInitFailed);
 
 		// Initialize the job system

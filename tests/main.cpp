@@ -13,8 +13,7 @@ int main(int argc, char** argv)
 	::testing::InitGoogleTest(&argc, argv);
 
 	MemorySystem memory_system;
-
-	if (!memory_system)
+	if (!memory_system.initialize())
 	{
 		std::fprintf(stderr, "memory::initialize() failed\n");
 		return 1;

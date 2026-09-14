@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ember/core/result.h>
 #include <ember/memory/common.h>
 #include <ember/memory/pmr/heap_resource.h>
 
@@ -13,9 +14,13 @@ namespace ember
 	struct MemoryConfig
 	{
 		size_t block_heap_capacity = 64_mb; // shared block pool, committed at startup.
-		size_t block_size  = 2_mb; // one thread's bump region between refills
+		size_t block_size		   = 2_mb;	// one thread's bump region between refills
 	};
 
+	enum class MemoryError : u8
+	{
+
+	};
 
 	class ArenaResource;
 	class BlockAllocator;
@@ -24,9 +29,11 @@ namespace ember
 	class MemorySystem final
 	{
 	public:
-		explicit MemorySystem(const MemoryConfig& config = {}) noexcept;
-
+		MemorySystem() noexcept = default;
 		~MemorySystem() noexcept;
+
+		bool initialize(const MemoryConfig& config = {}) noexcept;
+		void shutdown() noexcept;
 
 		MemorySystem(const MemorySystem&)			 = delete;
 		MemorySystem& operator=(const MemorySystem&) = delete;

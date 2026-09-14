@@ -19,8 +19,17 @@ namespace
 	// gets 2, and per frame tags pack the frame number into the low half.
 	constexpr ember::HeapTag FRAME_TAG		  = ember::heap_tag(1);
 	constinit std::atomic<bool> s_initialized = false;
+}
 
-	[[nodiscard]] bool initialize(const ember::MemoryConfig& config) noexcept
+namespace ember
+{
+	MemorySystem::~MemorySystem() noexcept
+	{
+		if (m_initialized)
+			shutdown();
+	}
+
+	bool MemorySystem::initialize(const MemoryConfig& config) noexcept
 	{
 		bool expected = false;
 
@@ -59,7 +68,7 @@ namespace
 		return true;
 	}
 
-	void shutdown() noexcept
+	void MemorySystem::shutdown() noexcept
 	{
 		if (!s_initialized.exchange(false, std::memory_order_acq_rel))
 			return;
@@ -76,17 +85,6 @@ namespace
 
 		// The default resource deliberately stays on the engine heap; rpmalloc is never
 		// finalized (static destructors may free after us), so late allocations remain valid.
-	}
-}
-
-namespace ember
-{
-	MemorySystem::MemorySystem(const MemoryConfig& config) noexcept : m_initialized(initialize(config)) {}
-
-	MemorySystem::~MemorySystem() noexcept
-	{
-		if (m_initialized)
-			shutdown();
 	}
 
 	TaggedHeap& memory::block_heap() noexcept
