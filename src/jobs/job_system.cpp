@@ -63,9 +63,47 @@ namespace ember::jobs
 		bool released		 = false;	// under the lock
 		bool finalized		 = false;	// under the lock
 		FiberRecord* waiters = nullptr; // under the lock
+
+		void lock() noexcept;
+		void unlock() noexcept;
+
+		// True once the batch of that generation finished or the slot moved on to another one.
+		[[nodiscard]] bool is_complete(u32 generation) const noexcept;
+
+		// Blocks the calling thread on the word until is_complete would be  true.
+		void wait_blocking(u32 generation) const noexcept;
 	};
 
 	static_assert(sizeof(JobCounter) == EMBER_CACHE_LINE);
+
+	/**
+	 * The batch counters. A handle names a slot and the generation it was allocated with,
+	 * so a handle kept past the batch's release reads as complete instead of touching whoever
+	 * reuses the slot. Allocation and release belong to the batch owner, completion to its
+	 * last job, and park to a fiber that found the batch unfinished. The pool links waiting
+	 * fibers and hands the ones to wake back to the scheduler.
+	 */
+	struct CounterPool
+	{
+		JobCounter* slots = nullptr;
+		u32 capacity	  = 0;
+		MpmcQueue<u32> free_slots{MemoryTag::Engine};
+
+		CounterPool() noexcept = default;
+		~CounterPool() noexcept;
+
+		void init(u32 slot_count) noexcept;
+
+		JobCounter* resolve(JobHandle handle) noexcept;
+		[[nodiscard]] JobHandle allocate(u32 count) noexcept;
+		void release(JobHandle handle) noexcept;
+		bool is_complete(JobHandle handle) noexcept;
+		[[nodiscard]] FiberRecord* complete(JobHandle batch) noexcept;
+		[[nodiscard]] bool park(FiberRecord* fiber) noexcept;
+		u32 live() const noexcept;
+
+		void free_locked(JobCounter& counter) noexcept;
+	};
 
 	// What the fiber that just switched away needs done once it is safely off its stack.
 	// The fiber that receives control does it first thing.
@@ -108,9 +146,7 @@ namespace ember::jobs
 		bool running = false;
 		std::atomic<bool> stopping{false};
 
-		JobCounter* counters = nullptr;
-		u32 counter_capacity = 0;
-		MpmcQueue<u32> free_counters{MemoryTag::Engine};
+		CounterPool counters;
 
 		FiberRecord* records = nullptr; // raw storage: a record holds an atomic, so it never moves
 		u32 fiber_count		 = 0;
@@ -132,12 +168,6 @@ namespace ember::jobs
 		explicit Scheduler(const JobSystemDef& def) noexcept;
 		~Scheduler() noexcept;
 
-		static void lock(JobCounter& counter) noexcept;
-		static void unlock(JobCounter& counter) noexcept;
-		JobCounter* resolve(JobHandle handle) noexcept;
-		JobHandle allocate_counter(u32 count) noexcept;
-		void free_locked(JobCounter& counter) noexcept;
-		void release(JobHandle handle) noexcept;
 		void park(FiberRecord* fiber) noexcept;
 		void complete(JobHandle batch) noexcept;
 
@@ -305,17 +335,7 @@ namespace ember::jobs
 		for (MpmcQueue<Job>& queue : jobs)
 			queue.init(queue_capacity(def.queue_capacity));
 
-		counter_capacity = def.counter_capacity < 1 ? 1 : def.counter_capacity;
-		counters		 = static_cast<JobCounter*>(
-			memory::heap(MemoryTag::Engine).allocate(counter_capacity * sizeof(JobCounter), alignof(JobCounter)));
-		free_counters.init(queue_capacity(counter_capacity));
-
-		for (u32 index = 0; index < counter_capacity; ++index)
-		{
-			JobCounter& counter = *std::construct_at(counters + index);
-			counter.state.store(pack_state(1, 0), std::memory_order_relaxed);
-			push_held(free_counters, index);
-		}
+		counters.init(def.counter_capacity < 1 ? 1 : def.counter_capacity);
 
 		for (u32 index = 0; index < fiber_count; ++index)
 		{
@@ -387,48 +407,90 @@ namespace ember::jobs
 		for (u32 index = 0; index < worker_count; ++index)
 			std::destroy_at(workers + index);
 
-		for (u32 index = 0; index < counter_capacity; ++index)
-			std::destroy_at(counters + index);
-
 		memory::heap(MemoryTag::Engine).deallocate(records, fiber_count * sizeof(FiberRecord), alignof(FiberRecord));
 		memory::heap(MemoryTag::Engine).deallocate(workers, worker_count * sizeof(Worker), alignof(Worker));
-		memory::heap(MemoryTag::Engine)
-			.deallocate(counters, counter_capacity * sizeof(JobCounter), alignof(JobCounter));
 	}
 
 	// Test before the exchange, so a spinner reads the line shared instead of bouncing it.
-	void Scheduler::lock(JobCounter& counter) noexcept
+	void JobCounter::lock() noexcept
 	{
 		for (u32 spins = 0;; detail::cpu_relax(spins++))
 		{
-			if (counter.locked.load(std::memory_order_relaxed))
+			if (locked.load(std::memory_order_relaxed))
 				continue;
 
-			if (!counter.locked.exchange(true, std::memory_order_acquire))
+			if (!locked.exchange(true, std::memory_order_acquire))
 				return;
 		}
 	}
 
-	void Scheduler::unlock(JobCounter& counter) noexcept { counter.locked.store(false, std::memory_order_release); }
+	void JobCounter::unlock() noexcept { locked.store(false, std::memory_order_release); }
 
-	JobCounter* Scheduler::resolve(JobHandle handle) noexcept
+	bool JobCounter::is_complete(u32 generation) const noexcept
 	{
-		if (handle.is_null() || handle.index >= counter_capacity)
+		const u64 current = state.load(std::memory_order_acquire);
+		return generation_of(current) != generation || remaining_of(current) == 0;
+	}
+
+	// A reuse of the slot changes the same word, so a stale sleeper wakes and leaves.
+	void JobCounter::wait_blocking(u32 generation) const noexcept
+	{
+		u64 current = state.load(std::memory_order_acquire);
+
+		while (generation_of(current) == generation && remaining_of(current) != 0)
+		{
+			state.wait(current, std::memory_order_acquire);
+			current = state.load(std::memory_order_acquire);
+		}
+	}
+
+	CounterPool::~CounterPool() noexcept
+	{
+		if (slots == nullptr)
+			return;
+
+		for (u32 index = 0; index < capacity; ++index)
+			std::destroy_at(slots + index);
+
+		memory::heap(MemoryTag::Engine).deallocate(slots, capacity * sizeof(JobCounter), alignof(JobCounter));
+	}
+
+	void CounterPool::init(u32 slot_count) noexcept
+	{
+		EMBER_ASSERT(slots == nullptr && "init runs once");
+		EMBER_ASSERT(slot_count != 0);
+
+		capacity = slot_count;
+		slots	 = static_cast<JobCounter*>(
+			memory::heap(MemoryTag::Engine).allocate(capacity * sizeof(JobCounter), alignof(JobCounter)));
+		free_slots.init(queue_capacity(capacity));
+
+		for (u32 index = 0; index < capacity; ++index)
+		{
+			JobCounter& counter = *std::construct_at(slots + index);
+			counter.state.store(pack_state(1, 0), std::memory_order_relaxed);
+			push_held(free_slots, index);
+		}
+	}
+
+	JobCounter* CounterPool::resolve(JobHandle handle) noexcept
+	{
+		if (handle.is_null() || handle.index >= capacity)
 			return nullptr;
 
-		return counters + handle.index;
+		return slots + handle.index;
 	}
 
 	// The slot is nobody's until the handle is returned, so plain stores suffice; the count
 	// is in place before any job can subtract from it.
-	JobHandle Scheduler::allocate_counter(u32 count) noexcept
+	JobHandle CounterPool::allocate(u32 count) noexcept
 	{
 		u32 index = 0;
 
-		if (!pop_any(free_counters, index))
+		if (!pop_any(free_slots, index))
 			fail("counter pool exhausted, raise JobSystemDef::counter_capacity or release batches sooner");
 
-		JobCounter& counter	 = counters[index];
+		JobCounter& counter	 = slots[index];
 		const u32 generation = generation_of(counter.state.load(std::memory_order_relaxed));
 
 		EMBER_ASSERT(remaining_of(counter.state.load(std::memory_order_relaxed)) == 0);
@@ -443,7 +505,7 @@ namespace ember::jobs
 
 	// Under the lock, which it releases. A new generation makes every handle to the old batch
 	// read as complete, then the slot goes back to the pool.
-	void Scheduler::free_locked(JobCounter& counter) noexcept
+	void CounterPool::free_locked(JobCounter& counter) noexcept
 	{
 		EMBER_ASSERT(counter.released && counter.finalized && counter.waiters == nullptr);
 
@@ -452,12 +514,12 @@ namespace ember::jobs
 			generation = 1;
 
 		counter.state.store(pack_state(generation, 0), std::memory_order_release);
-		unlock(counter);
+		counter.unlock();
 
-		push_held(free_counters, static_cast<u32>(&counter - counters));
+		push_held(free_slots, static_cast<u32>(&counter - slots));
 	}
 
-	void Scheduler::release(JobHandle handle) noexcept
+	void CounterPool::release(JobHandle handle) noexcept
 	{
 		JobCounter* counter = resolve(handle);
 		EMBER_ASSERT(counter != nullptr && "release of a null or foreign batch");
@@ -465,11 +527,11 @@ namespace ember::jobs
 		if (counter == nullptr)
 			return;
 
-		lock(*counter);
+		counter->lock();
 
 		if (generation_of(counter->state.load(std::memory_order_relaxed)) != handle.generation || counter->released)
 		{
-			unlock(*counter);
+			counter->unlock();
 			EMBER_ASSERT(false && "batch released twice");
 			return;
 		}
@@ -479,53 +541,33 @@ namespace ember::jobs
 		if (counter->finalized)
 			free_locked(*counter);
 		else
-			unlock(*counter);
+			counter->unlock();
 	}
 
-	// Runs on the fiber that took over from the parking one, so the parked context is
-	// complete before anything can resume it. Under the lock the last completion has either
-	// zeroed the word already, which this check sees, or has not taken the list yet, in which
-	// case it finds the link.
-	void Scheduler::park(FiberRecord* fiber) noexcept
+	bool CounterPool::is_complete(JobHandle handle) noexcept
 	{
-		JobCounter& counter = *fiber->wait_counter;
-
-		lock(counter);
-
-		const u64 state = counter.state.load(std::memory_order_acquire);
-
-		if (generation_of(state) != fiber->wait_generation || remaining_of(state) == 0)
-		{
-			unlock(counter);
-			make_ready(fiber);
-			return;
-		}
-
-		fiber->next_waiter = counter.waiters;
-		counter.waiters	   = fiber;
-		parked.fetch_add(1, std::memory_order_relaxed);
-
-		unlock(counter);
+		const JobCounter* counter = resolve(handle);
+		return counter == nullptr || counter->is_complete(handle.generation);
 	}
 
-	void Scheduler::complete(JobHandle batch) noexcept
+	// Returns the fibers the last completion found waiting, linked through next_waiter, for the
+	// caller to wake. Threads blocked on the word wake here; parked fibers are taken under the
+	// lock, and the owner's release may already be waiting for finalized.
+	FiberRecord* CounterPool::complete(JobHandle batch) noexcept
 	{
 		if (batch.is_null())
-			return;
+			return nullptr;
 
-		JobCounter& counter = counters[batch.index];
+		JobCounter& counter = slots[batch.index];
 		const u64 previous	= counter.state.fetch_sub(1, std::memory_order_acq_rel);
 
 		EMBER_ASSERT(generation_of(previous) == batch.generation && remaining_of(previous) != 0);
 
 		if (remaining_of(previous) != 1)
-			return;
+			return nullptr;
 
-		// The last job. Threads blocked on the word wake here; parked fibers are taken under
-		// the lock, and the owner's release may already be waiting for finalized.
 		counter.state.notify_all();
-
-		lock(counter);
+		counter.lock();
 
 		FiberRecord* wake = counter.waiters;
 		counter.waiters	  = nullptr;
@@ -534,7 +576,51 @@ namespace ember::jobs
 		if (counter.released)
 			free_locked(counter);
 		else
-			unlock(counter);
+			counter.unlock();
+
+		return wake;
+	}
+
+	// Links the fiber into its counter's wait list, or returns false when the batch already
+	// finished. Under the lock the last completion has either zeroed the word already, which
+	// this check sees, or has not taken the list yet, in which case it finds the link.
+	bool CounterPool::park(FiberRecord* fiber) noexcept
+	{
+		JobCounter& counter = *fiber->wait_counter;
+
+		counter.lock();
+
+		if (counter.is_complete(fiber->wait_generation))
+		{
+			counter.unlock();
+			return false;
+		}
+
+		fiber->next_waiter = counter.waiters;
+		counter.waiters	   = fiber;
+
+		counter.unlock();
+		return true;
+	}
+
+	u32 CounterPool::live() const noexcept { return capacity - static_cast<u32>(free_slots.size_hint()); }
+
+	// Runs on the fiber that took over from the parking one, so the parked context is complete
+	// before anything can resume it.
+	void Scheduler::park(FiberRecord* fiber) noexcept
+	{
+		parked.fetch_add(1, std::memory_order_relaxed);
+
+		if (counters.park(fiber))
+			return;
+
+		parked.fetch_sub(1, std::memory_order_relaxed);
+		make_ready(fiber);
+	}
+
+	void Scheduler::complete(JobHandle batch) noexcept
+	{
+		FiberRecord* wake = counters.complete(batch);
 
 		while (wake != nullptr)
 		{
@@ -864,26 +950,16 @@ namespace ember::jobs
 
 	void Scheduler::wait(JobHandle handle) noexcept
 	{
-		JobCounter* counter = resolve(handle);
-		if (counter == nullptr)
-			return;
-
-		u64 state = counter->state.load(std::memory_order_acquire);
-		if (generation_of(state) != handle.generation || remaining_of(state) == 0)
+		JobCounter* counter = counters.resolve(handle);
+		if (counter == nullptr || counter->is_complete(handle.generation))
 			return;
 
 		Worker* worker = current_worker();
 
 		if (worker == nullptr)
 		{
-			// Threads outside the system have no fiber to park, so they block on the word. A
-			// reuse of the slot changes the same word, so a stale sleeper wakes and leaves.
-			do
-			{
-				counter->state.wait(state, std::memory_order_acquire);
-				state = counter->state.load(std::memory_order_acquire);
-			} while (generation_of(state) == handle.generation && remaining_of(state) != 0);
-
+			// Threads outside the system have no fiber to park, so they block on the word.
+			counter->wait_blocking(handle.generation);
 			return;
 		}
 
@@ -918,8 +994,7 @@ namespace ember::jobs
 
 		for (u32 spin = 0;;)
 		{
-			const u64 state = counter.state.load(std::memory_order_acquire);
-			if (generation_of(state) != handle.generation || remaining_of(state) == 0)
+			if (counter.is_complete(handle.generation))
 				break;
 
 			next = pop_fiber(worker);
@@ -976,17 +1051,17 @@ namespace ember::jobs
 					  snapshot.ready_fibers, snapshot.queued_jobs, snapshot.live_batches);
 		EMBER_ERROR("(ember::jobs) {}", line);
 
-		for (u32 index = 0; index < counter_capacity; ++index)
+		for (u32 index = 0; index < counters.capacity; ++index)
 		{
-			JobCounter& counter = counters[index];
-			lock(counter);
+			JobCounter& counter = counters.slots[index];
+			counter.lock();
 
 			const u32 remaining = remaining_of(counter.state.load(std::memory_order_relaxed));
 			FiberRecord* waiter = counter.waiters;
 
 			if (remaining == 0 && waiter == nullptr)
 			{
-				unlock(counter);
+				counter.unlock();
 				continue;
 			}
 
@@ -995,7 +1070,7 @@ namespace ember::jobs
 			for (; waiter != nullptr && used < static_cast<int>(sizeof(line)); waiter = waiter->next_waiter)
 				used += std::snprintf(line + used, sizeof(line) - used, ", %s parked", fiber_label(*waiter));
 
-			unlock(counter);
+			counter.unlock();
 
 			// Stalled waits sit on no list; their fibers name the counter. Read racily, this
 			// is a diagnostic.
@@ -1041,7 +1116,7 @@ namespace ember::jobs
 			.parked_fibers	   = parked.load(std::memory_order_relaxed),
 			.ready_fibers	   = static_cast<u32>(ready_count),
 			.queued_jobs	   = static_cast<u32>(queued),
-			.live_batches	   = static_cast<u32>(counter_capacity - free_counters.size_hint()),
+			.live_batches	   = counters.live(),
 			.stalls			   = stalls.load(std::memory_order_relaxed),
 		};
 	}
@@ -1087,7 +1162,7 @@ namespace ember::jobs
 
 		EMBER_ASSERT(s_scheduler != nullptr && "no job system");
 
-		const JobHandle handle = s_scheduler->allocate_counter(static_cast<u32>(jobs.size()));
+		const JobHandle handle = s_scheduler->counters.allocate(static_cast<u32>(jobs.size()));
 		s_scheduler->submit(jobs, handle);
 		return handle;
 	}
@@ -1110,19 +1185,13 @@ namespace ember::jobs
 	bool is_complete(JobHandle batch) noexcept
 	{
 		EMBER_ASSERT(s_scheduler != nullptr && "no job system");
-
-		const JobCounter* counter = s_scheduler->resolve(batch);
-		if (counter == nullptr)
-			return true;
-
-		const u64 state = counter->state.load(std::memory_order_acquire);
-		return generation_of(state) != batch.generation || remaining_of(state) == 0;
+		return s_scheduler->counters.is_complete(batch);
 	}
 
 	void release(JobHandle batch) noexcept
 	{
 		EMBER_ASSERT(s_scheduler != nullptr && "no job system");
-		s_scheduler->release(batch);
+		s_scheduler->counters.release(batch);
 	}
 
 	u32 worker_count() noexcept { return s_scheduler != nullptr ? s_scheduler->worker_count : 0; }
