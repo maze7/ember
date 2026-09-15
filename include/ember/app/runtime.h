@@ -49,7 +49,7 @@ namespace ember
 		 * until shutdown(). Calling init() on a non-empty Runtime returns
 		 * Runtime::AlreadyInitialized without disturbing the active state.
 		 */
-		[[nodiscard]] Result<void, RuntimeError> init(const AppConfig& config, const Args& args) noexcept;
+		[[nodiscard]] Result<void, RuntimeError> initialize(const AppConfig& config, const Args& args) noexcept;
 
 		/**
 		 * Releases the services owned by the Runtime.
@@ -90,7 +90,6 @@ namespace ember
 		void request_quit(int exit_code) noexcept;
 		void frame_loop(App& app) noexcept;
 
-		Unique<jobs::JobSystem> m_jobs;
 		Unique<Platform> m_platform;
 		Unique<gpu::Device> m_gpu;
 		Unique<render::Renderer> m_renderer;

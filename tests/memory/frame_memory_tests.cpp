@@ -30,14 +30,14 @@ TEST(FrameMemoryJobs, WorkersAllocateInParallelWithoutOverlapping)
 	constexpr u32 COUNT = 4096;
 	std::vector<Allocation> allocations(COUNT);
 
-	JobSystem jobs({.worker_count = 4});
+	jobs::initialize({.worker_count = 4});
 	struct Args
 	{
 		BlockAllocator* frame;
 		std::vector<Allocation>* allocations;
 	} args{&frame, &allocations};
 
-	jobs.run(
+	jobs::run_main(
 		[](void* data)
 		{
 			auto* args = static_cast<Args*>(data);
@@ -76,7 +76,7 @@ TEST(FrameMemoryJobs, ContainersSurviveAFiberMigration)
 	BlockAllocator& frame = memory::frame_memory();
 	frame.reset();
 
-	JobSystem jobs({.worker_count = 4});
+	jobs::initialize({.worker_count = 4});
 	std::atomic<u32> migrated = 0;
 
 	struct Args
@@ -85,7 +85,7 @@ TEST(FrameMemoryJobs, ContainersSurviveAFiberMigration)
 		std::atomic<u32>* migrated;
 	} args{&frame, &migrated};
 
-	jobs.run(
+	jobs::run_main(
 		[](void* data)
 		{
 			auto* args = static_cast<Args*>(data);
@@ -120,4 +120,6 @@ TEST(FrameMemoryJobs, ContainersSurviveAFiberMigration)
 		&args);
 
 	EXPECT_GT(migrated.load(), 0u) << "no fiber migrated, the test proved nothing";
+
+	jobs::shutdown();
 }

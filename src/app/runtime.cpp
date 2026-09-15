@@ -10,7 +10,7 @@ namespace ember
 {
 	Runtime::~Runtime() noexcept { shutdown(); }
 
-	Result<void, RuntimeError> Runtime::init(const AppConfig& config, const Args& args) noexcept
+	Result<void, RuntimeError> Runtime::initialize(const AppConfig& config, const Args& args) noexcept
 	{
 		if (m_state != State::Empty)
 			return fail(RuntimeError::AlreadyInit);
@@ -28,7 +28,7 @@ namespace ember
 		if (!memory::initialize(config.memory))
 			return rollback(RuntimeError::MemoryInitFailed);
 
-		m_jobs = memory::make_unique<jobs::JobSystem>(MemoryTag::Engine, config.jobs);
+		jobs::initialize(config.jobs);
 
 		m_platform = memory::make_unique<Platform>(MemoryTag::Engine);
 		if (!m_platform)
@@ -95,9 +95,8 @@ namespace ember
 
 		// Worker teardown may still touch engine allocators, so stop the scheduler
 		// before releasing the memory system.
-		m_jobs.reset();
+		jobs::shutdown();
 		m_input.clear();
-
 		memory::shutdown();
 
 		m_args				= {};
@@ -141,7 +140,7 @@ namespace ember
 		// frame_loop() finishes. Callback waits can yield to ready work without
 		// moving platform or GPU calls off the owner thread, and main_args remains
 		// alive for the scheduled entry point.
-		m_jobs->run(
+		jobs::run_main(
 			[](void* data)
 			{
 				auto* main = static_cast<MainArgs*>(data);

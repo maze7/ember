@@ -30,14 +30,14 @@ namespace
 
 		scene.clear_dirty();
 
-		JobSystem jobs({.worker_count = 4});
+		ember::jobs::initialize({.worker_count = 4});
 		struct Args
 		{
 			RenderScene* scene;
 			std::vector<RenderObjectHandle>* handles;
 		} args{&scene, &handles};
 
-		jobs.run(
+		ember::jobs::run_main(
 			[](void* data)
 			{
 				auto* args = static_cast<Args*>(data);
@@ -63,5 +63,7 @@ namespace
 		std::sort(slots.begin(), slots.end());
 		for (u32 i = 0; i < COUNT; ++i)
 			ASSERT_EQ(slots[i], i);
+
+		ember::jobs::shutdown();
 	}
 }

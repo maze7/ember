@@ -28,7 +28,7 @@ namespace ember::detail
 
 		// This order keeps all engine services alive during App destruction.
 		Runtime runtime;
-		if (!runtime.init(config, args))
+		if (!runtime.initialize(config, args))
 			return 1;
 
 		T app;

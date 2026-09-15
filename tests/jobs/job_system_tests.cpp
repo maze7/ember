@@ -75,7 +75,7 @@ namespace
 		JobDef decls[16];
 		fill(decls, 16, &state);
 
-		JobHandle batch			  = kick(decls);
+		JobHandle batch			  = submit(decls);
 		state.complete_after_kick = is_complete(batch);
 		wait(batch);
 		release(batch);
@@ -144,7 +144,7 @@ namespace
 		JobDef decls[2];
 		fill(decls, 2, &state);
 
-		JobHandle first = kick(decls);
+		JobHandle first = submit(decls);
 		wait(first);
 		release(first);
 		state.stale_reads_complete = is_complete(first);
@@ -152,8 +152,8 @@ namespace
 
 		// The pool has two slots: the next batch takes the other one, the one after reuses
 		// the first slot with a new generation, so the old handle still reads as complete.
-		JobHandle second  = kick(decls);
-		JobHandle third	  = kick(decls);
+		JobHandle second  = submit(decls);
+		JobHandle third	  = submit(decls);
 		state.slot_reused = third.index == first.index && third != first && is_complete(first) && !is_complete(third);
 		wait(second);
 		wait(third);
@@ -186,7 +186,7 @@ namespace
 		}
 
 		// A detached kick runs the next time anything waits.
-		kick_detached({.fn = count_job, .data = data});
+		submit_detached({.fn = count_job, .data = data});
 		JobBatch flush({.fn = count_job, .data = data});
 		flush.wait();
 	}
@@ -514,7 +514,7 @@ namespace
 		JobDef children[4];
 		fill(children, 4, data);
 
-		kick_detached(children);
+		submit_detached(children);
 		count_job(data);
 	}
 
@@ -610,50 +610,58 @@ namespace
 TEST(JobSystem, KickAndWaitRunsEveryJob)
 {
 	State state;
-	JobSystem jobs({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
-	jobs.run(main_kick_and_wait, &state);
+	jobs::initialize({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
+	jobs::run_main(main_kick_and_wait, &state);
 
 	EXPECT_EQ(state.ran.load(), 16u);
 	EXPECT_EQ(state.main_thread, std::this_thread::get_id());
 	EXPECT_EQ(state.worker_in_main, 0u);
 	EXPECT_EQ(worker_index(), NO_WORKER);
 	EXPECT_EQ(worker_count(), 4u);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, NestedKicksAndWaits)
 {
 	State state;
-	JobSystem jobs({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
-	jobs.run(main_nested, &state);
+	jobs::initialize({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
+	jobs::run_main(main_nested, &state);
 
 	EXPECT_EQ(state.ran.load(), 20u);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, LargeJobsRunOnLargeStacks)
 {
 	State state;
-	JobSystem jobs({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
-	jobs.run(main_stack_classes, &state);
+	jobs::initialize({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
+	jobs::run_main(main_stack_classes, &state);
 
 	EXPECT_TRUE(state.large_ok);
 	EXPECT_TRUE(state.small_ok);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, FibersAreRecycled)
 {
 	State state;
-	JobSystem jobs({.worker_count = 4, .small_fibers = 8, .large_fibers = 2});
-	jobs.run(main_recycle, &state);
+	jobs::initialize({.worker_count = 4, .small_fibers = 8, .large_fibers = 2});
+	jobs::run_main(main_recycle, &state);
 
 	EXPECT_EQ(state.ran.load(), 200u * 5u);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, RunsTwice)
 {
 	State state;
-	JobSystem jobs({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
-	jobs.run(main_nested, &state);
-	jobs.run(main_nested, &state);
+	jobs::initialize({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
+	jobs::run_main(main_nested, &state);
+	jobs::run_main(main_nested, &state);
 
 	EXPECT_EQ(state.ran.load(), 40u);
 }
@@ -661,29 +669,33 @@ TEST(JobSystem, RunsTwice)
 TEST(JobSystem, StaleHandlesReadComplete)
 {
 	State state;
-	JobSystem jobs({.worker_count = 1, .small_fibers = 4, .large_fibers = 2, .counter_capacity = 2});
-	jobs.run(main_stale_handles, &state);
+	jobs::initialize({.worker_count = 1, .small_fibers = 4, .large_fibers = 2, .counter_capacity = 2});
+	jobs::run_main(main_stale_handles, &state);
 
 	EXPECT_TRUE(state.stale_reads_complete);
 	EXPECT_TRUE(state.slot_reused);
 	EXPECT_EQ(state.ran.load(), 6u);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, DetachedBatchesFreeThemselves)
 {
 	State state;
-	JobSystem jobs({.worker_count = 1, .small_fibers = 4, .large_fibers = 2, .counter_capacity = 2});
-	jobs.run(main_detached, &state);
+	jobs::initialize({.worker_count = 1, .small_fibers = 4, .large_fibers = 2, .counter_capacity = 2});
+	jobs::run_main(main_detached, &state);
 
 	EXPECT_TRUE(state.slot_reused);
 	EXPECT_EQ(state.ran.load(), 11u);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, BatchesMove)
 {
 	State state;
-	JobSystem jobs({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
-	jobs.run(main_moves, &state);
+	jobs::initialize({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
+	jobs::run_main(main_moves, &state);
 
 	EXPECT_TRUE(state.moved_from_is_null);
 	EXPECT_EQ(state.ran.load(), 10u);
@@ -692,27 +704,31 @@ TEST(JobSystem, BatchesMove)
 TEST(JobSystem, JobsRunInParallel)
 {
 	State state;
-	JobSystem jobs({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
-	jobs.run(main_parallel, &state);
+	jobs::initialize({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
+	jobs::run_main(main_parallel, &state);
 
 	EXPECT_FALSE(state.timed_out.load());
 	EXPECT_EQ(state.started.load(), 4u);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, JobsSpreadAcrossWorkers)
 {
 	State state;
-	JobSystem jobs({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
-	jobs.run(main_spread, &state);
+	jobs::initialize({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
+	jobs::run_main(main_spread, &state);
 
 	EXPECT_GE(std::popcount(state.worker_mask.load()), 2);
 	EXPECT_EQ(state.worker_mask.load() & ~u64{0xF}, 0u);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, KicksFromAnotherThreadWithoutRun)
 {
 	State state;
-	JobSystem jobs({.worker_count = 3, .small_fibers = 16, .large_fibers = 2});
+	jobs::initialize({.worker_count = 3, .small_fibers = 16, .large_fibers = 2});
 
 	std::thread producer(
 		[&]
@@ -722,7 +738,7 @@ TEST(JobSystem, KicksFromAnotherThreadWithoutRun)
 				JobDef decls[8];
 				fill(decls, 8, &state);
 
-				const JobHandle batch = kick(decls);
+				const JobHandle batch = submit(decls);
 
 				while (!is_complete(batch))
 					std::this_thread::yield();
@@ -733,12 +749,14 @@ TEST(JobSystem, KicksFromAnotherThreadWithoutRun)
 
 	producer.join();
 	EXPECT_EQ(state.ran.load(), 64u);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, WaitsFromAThreadOutsideTheSystem)
 {
 	State state;
-	JobSystem jobs({.worker_count = 3, .small_fibers = 16, .large_fibers = 2});
+	jobs::initialize({.worker_count = 3, .small_fibers = 16, .large_fibers = 2});
 
 	std::thread outsider(
 		[&]
@@ -749,42 +767,50 @@ TEST(JobSystem, WaitsFromAThreadOutsideTheSystem)
 			JobBatch batch(decls);
 			batch.wait(); // blocks this thread, there is no fiber to park
 
-			const JobHandle handle = kick(decls);
+			const JobHandle handle = submit(decls);
 			wait(handle);
 			release(handle);
 		});
 
 	outsider.join();
 	EXPECT_EQ(state.ran.load(), 16u);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, WorkersAreNamedAndPinned)
 {
 	State state;
-	JobSystem jobs({.worker_count = 4, .small_fibers = 16, .large_fibers = 2, .pin_workers = true});
-	jobs.run(main_inspect_threads, &state);
+	jobs::initialize({.worker_count = 4, .small_fibers = 16, .large_fibers = 2, .pin_workers = true});
+	jobs::run_main(main_inspect_threads, &state);
 
 	EXPECT_GT(state.on_workers.load(), 0u);
 	EXPECT_EQ(state.named_ok.load(), state.on_workers.load());
 	EXPECT_EQ(state.pinned_ok.load(), state.on_workers.load());
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, StressNestedBatches)
 {
 	State state;
-	JobSystem jobs({.worker_count = 8, .small_fibers = 48, .large_fibers = 4});
-	jobs.run(main_stress, &state);
+	jobs::initialize({.worker_count = 8, .small_fibers = 48, .large_fibers = 4});
+	jobs::run_main(main_stress, &state);
 
 	EXPECT_EQ(state.ran.load(), 50u * 16u * 5u);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, Bench)
 {
 	Bench bench;
-	JobSystem jobs({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
-	jobs.run(main_bench, &bench);
+	jobs::initialize({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
+	jobs::run_main(main_bench, &bench);
 	std::printf("[          ] %.1f ns per one-job kick+wait, %.1f ns per job in 64-job batches, 4 workers\n",
 				bench.round_trip_ns, bench.per_job_ns);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, ParallelForVisitsEveryIndexOnce)
@@ -793,8 +819,8 @@ TEST(JobSystem, ParallelForVisitsEveryIndexOnce)
 	state.hits.resize(100000, 0);
 	state.grain = 256;
 
-	JobSystem jobs({.worker_count = 4});
-	jobs.run(main_parallel_for, &state);
+	jobs::initialize({.worker_count = 4});
+	jobs::run_main(main_parallel_for, &state);
 
 	EXPECT_EQ(state.visited.load(), 100000u);
 	EXPECT_EQ(state.jobs.load(), MAX_RANGE_JOBS); // 391 grains capped at the job limit
@@ -807,6 +833,8 @@ TEST(JobSystem, ParallelForVisitsEveryIndexOnce)
 
 	for (const u8 hit : state.hits)
 		ASSERT_EQ(hit, 1);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, ParallelForSplitsByGrain)
@@ -815,24 +843,28 @@ TEST(JobSystem, ParallelForSplitsByGrain)
 	state.hits.resize(10, 0);
 	state.grain = 4;
 
-	JobSystem jobs({.worker_count = 4});
-	jobs.run(main_parallel_for, &state);
+	jobs::initialize({.worker_count = 4});
+	jobs::run_main(main_parallel_for, &state);
 
 	EXPECT_EQ(state.jobs.load(), 3u);
 	EXPECT_EQ(state.sizes[0], 4u);
 	EXPECT_EQ(state.sizes[1], 3u);
 	EXPECT_EQ(state.sizes[2], 3u);
 	EXPECT_EQ(state.visited.load(), 10u);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, ParallelForOverNothingKicksNothing)
 {
 	RangeState state;
 
-	JobSystem jobs({.worker_count = 2});
-	jobs.run(main_parallel_for, &state);
+	jobs::initialize({.worker_count = 2});
+	jobs::run_main(main_parallel_for, &state);
 
 	EXPECT_EQ(state.jobs.load(), 0u);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, ParallelForNests)
@@ -840,55 +872,64 @@ TEST(JobSystem, ParallelForNests)
 	RangeState state;
 	state.hits.resize(8000, 0);
 
-	JobSystem jobs({.worker_count = 4});
-	jobs.run(main_parallel_for_nested, &state);
+	jobs::initialize({.worker_count = 4});
+	jobs::run_main(main_parallel_for_nested, &state);
 
 	EXPECT_EQ(state.visited.load(), 8000u);
 	for (const u8 hit : state.hits)
 		ASSERT_EQ(hit, 1);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, MakeJobRunsACallable)
 {
 	State state;
 
-	JobSystem jobs({.worker_count = 2, .small_fibers = 8, .large_fibers = 2});
-	jobs.run(main_make_job, &state);
+	jobs::initialize({.worker_count = 2, .small_fibers = 8, .large_fibers = 2});
+	jobs::run_main(main_make_job, &state);
 
 	EXPECT_EQ(state.ran_after_two, 3u);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, ThreadLocalsFollowTheFiber)
 {
 	MigrationState state;
 
-	JobSystem jobs({.worker_count = 4});
-	jobs.run(main_migration, &state);
+	jobs::initialize({.worker_count = 4});
+	jobs::run_main(main_migration, &state);
 
 	EXPECT_EQ(state.mismatched.load(), 0u);
 	EXPECT_GT(state.migrated.load(), 0u);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, DefaultWorkerCountLeavesHeadroom)
 {
 	const u32 hardware = std::max(1u, std::thread::hardware_concurrency());
 
-	JobSystem jobs;
+	jobs::initialize();
 	EXPECT_EQ(worker_count(), hardware - std::min(1u, hardware - 1));
+	jobs::shutdown();
 }
 
 TEST(JobSystem, StarvedWaitsResumeWhenFibersReturn)
 {
 	StallState state;
 
-	JobSystem jobs({.worker_count = 4, .small_fibers = 6, .large_fibers = 2});
-	jobs.run(main_stall, &state);
+	jobs::initialize({.worker_count = 4, .small_fibers = 6, .large_fibers = 2});
+	jobs::run_main(main_stall, &state);
 
 	EXPECT_EQ(state.ran.load(), 1u + 7u + 28u);
 	EXPECT_GE(state.stats.stalls, 3u);
 	EXPECT_EQ(state.stats.parked_fibers, 0u);
 	EXPECT_EQ(state.stats.queued_jobs, 0u);
 	EXPECT_EQ(state.stats.live_batches, 1u); // main's batch, released after the snapshot
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, DetachedJobsFinishBeforeShutdown)
@@ -896,13 +937,14 @@ TEST(JobSystem, DetachedJobsFinishBeforeShutdown)
 	State state;
 
 	{
-		JobSystem jobs({.worker_count = 3, .small_fibers = 8, .large_fibers = 2});
+		jobs::initialize({.worker_count = 3, .small_fibers = 8, .large_fibers = 2});
 
 		JobDef parents[8];
 		for (JobDef& parent : parents)
 			parent = {.fn = detached_parent, .data = &state};
 
-		kick_detached(parents);
+		submit_detached(parents);
+		jobs::shutdown();
 	}
 
 	EXPECT_EQ(state.ran.load(), 8u + 32u);
@@ -913,8 +955,9 @@ TEST(JobSystemDeathTest, StuckWaitsReportTheStateAndFail)
 	EXPECT_EXIT(
 		{
 			CycleState state;
-			JobSystem jobs({.worker_count = 2, .small_fibers = 4, .large_fibers = 1, .stall_report_ms = 200});
-			jobs.run(main_cycle, &state);
+			jobs::initialize({.worker_count = 2, .small_fibers = 4, .large_fibers = 1, .stall_report_ms = 200});
+			jobs::run_main(main_cycle, &state);
+			jobs::shutdown();
 		},
 		died_fatally, "stalled");
 }
@@ -923,13 +966,15 @@ TEST(JobSystemDeathTest, FullJobQueueIsFatal)
 {
 	EXPECT_EXIT(
 		{
-			JobSystem jobs({.worker_count = 1, .small_fibers = 4, .large_fibers = 2, .queue_capacity = 2});
+			jobs::initialize({.worker_count = 1, .small_fibers = 4, .large_fibers = 2, .queue_capacity = 2});
 
 			JobDef decls[3];
 			for (JobDef& decl : decls)
 				decl = {.fn = nop_job};
 
-			(void)kick(decls);
+			(void)submit(decls);
+
+			jobs::shutdown();
 		},
 		died_fatally, "job queue full");
 }
@@ -938,12 +983,13 @@ TEST(JobSystemDeathTest, CounterPoolExhaustionIsFatal)
 {
 	EXPECT_EXIT(
 		{
-			JobSystem jobs({.worker_count = 2, .small_fibers = 4, .large_fibers = 2, .counter_capacity = 1});
+			jobs::initialize({.worker_count = 2, .small_fibers = 4, .large_fibers = 2, .counter_capacity = 1});
 
 			const JobDef decl{.fn = nop_job};
-			const JobHandle first = kick(decl);
+			const JobHandle first = submit(decl);
 			(void)first;
-			(void)kick(decl);
+			(void)submit(decl);
+			jobs::shutdown();
 		},
 		died_fatally, "counter pool exhausted");
 }

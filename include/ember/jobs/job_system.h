@@ -41,9 +41,7 @@
  */
 namespace ember::jobs
 {
-	class JobSystem;
 	struct JobCounter;
-
 	using JobFn = void (*)(void* data);
 
 	inline constexpr u32 NO_WORKER = ~u32{0};
@@ -128,38 +126,39 @@ namespace ember::jobs
 		u64 stalls = 0; // waits that found no fiber
 	};
 
+	void initialize(const JobSystemDef& def = {}) noexcept;
+	void shutdown() noexcept;
+
 	/**
-	 * Owns the workers, fibers, queues and the counter pool. One per process, created by
-	 * the Runtime right after the memory system. The free functions below reach it from
-	 * anywhere.
+	 * Adopts the calling thread as worker 0 and invokes main.
+	 *
+	 * The call returns when main returns. Waiting inside main parks its root fiber
+	 * while the calling thread executes other work. The root fiber always resumes
+	 * on worker 0 so thread-affine platform and GPU operations remain on the calling thread.
+	 *
+	 * Not re-entrant.
 	 */
-	class JobSystem final
-	{
-	public:
-		struct Impl;
+	void run_main(JobFn main, void* data) noexcept;
 
-		explicit JobSystem(const JobSystemDef& def = {}) noexcept;
-		~JobSystem() noexcept;
+	/**
+	 * Submits a fixed batch and returns its completion handle.
+	 *
+	 * The caller owns the handle and must release it exactly once. Empty input
+	 * returns a null handle, which is considered complete.
+	 */
+	[[nodiscard]] JobHandle submit(Span<const JobDef> jobs) noexcept;
 
-		JobSystem(const JobSystem&) = delete;
-		JobSystem& operator=(const JobSystem&) = delete;
-
-		/// Makes the calling thread worker 0, runs main there and returns when main returns.
-		void run(JobFn main, void* data) noexcept;
-
-	private:
-		Impl* m_impl = nullptr;
-	};
-
-	/// Kicks the jobs as a new batch and returns its handle. The caller owns the batch and
-	/// releases it. Empty input kicks nothing and returns a null handle, which reads as
-	/// complete. From any job, main or thread.
-	[[nodiscard]] JobHandle kick(Span<const JobDef> jobs) noexcept;
-	[[nodiscard]] inline JobHandle kick(const JobDef& job) noexcept { return kick(Span<const JobDef>(&job, 1)); }
+	/**
+	 * Submits a single job and returns its completion handle.
+	 *
+	 * The caller owns the handle and must release it exactly once. Empty input
+	 * returns a null handle, which is considered complete.
+	 */
+	[[nodiscard]] inline JobHandle submit(const JobDef& job) noexcept { return submit(Span<const JobDef>(&job, 1)); }
 
 	/// Kicks jobs nobody will wait for. No counter is allocated.
-	void kick_detached(Span<const JobDef> jobs) noexcept;
-	inline void kick_detached(const JobDef& job) noexcept { kick_detached(Span<const JobDef>(&job, 1)); }
+	void submit_detached(Span<const JobDef> jobs) noexcept;
+	inline void submit_detached(const JobDef& job) noexcept { submit_detached(Span<const JobDef>(&job, 1)); }
 
 	/// Parks the calling job or main until the batch's last job finishes. From any other
 	/// thread it blocks that thread instead. A null handle, or one to a batch already
@@ -225,8 +224,8 @@ namespace ember::jobs
 	{
 	public:
 		JobBatch() noexcept = default;
-		explicit JobBatch(Span<const JobDef> jobs) noexcept : m_handle(jobs::kick(jobs)) {}
-		explicit JobBatch(const JobDef& job) noexcept : m_handle(jobs::kick(job)) {}
+		explicit JobBatch(Span<const JobDef> jobs) noexcept : m_handle(jobs::submit(jobs)) {}
+		explicit JobBatch(const JobDef& job) noexcept : m_handle(jobs::submit(job)) {}
 		~JobBatch() noexcept { reset(); }
 
 		JobBatch(JobBatch&& other) noexcept : m_handle(other.m_handle) { other.m_handle = {}; }
