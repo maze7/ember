@@ -147,6 +147,7 @@ namespace ember::jobs
 		static void resegment(FiberRecord* self) noexcept;
 		void switch_to(Worker& worker, FiberRecord* from, FiberRecord* to) noexcept;
 		void finish_switch(Worker& worker) noexcept;
+		Worker* yield_to(FiberRecord* self, FiberRecord* next, Pending action) noexcept;
 		void park(FiberRecord* fiber) noexcept;
 		void complete(JobHandle batch) noexcept;
 		void make_ready(FiberRecord* fiber) noexcept;
@@ -497,6 +498,24 @@ namespace ember::jobs
 			push_free(fiber);
 	}
 
+	/**
+	 * Switches to next with an action for whoever  takes over, and once something
+	 * switches back finishes the action that fiber left. Returns the worker this fiber
+	 * resumed on.
+	 */
+	Worker* Scheduler::yield_to(FiberRecord* self, FiberRecord* next, Pending action) noexcept
+	{
+		Worker& worker = *self->worker;
+
+		worker.pending		 = action;
+		worker.pending_fiber = self;
+		switch_to(worker, self, next);
+
+		Worker* resumed = self->worker;
+		finish_switch(*resumed);
+		return resumed;
+	}
+
 	// Runs on the fiber that took over from the parking one, so the parked context is
 	// complete before anything can resume it. Under the lock the last completion has either
 	// zeroed the word already, which this check sees, or has not taken the list yet, in which
@@ -644,11 +663,15 @@ namespace ember::jobs
 		complete(job.batch);
 	}
 
-	// Every pool fiber runs this forever. Ready fibers come first because they hold a stack
-	// and an unfinished job; new jobs start only when nothing is waiting to resume. A large
-	// fiber runs any job. A small fiber hands a large job to a large fiber, which runs it
-	// first thing. A fiber that switches to another one has nothing left to do and frees
-	// itself in the process.
+	/**
+	 * Every pool fiber runs this forever.
+	 *
+	 * Ready fibers come first because they hold a stack and an unfinished job;
+	 * new jobs start only when nothing is waiting to resume. A large fiber runs
+	 * any job. A small fiber hands a large job to a large fiber, which runs it
+	 * first thing. A fiber that switches to another one has nothing left to do
+	 * and frees itself in the process.
+	 */
 	void Scheduler::loop(FiberRecord* self) noexcept
 	{
 		segment_begin(*self->worker, self);
@@ -670,12 +693,7 @@ namespace ember::jobs
 
 			if (FiberRecord* next = pop_ready(*worker))
 			{
-				worker->pending		  = Pending::Free;
-				worker->pending_fiber = self;
-				switch_to(*worker, self, next);
-
-				worker = self->worker;
-				finish_switch(*worker);
+				worker = yield_to(self, next, Pending::Free);
 				continue;
 			}
 
@@ -685,14 +703,9 @@ namespace ember::jobs
 			{
 				if (job.stack == JobStack::Large && self->stack == JobStack::Small)
 				{
-					FiberRecord* target	  = wait_for_large_fiber();
-					target->handoff		  = job;
-					worker->pending		  = Pending::Free;
-					worker->pending_fiber = self;
-					switch_to(*worker, self, target);
-
-					worker = self->worker;
-					finish_switch(*worker);
+					FiberRecord* target = wait_for_large_fiber();
+					target->handoff		= job;
+					worker				= yield_to(self, target, Pending::Free);
 					continue;
 				}
 
@@ -703,9 +716,7 @@ namespace ember::jobs
 
 			if (stopping.load(std::memory_order_acquire))
 			{
-				worker->pending		  = Pending::Free;
-				worker->pending_fiber = self;
-				switch_to(*worker, self, &worker->thread_record);
+				yield_to(self, &worker->thread_record, Pending::Free);
 				EMBER_UNREACHABLE_ASSERT();
 			}
 
@@ -874,12 +885,7 @@ namespace ember::jobs
 		self->wait_counter	  = counter;
 		self->wait_generation = handle.generation;
 
-		worker->pending		  = Pending::Park;
-		worker->pending_fiber = self;
-		switch_to(*worker, self, next);
-
-		worker = self->worker;
-		finish_switch(*worker);
+		yield_to(self, next, Pending::Park);
 	}
 
 	// Every fiber is parked or busy on another worker. The wait spins for one to come back or
