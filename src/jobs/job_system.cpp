@@ -50,12 +50,14 @@ namespace ember::jobs
 		std::atomic<JobCounter*> stalled_on{nullptr}; // spinning in a wait that found no fiber; read by dumps
 	};
 
-	// One slot of the counter pool, sized to a cache line so completing workers never share
-	// one with a neighbour. One word holds the generation and the jobs still running, so a
-	// handle resolves and a completion subtracts on the same atomic, and a thread blocked on
-	// the word wakes when either half changes. The last completion takes the waiters under
-	// the lock and sets finalized, the owner's release sets released, and whichever of the
-	// two comes second frees the slot, which bumps the generation.
+	/**
+	 * One slot of the counter pool, sized to a cache line so completing workers never share
+	 * one with a neighbour. One word holds the generation and the jobs still running, so a
+	 * handle resolves and a completion subtracts on the same  atomic, and a thread blocked on
+	 * the word wakes when either half changes. The last completion takes the waiters under
+	 * the lock and sets finalized, the owner's release sets released, and whichever of the
+	 * two comes second frees the slot, which bumps the generation.
+	 */
 	struct alignas(EMBER_CACHE_LINE) JobCounter
 	{
 		std::atomic<u64> state{0};
@@ -105,6 +107,34 @@ namespace ember::jobs
 		void free_locked(JobCounter& counter) noexcept;
 	};
 
+	/**
+	 * The pool fibers in their two stack classes, each with the record the scheduler and the
+	 * counters read. A fiber goes back to the free list of its class when it has nothing left
+	 * to run, and the lists hold every fiber, so a push never fails for lack of room.
+	 */
+	struct FiberPool
+	{
+		static constexpr u32 STACK_COUNT = static_cast<u32>(JobStack::Count);
+
+		FiberRecord* records = nullptr; // raw storage: a record holds an atomic, so it never moves
+		u32 count			 = 0;
+
+		MpmcQueue<FiberRecord*> free_lists[STACK_COUNT] = {
+			MpmcQueue<FiberRecord*>(MemoryTag::Engine),
+			MpmcQueue<FiberRecord*>(MemoryTag::Engine),
+		};
+
+		FiberPool() noexcept = default;
+		~FiberPool() noexcept;
+
+		// Creates every fiber on entry, with its own record as the argument.
+		void init(const JobSystemDef& def, FiberEntry entry) noexcept;
+
+		FiberRecord* pop_free(JobStack stack) noexcept;
+		void push_free(FiberRecord* fiber) noexcept;
+		u32 free_count(JobStack stack) const noexcept;
+	};
+
 	// What the fiber that just switched away needs done once it is safely off its stack.
 	// The fiber that receives control does it first thing.
 	enum class Pending : u8
@@ -114,12 +144,39 @@ namespace ember::jobs
 		Free  // return it to the free list
 	};
 
+	/**
+	 * Where idle workers sleep. A worker with nothing runnable sets its bit in the mask and
+	 * waits on its own epoch; a producer that finds the bit set claims it and bumps that
+	 * epoch. The two sides form a Dekker exchange: the sleeper announces, then checks for
+	 * work, and  the producer publishes work, then checks the mask. Both touch the mask with
+	 * read-modify-writes, so those form one total order: either the producer sees the bit
+	 * and wakes the worker, or the work went up before the bit did and the check finds it.
+	 */
+	struct Sleepers
+	{
+		static constexpr u32 MAX_WORKERS = 64; // one bit each in the mask
+
+		struct alignas(EMBER_CACHE_LINE) Epoch
+		{
+			std::atomic<u32> value{0};
+		};
+
+		alignas(EMBER_CACHE_LINE) std::atomic<u64> mask{0};
+		Epoch epochs[MAX_WORKERS];
+		u32 count = 0; // workers that may sleep, for wake_all
+
+		// Sleeps the worker until a wake-up, unless busy() finds work after the announcement.
+		template <class Busy> void sleep(u32 index, Busy&& busy) noexcept;
+
+		void wake_one(u32 index) noexcept;
+		void wake_some(u32 wanted) noexcept;
+		void wake_all() noexcept;
+	};
+
 	struct Scheduler; // forward declaration
 
-	// One worker thread. Worker 0 is the thread that calls run(); the others are created
-	// with the system and live until it is destroyed. A worker with nothing runnable spins
-	// briefly, announces itself in the sleeping mask and waits on its epoch, which every
-	// wake-up bumps.
+	// One worker thread. Worker 0 is the thread that calls run_main(); the others are created
+	// with the system and live until it is destroyed.
 	struct Worker
 	{
 		Scheduler* scheduler = nullptr;
@@ -132,14 +189,11 @@ namespace ember::jobs
 		MpmcQueue<FiberRecord*> pinned_ready{MemoryTag::Engine}; // fibers that must resume on this worker
 		std::thread thread;										 // empty for worker 0
 		ProfileZone segment{};									 // the fiber this thread is running, on its own track
-		alignas(EMBER_CACHE_LINE) std::atomic<u32> epoch{0};
 	};
 
 	struct Scheduler
 	{
-		static constexpr u32 STACK_COUNT	= static_cast<u32>(JobStack::Count);
 		static constexpr u32 PRIORITY_COUNT = static_cast<u32>(JobPriority::Count);
-		static constexpr u32 MAX_WORKERS	= 64; // one bit each in the sleeping mask
 		static constexpr u32 IDLE_SPINS		= 128;
 
 		JobSystemDef def;
@@ -148,15 +202,12 @@ namespace ember::jobs
 
 		CounterPool counters;
 
-		FiberRecord* records = nullptr; // raw storage: a record holds an atomic, so it never moves
-		u32 fiber_count		 = 0;
-		MpmcQueue<FiberRecord*> free_fibers[STACK_COUNT] = {MpmcQueue<FiberRecord*>(MemoryTag::Engine),
-															MpmcQueue<FiberRecord*>(MemoryTag::Engine)};
+		FiberPool fibers;
 		MpmcQueue<FiberRecord*> ready{MemoryTag::Engine};
 
 		Worker* workers	 = nullptr;
 		u32 worker_count = 0;
-		alignas(EMBER_CACHE_LINE) std::atomic<u64> sleeping{0}; // one bit per worker parked in idle()
+		Sleepers sleepers;
 
 		MpmcQueue<Job> jobs[PRIORITY_COUNT] = {MpmcQueue<Job>(MemoryTag::Engine), MpmcQueue<Job>(MemoryTag::Engine),
 											   MpmcQueue<Job>(MemoryTag::Engine)};
@@ -171,8 +222,6 @@ namespace ember::jobs
 		void park(FiberRecord* fiber) noexcept;
 		void complete(JobHandle batch) noexcept;
 
-		FiberRecord* pop_free(JobStack stack) noexcept;
-		void push_free(FiberRecord* fiber) noexcept;
 		FiberRecord* pop_ready(Worker& worker) noexcept;
 		FiberRecord* pop_fiber(Worker& worker) noexcept;
 		void make_ready(FiberRecord* fiber) noexcept;
@@ -183,9 +232,6 @@ namespace ember::jobs
 		void worker_main(Worker& worker) noexcept;
 		bool has_work(const Worker& worker) const noexcept;
 		void idle(Worker& worker) noexcept;
-		void wake_worker(u32 index) noexcept;
-		void wake_sleepers(u32 count) noexcept;
-		void wake_all() noexcept;
 
 		void submit(Span<const JobDef> jobs, JobHandle batch) noexcept;
 		bool pop_job(Job& job) noexcept;
@@ -208,6 +254,13 @@ namespace ember::jobs
 		thread_local Worker* t_worker = nullptr;
 
 		Scheduler* s_scheduler = nullptr;
+
+		// The one way the entry points reach the scheduler.
+		Scheduler& scheduler() noexcept
+		{
+			EMBER_ASSERT(s_scheduler != nullptr && "no job system");
+			return *s_scheduler;
+		}
 
 		EMBER_NOINLINE Worker* current_worker() noexcept { return t_worker; }
 
@@ -316,41 +369,22 @@ namespace ember::jobs
 
 	Scheduler::Scheduler(const JobSystemDef& def) noexcept : def(def)
 	{
-		fiber_count = def.small_fibers + def.large_fibers;
-
 		const u32 hardware = std::max(1u, std::thread::hardware_concurrency());
 
 		worker_count =
 			def.worker_count != 0 ? def.worker_count : hardware - std::min(def.reserved_threads, hardware - 1);
-		worker_count = std::min(worker_count, MAX_WORKERS);
-		EMBER_ASSERT(fiber_count >= worker_count && "every worker thread needs a fiber to run its loop");
+		worker_count   = std::min(worker_count, Sleepers::MAX_WORKERS);
+		sleepers.count = worker_count;
 
-		records = static_cast<FiberRecord*>(
-			memory::heap(MemoryTag::Engine).allocate(fiber_count * sizeof(FiberRecord), alignof(FiberRecord)));
+		fibers.init(def, fiber_main);
+		EMBER_ASSERT(fibers.count >= worker_count && "every worker thread needs a fiber to run its loop");
 
-		free_fibers[static_cast<u32>(JobStack::Small)].init(queue_capacity(def.small_fibers));
-		free_fibers[static_cast<u32>(JobStack::Large)].init(queue_capacity(def.large_fibers));
-		ready.init(queue_capacity(fiber_count + worker_count));
+		ready.init(queue_capacity(fibers.count + worker_count));
 
 		for (MpmcQueue<Job>& queue : jobs)
 			queue.init(queue_capacity(def.queue_capacity));
 
 		counters.init(def.counter_capacity < 1 ? 1 : def.counter_capacity);
-
-		for (u32 index = 0; index < fiber_count; ++index)
-		{
-			FiberRecord& record = *std::construct_at(records + index);
-			record.stack		= index < def.small_fibers ? JobStack::Small : JobStack::Large;
-			record.pool			= true;
-			std::snprintf(record.name, sizeof(record.name), "fiber %u", index);
-
-			const size_t stack_size = record.stack == JobStack::Small ? def.small_stack : def.large_stack;
-			record.fiber			= fiber_create({.stack_size = stack_size, .entry = fiber_main, .arg = &record});
-			EMBER_ASSERT(record.fiber != nullptr);
-
-			push_free(&record);
-		}
-
 		workers = static_cast<Worker*>(
 			memory::heap(MemoryTag::Engine).allocate(worker_count * sizeof(Worker), alignof(Worker)));
 
@@ -362,7 +396,7 @@ namespace ember::jobs
 			worker.index					   = index;
 			worker.thread_record.stack		   = JobStack::Large;
 			worker.thread_record.pinned_worker = index;
-			worker.pinned_ready.init(queue_capacity(fiber_count + worker_count));
+			worker.pinned_ready.init(queue_capacity(fibers.count + worker_count));
 		}
 
 		// Threads start last, once every queue and fiber they may touch exists. Each thread's
@@ -372,9 +406,9 @@ namespace ember::jobs
 		{
 			Worker& worker = workers[index];
 
-			worker.first = pop_free(JobStack::Small);
+			worker.first = fibers.pop_free(JobStack::Small);
 			if (worker.first == nullptr)
-				worker.first = pop_free(JobStack::Large);
+				worker.first = fibers.pop_free(JobStack::Large);
 			EMBER_ASSERT(worker.first != nullptr && "out of fibers");
 
 			worker.thread = std::thread([this, index] { worker_main(workers[index]); });
@@ -384,30 +418,23 @@ namespace ember::jobs
 	Scheduler::~Scheduler() noexcept
 	{
 		stopping.store(true, std::memory_order_release);
-		wake_all();
+		sleepers.wake_all();
 
 		for (u32 index = 1; index < worker_count; ++index)
 			if (workers[index].thread.joinable())
 				workers[index].thread.join();
 
 		const JobStats snapshot = stats();
-		EMBER_ASSERT(snapshot.free_small_fibers + snapshot.free_large_fibers == fiber_count &&
+		EMBER_ASSERT(snapshot.free_small_fibers + snapshot.free_large_fibers == fibers.count &&
 					 "fibers still parked at shutdown");
 		EMBER_ASSERT(snapshot.ready_fibers == 0 && "fibers still ready at shutdown");
 		EMBER_ASSERT(snapshot.live_batches == 0 && "batches still owned at shutdown");
 		EMBER_ASSERT(snapshot.queued_jobs == 0 && "jobs still queued at shutdown");
 		(void)snapshot;
 
-		for (u32 index = 0; index < fiber_count; ++index)
-		{
-			fiber_destroy(records[index].fiber);
-			std::destroy_at(records + index);
-		}
-
 		for (u32 index = 0; index < worker_count; ++index)
 			std::destroy_at(workers + index);
 
-		memory::heap(MemoryTag::Engine).deallocate(records, fiber_count * sizeof(FiberRecord), alignof(FiberRecord));
 		memory::heap(MemoryTag::Engine).deallocate(workers, worker_count * sizeof(Worker), alignof(Worker));
 	}
 
@@ -631,15 +658,60 @@ namespace ember::jobs
 		}
 	}
 
-	FiberRecord* Scheduler::pop_free(JobStack stack) noexcept
+	FiberPool::~FiberPool() noexcept
 	{
-		FiberRecord* fiber = nullptr;
-		return free_fibers[static_cast<u32>(stack)].try_pop(fiber) ? fiber : nullptr;
+		if (records == nullptr)
+			return;
+
+		for (u32 index = 0; index < count; ++index)
+		{
+			fiber_destroy(records[index].fiber);
+			std::destroy_at(records + index);
+		}
+
+		memory::heap(MemoryTag::Engine).deallocate(records, count * sizeof(FiberRecord), alignof(FiberRecord));
 	}
 
-	void Scheduler::push_free(FiberRecord* fiber) noexcept
+	void FiberPool::init(const JobSystemDef& def, FiberEntry entry) noexcept
 	{
-		push_held(free_fibers[static_cast<u32>(fiber->stack)], fiber);
+		EMBER_ASSERT(records == nullptr && "init runs once");
+
+		count	= def.small_fibers + def.large_fibers;
+		records = static_cast<FiberRecord*>(
+			memory::heap(MemoryTag::Engine).allocate(count * sizeof(FiberRecord), alignof(FiberRecord)));
+
+		free_lists[static_cast<u32>(JobStack::Small)].init(queue_capacity(def.small_fibers));
+		free_lists[static_cast<u32>(JobStack::Large)].init(queue_capacity(def.large_fibers));
+
+		for (u32 index = 0; index < count; ++index)
+		{
+			FiberRecord& record = *std::construct_at(records + index);
+			record.stack		= index < def.small_fibers ? JobStack::Small : JobStack::Large;
+			record.pool			= true;
+			std::snprintf(record.name, sizeof(record.name), "fiber %u", index);
+
+			const size_t stack_size = record.stack == JobStack::Small ? def.small_stack : def.large_stack;
+			record.fiber			= fiber_create({.stack_size = stack_size, .entry = entry, .arg = &record});
+			EMBER_ASSERT(record.fiber != nullptr);
+
+			push_free(&record);
+		}
+	}
+
+	FiberRecord* FiberPool::pop_free(JobStack stack) noexcept
+	{
+		FiberRecord* fiber = nullptr;
+		return free_lists[static_cast<u32>(stack)].try_pop(fiber) ? fiber : nullptr;
+	}
+
+	void FiberPool::push_free(FiberRecord* fiber) noexcept
+	{
+		push_held(free_lists[static_cast<u32>(fiber->stack)], fiber);
+	}
+
+	u32 FiberPool::free_count(JobStack stack) const noexcept
+	{
+		return static_cast<u32>(free_lists[static_cast<u32>(stack)].size_hint());
 	}
 
 	FiberRecord* Scheduler::pop_ready(Worker& worker) noexcept
@@ -658,10 +730,10 @@ namespace ember::jobs
 		FiberRecord* next = pop_ready(worker);
 
 		if (next == nullptr)
-			next = pop_free(JobStack::Small);
+			next = fibers.pop_free(JobStack::Small);
 
 		if (next == nullptr)
-			next = pop_free(JobStack::Large);
+			next = fibers.pop_free(JobStack::Large);
 
 		return next;
 	}
@@ -672,12 +744,12 @@ namespace ember::jobs
 		{
 			Worker& worker = workers[fiber->pinned_worker];
 			push_held(worker.pinned_ready, fiber);
-			wake_worker(worker.index);
+			sleepers.wake_one(worker.index);
 			return;
 		}
 
 		push_held(ready, fiber);
-		wake_sleepers(1);
+		sleepers.wake_some(1);
 	}
 
 	// Returns when from is resumed, on whatever thread resumes it.
@@ -703,7 +775,7 @@ namespace ember::jobs
 		if (action == Pending::Park)
 			park(fiber);
 		else if (action == Pending::Free)
-			push_free(fiber);
+			fibers.push_free(fiber);
 	}
 
 	/**
@@ -769,12 +841,71 @@ namespace ember::jobs
 		return false;
 	}
 
-	// Spin a little for work that is about to arrive, then sleep. The announcement and the
-	// producers' sleeper checks are all read-modify-writes on the sleeping mask, so they
-	// form one total order: a producer either sees the bit and wakes this worker, or its
-	// work was published before the bit went up and the check below finds it. The epoch is
-	// read before the announcement, so a wake-up landing between the announcement and the
-	// wait shows up as a changed value and the wait returns at once.
+	/**
+	 * The epoch is read before the annoucement, so a wake-up landing between the announcement
+	 * and the wait shows up as a changed value and the wait returns at once.
+	 */
+	template <class Busy> void Sleepers::sleep(u32 index, Busy&& busy) noexcept
+	{
+		const u32 observed = epochs[index].value.load(std::memory_order_acquire);
+		const u64 bit	   = u64{1} << index;
+
+		mask.fetch_or(bit, std::memory_order_acq_rel);
+
+		if (!busy())
+			epochs[index].value.wait(observed, std::memory_order_acquire);
+
+		mask.fetch_and(~bit, std::memory_order_relaxed);
+	}
+
+	/**
+	 * Producers ovserve the mask with a read-modify-write rather than a load: that orders
+	 * it after the work they just published, against the sleeper's own read-modify-write.
+	 */
+	void Sleepers::wake_one(u32 index) noexcept
+	{
+		const u64 bit = u64{1} << index;
+
+		if ((mask.fetch_or(0, std::memory_order_acq_rel) & bit) == 0)
+			return;
+
+		if ((mask.fetch_and(~bit, std::memory_order_acq_rel) & bit) == 0)
+			return;
+
+		epochs[index].value.fetch_add(1, std::memory_order_release);
+		epochs[index].value.notify_one();
+	}
+
+	/** Claims sleepers one bit at a time so several producers do not all wake the same one */
+	void Sleepers::wake_some(u32 wanted) noexcept
+	{
+		u64 sleeping = mask.fetch_or(0, std::memory_order_acq_rel);
+
+		while (sleeping != 0 && wanted != 0)
+		{
+			const u32 index = static_cast<u32>(std::countr_zero(sleeping));
+			const u64 bit	= u64{1} << index;
+			sleeping &= ~bit;
+
+			if ((mask.fetch_and(~bit, std::memory_order_acq_rel) & bit) == 0)
+				continue;
+
+			epochs[index].value.fetch_add(1, std::memory_order_release);
+			epochs[index].value.notify_one();
+			--wanted;
+		}
+	}
+
+	void Sleepers::wake_all() noexcept
+	{
+		for (u32 index = 0; index < count; ++index)
+		{
+			epochs[index].value.fetch_add(1, std::memory_order_release);
+			epochs[index].value.notify_all();
+		}
+	}
+
+	// Spin a little for work that is about to arrive, then sleep.
 	void Scheduler::idle(Worker& worker) noexcept
 	{
 		for (u32 spin = 0; spin < IDLE_SPINS; ++spin)
@@ -787,64 +918,11 @@ namespace ember::jobs
 
 		trace_leave(worker, worker.current);
 
-		const u32 observed = worker.epoch.load(std::memory_order_acquire);
-		const u64 bit	   = u64{1} << worker.index;
-
-		sleeping.fetch_or(bit, std::memory_order_acq_rel);
-
-		if (!has_work(worker) && !stopping.load(std::memory_order_acquire))
-			worker.epoch.wait(observed, std::memory_order_acquire);
-
-		sleeping.fetch_and(~bit, std::memory_order_relaxed);
+		const auto busy = [&]() noexcept { return has_work(worker) || stopping.load(std::memory_order_acquire); };
+		sleepers.sleep(worker.index, busy);
 
 		trace_enter(worker, worker.current);
 	}
-
-	// Producers observe the mask with a read-modify-write rather than a load: that orders it
-	// after the work they just published, against the sleeper's own read-modify-write.
-	void Scheduler::wake_worker(u32 index) noexcept
-	{
-		const u64 bit = u64{1} << index;
-
-		if ((sleeping.fetch_or(0, std::memory_order_acq_rel) & bit) == 0)
-			return;
-
-		if ((sleeping.fetch_and(~bit, std::memory_order_acq_rel) & bit) == 0)
-			return;
-
-		workers[index].epoch.fetch_add(1, std::memory_order_release);
-		workers[index].epoch.notify_one();
-	}
-
-	// Claims sleepers one bit at a time so several producers do not all wake the same one.
-	void Scheduler::wake_sleepers(u32 count) noexcept
-	{
-		u64 mask = sleeping.fetch_or(0, std::memory_order_acq_rel);
-
-		while (mask != 0 && count != 0)
-		{
-			const u32 index = static_cast<u32>(std::countr_zero(mask));
-			const u64 bit	= u64{1} << index;
-			mask &= ~bit;
-
-			if ((sleeping.fetch_and(~bit, std::memory_order_acq_rel) & bit) == 0)
-				continue;
-
-			workers[index].epoch.fetch_add(1, std::memory_order_release);
-			workers[index].epoch.notify_one();
-			--count;
-		}
-	}
-
-	void Scheduler::wake_all() noexcept
-	{
-		for (u32 index = 0; index < worker_count; ++index)
-		{
-			workers[index].epoch.fetch_add(1, std::memory_order_release);
-			workers[index].epoch.notify_all();
-		}
-	}
-
 	void Scheduler::submit(Span<const JobDef> defs, JobHandle batch) noexcept
 	{
 		for (const JobDef& job : defs)
@@ -860,7 +938,7 @@ namespace ember::jobs
 				fail("job queue full, raise JobSystemDef::queue_capacity");
 		}
 
-		wake_sleepers(static_cast<u32>(defs.size()));
+		sleepers.wake_some(static_cast<u32>(defs.size()));
 	}
 
 	bool Scheduler::pop_job(Job& job) noexcept
@@ -979,9 +1057,11 @@ namespace ember::jobs
 		yield_to(self, next, Pending::Park);
 	}
 
-	// Every fiber is parked or busy on another worker. The wait spins for one to come back or
-	// for its own batch to finish, and after stall_report_ms of neither the pool is too small
-	// for the job graph: the dump names the batches holding it.
+	/**
+	 * Every fiber is parked or busy on another worker. The wait spins for one to come back or
+	 * for its own batch  to finish, and after stall_report_ms of neither the pool is too small
+	 * for the job graph: the dump names the batches holding it.
+	 */
 	FiberRecord* Scheduler::stall(FiberRecord* self, JobCounter& counter, JobHandle handle) noexcept
 	{
 		EMBER_PROFILE_SCOPE_C("stalled wait", PROFILE_COLOR_WAIT);
@@ -1008,15 +1088,17 @@ namespace ember::jobs
 		return next;
 	}
 
-	// A small fiber holding a large job. Large fibers come back as large jobs finish; none for
-	// stall_report_ms means the large pool is too small for the job graph.
+	/**
+	 * A small fiber holding a large job. Large fibers come back as large jobs finish;
+	 * none for stall_report_ms means the large pool is too small for the job graph.
+	 */
 	FiberRecord* Scheduler::wait_for_large_fiber() noexcept
 	{
 		const auto since = std::chrono::steady_clock::now();
 
 		for (u32 spin = 0;;)
 		{
-			if (FiberRecord* fiber = pop_free(JobStack::Large))
+			if (FiberRecord* fiber = fibers.pop_free(JobStack::Large))
 				return fiber;
 
 			spin_or_fail(spin, since, "a large job found no large fiber");
@@ -1083,8 +1165,8 @@ namespace ember::jobs
 				used += std::snprintf(line + used, sizeof(line) - used, ", %s stalled", fiber_label(fiber));
 			};
 
-			for (u32 fiber = 0; fiber < fiber_count; ++fiber)
-				add_stalled(records[fiber]);
+			for (u32 fiber = 0; fiber < fibers.count; ++fiber)
+				add_stalled(fibers.records[fiber]);
 			for (u32 worker = 0; worker < worker_count; ++worker)
 				add_stalled(workers[worker].thread_record);
 
@@ -1111,8 +1193,8 @@ namespace ember::jobs
 			ready_count += workers[index].pinned_ready.size_hint();
 
 		return {
-			.free_small_fibers = static_cast<u32>(free_fibers[static_cast<u32>(JobStack::Small)].size_hint()),
-			.free_large_fibers = static_cast<u32>(free_fibers[static_cast<u32>(JobStack::Large)].size_hint()),
+			.free_small_fibers = fibers.free_count(JobStack::Small),
+			.free_large_fibers = fibers.free_count(JobStack::Large),
 			.parked_fibers	   = parked.load(std::memory_order_relaxed),
 			.ready_fibers	   = static_cast<u32>(ready_count),
 			.queued_jobs	   = static_cast<u32>(queued),
@@ -1129,17 +1211,18 @@ namespace ember::jobs
 
 	void shutdown() noexcept
 	{
-		EMBER_ASSERT(!s_scheduler->running);
+		EMBER_ASSERT(!scheduler().running && "shutdown inside run_main");
 		memory::delete_object(MemoryTag::Engine, s_scheduler);
 		s_scheduler = nullptr;
 	}
 
 	void run_main(JobFn main, void* data) noexcept
 	{
-		EMBER_ASSERT(!s_scheduler->running && "run is not re-entrant");
-		s_scheduler->running = true;
+		Scheduler& system = scheduler();
+		EMBER_ASSERT(!system.running && "run_main is not re-entrant");
+		system.running = true;
 
-		Worker& worker				= s_scheduler->workers[0];
+		Worker& worker				= system.workers[0];
 		worker.thread_record.fiber	= fiber_adopt_thread();
 		worker.thread_record.worker = &worker;
 		worker.current				= &worker.thread_record;
@@ -1152,7 +1235,7 @@ namespace ember::jobs
 		t_worker = nullptr;
 		fiber_release_thread(worker.thread_record.fiber);
 		worker.thread_record.fiber = nullptr;
-		s_scheduler->running	   = false;
+		system.running			   = false;
 	}
 
 	JobHandle submit(Span<const JobDef> jobs) noexcept
@@ -1160,10 +1243,9 @@ namespace ember::jobs
 		if (jobs.empty())
 			return {};
 
-		EMBER_ASSERT(s_scheduler != nullptr && "no job system");
-
-		const JobHandle handle = s_scheduler->counters.allocate(static_cast<u32>(jobs.size()));
-		s_scheduler->submit(jobs, handle);
+		Scheduler& system	   = scheduler();
+		const JobHandle handle = system.counters.allocate(static_cast<u32>(jobs.size()));
+		system.submit(jobs, handle);
 		return handle;
 	}
 
@@ -1172,29 +1254,16 @@ namespace ember::jobs
 		if (jobs.empty())
 			return;
 
-		EMBER_ASSERT(s_scheduler != nullptr && "no job system");
-		s_scheduler->submit(jobs, {});
+		scheduler().submit(jobs, {});
 	}
 
-	void wait(JobHandle batch) noexcept
-	{
-		EMBER_ASSERT(s_scheduler != nullptr && "no job system");
-		s_scheduler->wait(batch);
-	}
+	void wait(JobHandle batch) noexcept { scheduler().wait(batch); }
 
-	bool is_complete(JobHandle batch) noexcept
-	{
-		EMBER_ASSERT(s_scheduler != nullptr && "no job system");
-		return s_scheduler->counters.is_complete(batch);
-	}
+	bool is_complete(JobHandle batch) noexcept { return scheduler().counters.is_complete(batch); }
 
-	void release(JobHandle batch) noexcept
-	{
-		EMBER_ASSERT(s_scheduler != nullptr && "no job system");
-		s_scheduler->counters.release(batch);
-	}
+	void release(JobHandle batch) noexcept { scheduler().counters.release(batch); }
 
-	u32 worker_count() noexcept { return s_scheduler != nullptr ? s_scheduler->worker_count : 0; }
+	u32 worker_count() noexcept { return scheduler().worker_count; }
 
 	u32 worker_index() noexcept
 	{
@@ -1202,17 +1271,9 @@ namespace ember::jobs
 		return worker != nullptr ? worker->index : NO_WORKER;
 	}
 
-	JobStats stats() noexcept
-	{
-		EMBER_ASSERT(s_scheduler != nullptr && "no job system");
-		return s_scheduler->stats();
-	}
+	JobStats stats() noexcept { return scheduler().stats(); }
 
-	void dump_state() noexcept
-	{
-		EMBER_ASSERT(s_scheduler != nullptr && "no job system");
-		s_scheduler->dump("job system state");
-	}
+	void dump_state() noexcept { scheduler().dump("job system state"); }
 
 	namespace
 	{
