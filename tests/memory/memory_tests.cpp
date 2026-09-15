@@ -36,7 +36,7 @@ TEST(Memory, DefaultPmrResourceIsTheEngineHeap)
 
 TEST(Memory, FrameMemoryIsUsableAndComesFromTheBlockHeap)
 {
-	ember::TaggedHeap& heap		 = ember::memory::block_heap();
+	ember::TaggedHeap& heap		 = ember::memory::tagged_heap();
 	ember::BlockAllocator& frame = ember::memory::frame_memory();
 
 	EXPECT_EQ(heap.block_size(), ember::MemoryConfig{}.block_size);
@@ -97,7 +97,7 @@ TEST(Memory, TrackerTotalsFollowHeapTraffic)
 
 TEST(MemoryDeathTest, OutOfMemoryIsFatal)
 {
-	EXPECT_DEATH(ember::out_of_memory(1024, 16, MemoryTag::Engine), "Out of memory");
+	EXPECT_DEATH(ember::memory::out_of_memory(1024, 16, MemoryTag::Engine), "Out of memory");
 }
 
 #ifndef NDEBUG

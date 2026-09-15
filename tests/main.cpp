@@ -12,8 +12,7 @@ int main(int argc, char** argv)
 	GTEST_FLAG_SET(death_test_style, "threadsafe");
 	::testing::InitGoogleTest(&argc, argv);
 
-	MemorySystem memory_system;
-	if (!memory_system.initialize())
+	if (!memory::initialize())
 	{
 		std::fprintf(stderr, "memory::initialize() failed\n");
 		return 1;

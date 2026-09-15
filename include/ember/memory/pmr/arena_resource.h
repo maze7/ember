@@ -52,11 +52,11 @@ namespace ember
 			const size_t aligned		 = align_up(m_offset, alignment);
 			size_t next					 = 0;
 			if (!checked_add(aligned, allocation_size, next)) [[unlikely]]
-				out_of_memory(size, alignment, m_tag);
+				memory::out_of_memory(size, alignment, m_tag);
 
 			if (next > m_committed) [[unlikely]]
 				if (!grow(next))
-					out_of_memory(size, alignment, m_tag);
+					memory::out_of_memory(size, alignment, m_tag);
 
 			m_offset = next;
 			m_peak	 = m_offset > m_peak ? m_offset : m_peak;

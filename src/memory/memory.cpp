@@ -21,22 +21,16 @@ namespace
 	constinit std::atomic<bool> s_initialized = false;
 }
 
-namespace ember
+namespace ember::memory
 {
-	MemorySystem::~MemorySystem() noexcept
-	{
-		if (m_initialized)
-			shutdown();
-	}
-
-	bool MemorySystem::initialize(const MemoryConfig& config) noexcept
+	Result<void, MemoryError> initialize(const MemoryConfig& config) noexcept
 	{
 		bool expected = false;
 
 		if (!s_initialized.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) [[unlikely]]
 		{
 			EMBER_ASSERT(false && "Only one MemorySystem may exist");
-			return false;
+			return fail(MemoryError::AlreadyInit);
 		}
 
 		ember::memory::initialize_thread();
@@ -46,7 +40,7 @@ namespace ember
 		if (!ember::memory_tracker::initialize()) [[unlikely]]
 		{
 			s_initialized.store(false, std::memory_order_release);
-			return false;
+			return fail(MemoryError::MemoryTrackerInitFailed);
 		}
 #endif // EMBER_MEMORY_TRACKING >= 2
 
@@ -57,7 +51,7 @@ namespace ember
 			ember::memory_tracker::shutdown();
 #endif
 			s_initialized.store(false, std::memory_order_release);
-			return false;
+			return fail(MemoryError::BlockHeapInitFailed);
 		}
 
 		s_frame_memory.init(s_block_heap, FRAME_TAG);
@@ -65,10 +59,10 @@ namespace ember
 		// Last, after every fallible step: from here on, resource-less PMR containers
 		// allocate from the engine heap instead of global operator new.
 		std::pmr::set_default_resource(&ember::memory::heap(ember::MemoryTag::Unknown));
-		return true;
+		return {};
 	}
 
-	void MemorySystem::shutdown() noexcept
+	void shutdown() noexcept
 	{
 		if (!s_initialized.exchange(false, std::memory_order_acq_rel))
 			return;
@@ -87,14 +81,14 @@ namespace ember
 		// finalized (static destructors may free after us), so late allocations remain valid.
 	}
 
-	TaggedHeap& memory::block_heap() noexcept
+	TaggedHeap& tagged_heap() noexcept
 	{
 		EMBER_ASSERT(s_initialized.load(std::memory_order_acquire));
 
 		return s_block_heap;
 	}
 
-	BlockAllocator& memory::frame_memory() noexcept
+	BlockAllocator& frame_memory() noexcept
 	{
 		EMBER_ASSERT(s_initialized.load(std::memory_order_acquire));
 

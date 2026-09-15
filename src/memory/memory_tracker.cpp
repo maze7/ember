@@ -151,11 +151,11 @@ namespace ember
 			[[nodiscard]] T* allocate(size_t count)
 			{
 				if (count > std::numeric_limits<size_t>::max() / sizeof(T)) [[unlikely]]
-					out_of_memory(count, alignof(T), MemoryTag::Tools);
+					memory::out_of_memory(count, alignof(T), MemoryTag::Tools);
 
 				void* ptr = std::malloc(count * sizeof(T));
 				if (ptr == nullptr) [[unlikely]]
-					out_of_memory(count * sizeof(T), alignof(T), MemoryTag::Tools);
+					memory::out_of_memory(count * sizeof(T), alignof(T), MemoryTag::Tools);
 
 				return static_cast<T*>(ptr);
 			}
@@ -425,7 +425,7 @@ namespace ember
 				Logger::info(std::source_location::current(), "{:<12} {:>14} {:>14} {:>12} {:>12}", "Total",
 							 totals.current_bytes, totals.peak_bytes, totals.current_count, totals.total_count);
 
-			const TaggedHeap& blocks = memory::block_heap();
+			const TaggedHeap& blocks = memory::tagged_heap();
 			if (as_csv)
 				Logger::info(std::source_location::current(), "BlockHeap,{},{},{},{}", blocks.used(), blocks.peak(),
 							 blocks.capacity(), blocks.block_size());

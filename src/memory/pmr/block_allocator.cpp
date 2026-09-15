@@ -78,7 +78,7 @@ namespace ember
 		EMBER_ASSERT(m_heap != nullptr);
 
 		if (bytes > m_heap->capacity()) [[unlikely]]
-			out_of_memory(bytes, alignment, m_heap->memory_tag());
+			memory::out_of_memory(bytes, alignment, m_heap->memory_tag());
 
 		// Room for the request plus whatever aligning inside the first block costs.
 		const size_t block_size = m_heap->block_size();
@@ -87,7 +87,7 @@ namespace ember
 
 		auto* base = static_cast<u8*>(m_heap->allocate_blocks(count, m_tag));
 		if (base == nullptr) [[unlikely]]
-			out_of_memory(bytes, alignment, m_heap->memory_tag());
+			memory::out_of_memory(bytes, alignment, m_heap->memory_tag());
 
 		u8* aligned = align_up(base, alignment);
 

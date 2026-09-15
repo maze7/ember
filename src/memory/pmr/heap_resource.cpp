@@ -151,7 +151,7 @@ namespace ember
 
 		void* ptr = mem_alloc(bytes, alignment, false);
 		if (ptr == nullptr) [[unlikely]]
-			out_of_memory(bytes, alignment, m_tag);
+			memory::out_of_memory(bytes, alignment, m_tag);
 
 		EMBER_MEM_TRACK_ALLOC(ptr, usable_size(ptr), m_tag, true);
 		return ptr;
@@ -181,7 +181,7 @@ namespace ember
 
 		void* ptr = mem_alloc(size, alignment, true);
 		if (ptr == nullptr) [[unlikely]]
-			out_of_memory(size, alignment, m_tag);
+			memory::out_of_memory(size, alignment, m_tag);
 
 		EMBER_MEM_TRACK_ALLOC(ptr, usable_size(ptr), m_tag, false);
 		return ptr;
@@ -196,7 +196,7 @@ namespace ember
 
 		void* new_ptr = mem_realloc(ptr, new_size);
 		if (new_ptr == nullptr) [[unlikely]]
-			out_of_memory(new_size, DEFAULT_ALIGNMENT, m_tag);
+			memory::out_of_memory(new_size, DEFAULT_ALIGNMENT, m_tag);
 
 		EMBER_MEM_TRACK_ALLOC(new_ptr, usable_size(new_ptr), m_tag, false);
 		return new_ptr;

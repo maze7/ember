@@ -90,7 +90,6 @@ namespace ember
 		void request_quit(int exit_code) noexcept;
 		void frame_loop(App& app) noexcept;
 
-		Unique<MemorySystem> m_memory;
 		Unique<jobs::JobSystem> m_jobs;
 		Unique<Platform> m_platform;
 		Unique<gpu::Device> m_gpu;

@@ -440,7 +440,7 @@ namespace ember
 	template <class Tag, class Hot, class Cold, class Component>
 	[[noreturn]] void Pool<Tag, Hot, Cold, Component>::fail_allocation(size_t requested_size) const noexcept
 	{
-		out_of_memory(requested_size, BLOCK_ALIGNMENT, m_tag);
+		memory::out_of_memory(requested_size, BLOCK_ALIGNMENT, m_tag);
 	}
 
 	template <class Tag, class Hot, class Cold, class Component>

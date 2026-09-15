@@ -25,8 +25,7 @@ namespace ember
 			return fail(error);
 		};
 
-		m_memory = memory::make_unique<MemorySystem>(MemoryTag::Engine);
-		if (!m_memory->initialize(config.memory))
+		if (!memory::initialize(config.memory))
 			return rollback(RuntimeError::MemoryInitFailed);
 
 		m_jobs = memory::make_unique<jobs::JobSystem>(MemoryTag::Engine, config.jobs);
@@ -97,8 +96,9 @@ namespace ember
 		// Worker teardown may still touch engine allocators, so stop the scheduler
 		// before releasing the memory system.
 		m_jobs.reset();
-		m_memory.reset();
 		m_input.clear();
+
+		memory::shutdown();
 
 		m_args				= {};
 		m_previous_frame	= {};
