@@ -88,7 +88,7 @@ namespace ember::jobs
 		u32 index			 = 0;
 		FiberRecord* current = nullptr; // fiber running on this thread
 		FiberRecord* first	 = nullptr; // taken at construction, handed to the thread when it starts
-		FiberRecord thread_record;		// the thread's own stack: main inside run(), the exit path elsewhere
+		FiberRecord thread_record;		// the thread's own stack: main inside uun(), the exit path elsewhere
 		Pending pending			   = Pending::None;
 		FiberRecord* pending_fiber = nullptr;
 		MpmcQueue<FiberRecord*> pinned_ready{MemoryTag::Engine}; // fibers that must resume on this worker
@@ -135,7 +135,7 @@ namespace ember::jobs
 		JobHandle allocate_counter(u32 count) noexcept;
 		void free_locked(JobCounter& counter) noexcept;
 		void release(JobHandle handle) noexcept;
-		void kick(Span<const JobDef> jobs, JobHandle batch) noexcept;
+		void submit(Span<const JobDef> jobs, JobHandle batch) noexcept;
 		void wait(JobHandle handle) noexcept;
 		FiberRecord* stall(FiberRecord* self, JobCounter& counter, JobHandle handle) noexcept;
 		FiberRecord* wait_for_large_fiber() noexcept;
@@ -1059,7 +1059,7 @@ namespace ember::jobs
 		s_scheduler->running	   = false;
 	}
 
-	void Scheduler::kick(Span<const JobDef> defs, JobHandle batch) noexcept
+	void Scheduler::submit(Span<const JobDef> defs, JobHandle batch) noexcept
 	{
 		for (const JobDef& job : defs)
 		{
@@ -1085,7 +1085,7 @@ namespace ember::jobs
 		EMBER_ASSERT(s_scheduler != nullptr && "no job system");
 
 		const JobHandle handle = s_scheduler->allocate_counter(static_cast<u32>(jobs.size()));
-		s_scheduler->kick(jobs, handle);
+		s_scheduler->submit(jobs, handle);
 		return handle;
 	}
 
@@ -1095,7 +1095,7 @@ namespace ember::jobs
 			return;
 
 		EMBER_ASSERT(s_scheduler != nullptr && "no job system");
-		s_scheduler->kick(jobs, {});
+		s_scheduler->submit(jobs, {});
 	}
 
 	void wait(JobHandle batch) noexcept
