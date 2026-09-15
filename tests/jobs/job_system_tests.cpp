@@ -664,6 +664,7 @@ TEST(JobSystem, RunsTwice)
 	jobs::run_main(main_nested, &state);
 
 	EXPECT_EQ(state.ran.load(), 40u);
+	jobs::shutdown();
 }
 
 TEST(JobSystem, StaleHandlesReadComplete)
@@ -699,6 +700,8 @@ TEST(JobSystem, BatchesMove)
 
 	EXPECT_TRUE(state.moved_from_is_null);
 	EXPECT_EQ(state.ran.load(), 10u);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystem, JobsRunInParallel)
