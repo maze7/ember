@@ -126,7 +126,32 @@ namespace ember::jobs
 		u64 stalls = 0; // waits that found no fiber
 	};
 
+	/**
+	 * Initializes the process-wide job scheduler.
+	 *
+	 * The memory system must already be initialized. This function creates the
+	 * fixed-capacity fiber, queue, and counter pools, then starts the background
+	 * workers. Worker 0 is reserved for the thread that later calls run_main() and
+	 * is not created here.
+	 *
+	 * Pool capacities remain fixed until shutdown(), and exhausting one is fatal.
+	 *
+	 * Must be called exactly once before any other jobs API. Initialization and
+	 * shutdown must be externally serialized.
+	 */
 	void initialize(const JobSystemDef& def = {}) noexcept;
+
+	/**
+	 * Destroys the process-wide job scheduler.
+	 *
+	 * run_main() must have returned, every submitted job must be complete, and
+	 * every owned JobHandle must have been released. No thread, including a worker,
+	 * may enter the jobs API while shutdown is in progress.
+	 *
+	 * This function wakes and joins the background workers before releasing the
+	 * fibers, queues, counters, and scheduler state. All outstanding job handles
+	 * are invalid after it returns.
+	 */
 	void shutdown() noexcept;
 
 	/**
