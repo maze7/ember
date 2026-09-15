@@ -11,6 +11,18 @@
 	#include <sys/wait.h>
 #endif
 
+#if defined(__SANITIZE_ADDRESS__)
+	#define EMBER_TEST_SANITIZER_NAME "AddressSanitizer"
+#elif defined(__SANITIZE_THREAD__)
+	#define EMBER_TEST_SANITIZER_NAME "ThreadSanitizer"
+#elif defined(__has_feature)
+	#if __has_feature(address_sanitizer)
+		#define EMBER_TEST_SANITIZER_NAME "AddressSanitizer"
+	#elif __has_feature(thread_sanitizer)
+		#define EMBER_TEST_SANITIZER_NAME "ThreadSanitizer"
+	#endif
+#endif
+
 using namespace ember;
 using namespace ember::jobs;
 
@@ -121,6 +133,20 @@ namespace
 		return WIFSIGNALED(status) && (WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGBUS);
 #endif
 	}
+
+	[[noreturn]] void run_guard_page_probe()
+	{
+		Fiber* host		 = fiber_adopt_thread();
+		Fiber* fiber	 = fiber_create({.stack_size = 64_kb, .entry = overflow_entry});
+		Fiber* neighbour = fiber_create({.stack_size = 64_kb, .entry = overflow_entry});
+
+		// A setup failure must not masquerade as a successful guard-page fault.
+		if (host == nullptr || fiber == nullptr || neighbour == nullptr)
+			std::_Exit(2);
+
+		fiber_switch(host, fiber);
+		std::_Exit(3);
+	}
 }
 
 TEST(Fiber, PingPong)
@@ -209,13 +235,10 @@ TEST(Fiber, RoundTripCost)
 // overrun would land in it and the process would exit normally.
 TEST(FiberDeathTest, OverflowHitsGuardPage)
 {
-	EXPECT_EXIT(
-		{
-			Fiber* host		 = fiber_adopt_thread();
-			Fiber* fiber	 = fiber_create({.stack_size = 64_kb, .entry = overflow_entry});
-			Fiber* neighbour = fiber_create({.stack_size = 64_kb, .entry = overflow_entry});
-			(void)neighbour;
-			fiber_switch(host, fiber);
-		},
-		died_of_stack_fault, "");
+#if defined(EMBER_TEST_SANITIZER_NAME)
+	// Sanitizers consume the native fault, so their diagnostic identifies the cause.
+	EXPECT_DEATH(run_guard_page_probe(), EMBER_TEST_SANITIZER_NAME ": stack-overflow");
+#else
+	EXPECT_EXIT(run_guard_page_probe(), died_of_stack_fault, "");
+#endif
 }

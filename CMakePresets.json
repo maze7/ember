@@ -1,85 +1,122 @@
 {
-	"version": 6,
-	"cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
-	"configurePresets": [
-		{
-			"name": "base",
-			"hidden": true,
-			"generator": "Ninja",
-			"binaryDir": "${sourceDir}/build/${presetName}",
-			"cacheVariables": {
-				"CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
-			}
-		},
-		{
-			"name": "debug",
-			"displayName": "debug",
-			"inherits": "base",
-			"cacheVariables": {
-				"CMAKE_BUILD_TYPE": "Debug",
-				"EMBER_BUILD_TESTS": "ON"
-			}
-		},
-		{
-			"name": "release",
-			"displayName": "release",
-			"inherits": "debug",
-			"cacheVariables": {
-				"CMAKE_BUILD_TYPE": "Release"
-			}
-		},
-		{
-			"name": "asan",
-			"displayName": "Debug + ASan/UBSan + tests",
-			"inherits": "debug",
-			"cacheVariables": {
-				"CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
-				"CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
-				"CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
-			}
-		}
-	],
-	"buildPresets": [
-		{ "name": "debug", "configurePreset": "debug" },
-		{ "name": "release", "configurePreset": "release" },
-		{ "name": "asan", "configurePreset": "asan" }
-	],
-	"testPresets": [
-		{
-			"name": "test-common",
-			"hidden": true,
-			"output": { "outputOnFailure": true },
-			"execution": { "jobs": 8, "noTestsAction": "error" }
-		},
-		{ "name": "debug", "inherits": "test-common", "configurePreset": "debug" },
-		{ "name": "release", "inherits": "test-common", "configurePreset": "release" },
-		{ "name": "asan", "inherits": "test-common", "configurePreset": "asan" }
-	],
-	"workflowPresets": [
-		{
-			"name": "debug",
-			"displayName": "Configure + build + test (Debug)",
-			"steps": [
-				{ "type": "configure", "name": "debug" },
-				{ "type": "build", "name": "debug" },
-				{ "type": "test", "name": "debug" }
-			]
-		},
-		{
-			"name": "dev-release",
-			"steps": [
-				{ "type": "configure", "name": "release" },
-				{ "type": "build", "name": "release" },
-				{ "type": "test", "name": "release" }
-			]
-		},
-		{
-			"name": "asan",
-			"steps": [
-				{ "type": "configure", "name": "asan" },
-				{ "type": "build", "name": "asan" },
-				{ "type": "test", "name": "asan" }
-			]
-		}
-	]
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "debug",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "EMBER_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "release",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "Debug + ASan/UBSan + tests",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    },
+    {
+      "name": "tsan",
+      "displayName": "Debug + TSan + tests",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CMAKE_C_FLAGS": "-O1 -g -fsanitize=thread -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS": "-O1 -g -fsanitize=thread -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread",
+        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=thread"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "asan", "configurePreset": "asan" },
+    { "name": "tsan", "configurePreset": "tsan" }
+  ],
+  "testPresets": [
+    {
+      "name": "test-common",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 8, "noTestsAction": "error" }
+    },
+    { "name": "debug", "inherits": "test-common", "configurePreset": "debug" },
+    {
+      "name": "release",
+      "inherits": "test-common",
+      "configurePreset": "release"
+    },
+    { "name": "asan", "inherits": "test-common", "configurePreset": "asan" },
+    {
+      "name": "tsan",
+      "inherits": "test-common",
+      "configurePreset": "tsan",
+      "environment": {
+        "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1"
+      },
+      "execution": {
+        "jobs": 1,
+        "noTestsAction": "error"
+      }
+    }
+  ],
+  "workflowPresets": [
+    {
+      "name": "debug",
+      "displayName": "Configure + build + test (Debug)",
+      "steps": [
+        { "type": "configure", "name": "debug" },
+        { "type": "build", "name": "debug" },
+        { "type": "test", "name": "debug" }
+      ]
+    },
+    {
+      "name": "dev-release",
+      "steps": [
+        { "type": "configure", "name": "release" },
+        { "type": "build", "name": "release" },
+        { "type": "test", "name": "release" }
+      ]
+    },
+    {
+      "name": "asan",
+      "steps": [
+        { "type": "configure", "name": "asan" },
+        { "type": "build", "name": "asan" },
+        { "type": "test", "name": "asan" }
+      ]
+    },
+    {
+      "name": "tsan",
+      "displayName": "Configure + build + test (TSan)",
+      "steps": [
+        { "type": "configure", "name": "tsan" },
+        { "type": "build", "name": "tsan" },
+        { "type": "test", "name": "tsan" }
+      ]
+    }
+  ]
 }

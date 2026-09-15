@@ -1,10 +1,12 @@
-#include <chrono>
 #include <ember/app/runtime.h>
 #include <ember/core/logger.h>
 #include <ember/core/profile.h>
 #include <ember/gpu/device.h>
 #include <ember/memory/pmr/arena_resource.h>
 #include <ember/platform/platform.h>
+
+#include <chrono>
+#include <thread>
 
 namespace ember
 {
