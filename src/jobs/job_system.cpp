@@ -84,7 +84,7 @@ namespace ember::jobs
 	// wake-up bumps.
 	struct Worker
 	{
-		Scheduler* scheduler	 = nullptr;
+		Scheduler* scheduler = nullptr;
 		u32 index			 = 0;
 		FiberRecord* current = nullptr; // fiber running on this thread
 		FiberRecord* first	 = nullptr; // taken at construction, handed to the thread when it starts
@@ -293,7 +293,7 @@ namespace ember::jobs
 		{
 			Worker& worker = *std::construct_at(workers + index);
 
-			worker.scheduler					   = this;
+			worker.scheduler				   = this;
 			worker.index					   = index;
 			worker.thread_record.stack		   = JobStack::Large;
 			worker.thread_record.pinned_worker = index;
@@ -1056,7 +1056,7 @@ namespace ember::jobs
 		t_worker = nullptr;
 		fiber_release_thread(worker.thread_record.fiber);
 		worker.thread_record.fiber = nullptr;
-		s_scheduler->running		   = false;
+		s_scheduler->running	   = false;
 	}
 
 	void Scheduler::kick(Span<const JobDef> defs, JobHandle batch) noexcept

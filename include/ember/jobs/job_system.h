@@ -7,45 +7,53 @@
 #include <type_traits>
 
 /**
- * Fiber based job system, heavily inspired by Christian Gyrling's 2015 GDC talk:
+ * Fixed-capacity, fiber-based scheduler for short, CPU-bound engine work.
+ *
+ * Waiting yields the current fiber instead of blocking its worker, allowing the
+ * worker to execute independent jobs while a dependency completes. A suspended
+ * job may resume on a different worker, so  jobs must not retain worker-local
+ * state, thread-affine resources, or locks needed by the jobs they wait for.
+ *
+ * Each submitted batch receives one completion handle and one release obligation.
+ * Copying a handle does not create additional ownership. The generation embedded
+ * in the handle prevents a recycled counter slot from being mistaken for the
+ * original batch.
+ *
+ * Worker 0 remains on the thread that calls run_main() so platform and windowing
+ * work can retain the thread affinity required by their APIs.
+ *
+ * Queue, counter, and fiber capacities are fixed to avoid scheduler allocation
+ * during steady-state execution. Exhaustion is treated as a configuration error
+ * because silently dropping work would leave dependency counters permanently
+ * incomplete.
+ *
+ * Inspirted by Christian Gyrling's 2015 GDC presentation:
  * https://www.gdcvault.com/play/1022186/parallelizing-the-naughty-dog-engine
- *
- * Work is a function plus a data pointer, kicked in batches. A batch owns a counter from
- * the job system's pool: every finished job subtracts one, and a job that needs the results
- * waits for zero. The wait parks the job's fiber and the worker thread moves on to other
- * work, so a wait never blocks a core. Every worker runs the same loop inside a fiber:
- * resume fibers whose waits completed first, start new jobs by priority second, and switch
- * straight from fiber to fiber without a scheduler thread.
- *
- * A batch is fixed at the kick and completes once, when its last job returns. It is named
- * by a JobHandle, an index into the pool plus a generation, so a handle kept past the
- * batch's release reads as complete instead of touching whoever reuses the slot. Ownership
- * and waiting are separate: any job or thread may wait on any handle, and only the owner
- * releases it. JobBatch is the owner most code wants: it kicks on construction, waits on
- * destruction and releases, and it moves, so it can live in containers and cross frame
- * stages.
- *
- * run() turns the calling thread into worker 0 and runs main on the thread's own stack.
- * Waits inside main park that stack and always resume it on worker 0, which keeps main on
- * the thread that windowing and GPU APIs demand.
- *
- * Counters are the only synchronisation primitive. A lock may not be held across a wait,
- * because the fiber can resume on another thread. Anything read from thread local storage
- * before a wait is stale after it, worker_index() included; read it again.
- *
- * Every pool is fixed at construction and sized for the game: jobs queued per priority,
- * batches alive at once, fibers parked at once. Running out of any of them is fatal in
- * every build, like running out of memory, and a wait that finds no fiber logs every live
- * batch and the jobs waiting on it first. Only jobs that wait hold a fiber, so keep fan
- * out wide rather than deep.
  */
 namespace ember::jobs
 {
 	struct JobCounter;
+
+	/**
+	 * Type-erased entry point to keep queued jobs allocation-free.
+	 * data is borrowed and must remain valid until the invocation returns.
+	 */
 	using JobFn = void (*)(void* data);
 
+	/** Returned by worker_index() when the caller is not executing on a scheduler worker. */
 	inline constexpr u32 NO_WORKER = ~u32{0};
 
+	/**
+	 * Controls which queued work workers consider first.
+	 *
+	 * Priority affects scheduling latency, not execution resources or completion
+	 * guarantees. Workers always prefer higher-priority queues, so sustained high
+	 * traffic can delay Normal and Low work.
+	 *
+	 * Reserve High for short jobs that unblock the current frame or a critical
+	 * dependency chain. Use Low only for work whose delayed completion cannot
+	 * stall frame progress.
+	 */
 	enum class JobPriority : u8
 	{
 		High,
@@ -54,8 +62,13 @@ namespace ember::jobs
 		Count
 	};
 
-	// Stack the job runs on. Small covers ordinary jobs. Large exists for deep recursion or
-	// for handing off to a third party library we do not control, and there are few of them.
+	/**
+	 * Selects the stack budget reserved for a job.
+	 *
+	 * Large fibers are deliberately scarce because their reserved address space is
+	 * significantly more expensive. Use one only when the job's worst-case stack
+	 * demand cannot fit safely within the normal job budget.
+	 */
 	enum class JobStack : u8
 	{
 		Small,
@@ -65,36 +78,43 @@ namespace ember::jobs
 
 	struct JobDef
 	{
-		JobFn fn = nullptr;
-		void* data = nullptr;
-		const char* name = nullptr;
+		JobFn fn			 = nullptr;
+		void* data			 = nullptr;
+		const char* name	 = nullptr;
 		JobPriority priority = JobPriority::Normal;
-		JobStack stack = JobStack::Small;
+		JobStack stack		 = JobStack::Small;
 	};
 
-	/// Names a batch: a counter slot and the generation it was kicked with.
+	/**
+	 * Identifies one generation of a completion-counter  slot.
+	 *
+	 * A handle returned by submit() carries exactly one release obligation.
+	 * Additional copies are borrowed observers and must not outlive that release.
+	 */
 	using JobHandle = Handle<JobCounter, u32>;
 
 	struct JobSystemDef
 	{
-		u32 worker_count = 0;	  // 0 derives it from the hardware thread count
-		u32 reserved_threads = 1; // hardware threads left to the OS and engine threads when derived
-		u32 small_fibers = 128;
-		u32 large_fibers = 32;
-		size_t small_stack = 64_kb;
-		size_t large_stack = 512_kb;
-		u32 queue_capacity = 4096;	 // jobs queued per priority
-		u32 counter_capacity = 1024; // batches alive at once
-		u32 stall_report_ms = 1000;	 // a wait with no fiber and no progress for this long logs the state and fails
-		bool pin_workers = false;	 // lock each worker thread to a core, as on consoles
+		u32 worker_count	 = 0;	   // 0 derives it from the hardware thread count
+		u32 reserved_threads = 1;	   // hardware threads left to the OS and engine threads when derived
+		u32 small_fibers	 = 128;	   //
+		u32 large_fibers	 = 32;	   //
+		size_t small_stack	 = 64_kb;  //
+		size_t large_stack	 = 512_kb; //
+		u32 queue_capacity	 = 4096;   // jobs queued per priority
+		u32 counter_capacity = 1024;   // batches alive at once
+		u32 stall_report_ms	 = 1000;   // a wait with no fiber and no progress for this long logs the state and fails
+		bool pin_workers	 = false;  // lock each worker thread to a core, as on consoles
 	};
 
-	/// The half open index range one job of a parallel_for covers, and that job's index in the
-	/// split, for per job partial results.
+	/**
+	 * The half open index range one job of a parallel_for covers, and that job's
+	 * index in the split, for per job partial results.
+	 */
 	struct JobRange
 	{
 		u32 begin = 0;
-		u32 end = 0;
+		u32 end	  = 0;
 		u32 index = 0;
 
 		[[nodiscard]] u32 count() const noexcept { return end - begin; }
@@ -102,16 +122,16 @@ namespace ember::jobs
 
 	using RangeFn = void (*)(JobRange range, void* data);
 
-	/// Jobs one parallel_for may split into. The per job records live on the caller's stack.
+	/** Jobs one parallel_for may split into. The per job records live on the caller's stack. */
 	inline constexpr u32 MAX_RANGE_JOBS = 64;
 
 	struct ParallelForDef
 	{
-		u32 count = 0; // items, indexed [0, count)
-		u32 grain = 1; // items one job is worth; sets the job count
-		const char* name = nullptr;
+		u32 count			 = 0; // items, indexed [0, count)
+		u32 grain			 = 1; // items one job is worth; sets the job count
+		const char* name	 = nullptr;
 		JobPriority priority = JobPriority::Normal;
-		JobStack stack = JobStack::Small;
+		JobStack stack		 = JobStack::Small;
 	};
 
 	/// A snapshot for debug views. Every count is approximate while jobs run.
@@ -119,11 +139,11 @@ namespace ember::jobs
 	{
 		u32 free_small_fibers = 0;
 		u32 free_large_fibers = 0;
-		u32 parked_fibers = 0; // waiting on a counter
-		u32 ready_fibers = 0;  // woken, not yet picked up by a worker
-		u32 queued_jobs = 0;
-		u32 live_batches = 0;
-		u64 stalls = 0; // waits that found no fiber
+		u32 parked_fibers	  = 0; // waiting on a counter
+		u32 ready_fibers	  = 0; // woken, not yet picked up by a worker
+		u32 queued_jobs		  = 0;
+		u32 live_batches	  = 0;
+		u64 stalls			  = 0; // waits that found no fiber
 	};
 
 	/**
@@ -215,11 +235,11 @@ namespace ember::jobs
 	 */
 	template <class F> [[nodiscard]] JobDef make_job(F& fn, const char* name = nullptr) noexcept
 	{
-		static_assert(std::is_invocable_v<F&>, "job callables take no arguments");
+		static_assert(std::is_invocable_v<F&>, "job callables must be invocable and take no arguments");
 		static_assert(!std::is_const_v<F>, "the callable is the job's data and may be mutated");
 
 		return {
-			.fn = [](void* data) { (*static_cast<F*>(data))(); },
+			.fn	  = [](void* data) noexcept { (*static_cast<F*>(data))(); },
 			.data = &fn,
 			.name = name,
 		};
@@ -234,10 +254,10 @@ namespace ember::jobs
 	/// The callable form; fn(JobRange) is the job body and outlives the call by construction.
 	template <class F> void parallel_for(const ParallelForDef& def, F& fn) noexcept
 	{
-		static_assert(std::is_invocable_v<F&, JobRange>, "range callables take a JobRange");
+		static_assert(std::is_invocable_v<F&, JobRange>, "job range callables must be invocable and take a JobRange");
 		static_assert(!std::is_const_v<F>, "the callable is the job's data and may be mutated");
 
-		parallel_for(def, [](JobRange range, void* data) { (*static_cast<F*>(data))(range); }, &fn);
+		parallel_for(def, [](JobRange range, void* data) noexcept { (*static_cast<F*>(data))(range); }, &fn);
 	}
 
 	/**
@@ -260,14 +280,14 @@ namespace ember::jobs
 			if (this != &other)
 			{
 				reset();
-				m_handle = other.m_handle;
+				m_handle	   = other.m_handle;
 				other.m_handle = {};
 			}
 
 			return *this;
 		}
 
-		JobBatch(const JobBatch&) = delete;
+		JobBatch(const JobBatch&)			 = delete;
 		JobBatch& operator=(const JobBatch&) = delete;
 
 		[[nodiscard]] JobHandle handle() const noexcept { return m_handle; }
