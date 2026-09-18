@@ -43,6 +43,9 @@ namespace ember::jobs
 	/** Returned by worker_index() when the caller is not executing on a scheduler worker. */
 	inline constexpr u32 NO_WORKER = ~u32{0};
 
+	/** Returned by curretn_fiber() on a thread outside the scheduler. Fiber ids start at 1. */
+	inline constexpr u32 NO_FIBER = 0;
+
 	/**
 	 * Controls which queued work workers consider first.
 	 *
@@ -221,6 +224,19 @@ namespace ember::jobs
 
 	/// Worker the caller runs on, NO_WORKER on other threads. Stale after a wait.
 	[[nodiscard]] u32 worker_index() noexcept;
+
+	/**
+	 * Names the fiber the caller runs on. The id survives a wait and follows the job to whichever
+	 * worker resumes it, so a phase can record its owner by fiber. NO_FIBER on a thread outside
+	 * the scheduler.
+	 */
+	[[nodiscard]] u32 current_fiber() noexcept;
+
+	/**
+	 * True on the main fiber inside run_main, before and after any of its waits. False in every
+	 * job, on every other thread, and outside run_main.
+	 */
+	[[nodiscard]] bool is_main_context() noexcept;
 
 	[[nodiscard]] JobStats stats() noexcept;
 

@@ -31,6 +31,7 @@ namespace ember::jobs
 	// what the loop and the counters need to know.
 	struct FiberRecord
 	{
+		u32 id					 = NO_FIBER; // 1 based
 		Fiber* fiber			 = nullptr;
 		Worker* worker			 = nullptr; // written by whoever switches to the fiber, right before the switch
 		JobStack stack			 = JobStack::Small;

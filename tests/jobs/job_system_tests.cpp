@@ -82,6 +82,58 @@ namespace
 		release(batch);
 	}
 
+	struct IdentityState
+	{
+		u32 main_fiber	 = NO_FIBER;
+		bool main_before = false;
+		bool main_after	 = false;
+		std::atomic<u32> job_main_contexts{0}; // jobs that saw is_main_context() true
+		std::atomic<u32> null_ids{0};		   // jobs that saw NO_FIBER or the main id
+		std::atomic<u32> mismatched{0};		   // jobs whose id changed across a wait
+		std::atomic<u32> migrated{0};
+	};
+
+	void identity_job(void* data)
+	{
+		auto& state		 = *static_cast<IdentityState*>(data);
+		const u32 id	 = current_fiber();
+		const u32 worker = worker_index();
+
+		if (id == NO_FIBER || id == state.main_fiber)
+			state.null_ids.fetch_add(1, std::memory_order_relaxed);
+
+		if (is_main_context())
+			state.job_main_contexts.fetch_add(1, std::memory_order_relaxed);
+
+		JobBatch child({.fn = nop_job, .name = "spin"});
+		child.wait();
+
+		if (current_fiber() != id)
+			state.mismatched.fetch_add(1, std::memory_order_relaxed);
+
+		if (worker_index() != worker)
+			state.migrated.fetch_add(1, std::memory_order_relaxed);
+	}
+
+	void main_identity(void* data)
+	{
+		auto& state		  = *static_cast<IdentityState*>(data);
+		state.main_fiber  = current_fiber();
+		state.main_before = is_main_context();
+
+		for (u32 round = 0; round < 20; ++round)
+		{
+			JobDef decls[32];
+			for (JobDef& decl : decls)
+				decl = {.fn = identity_job, .data = data};
+
+			JobBatch batch(decls);
+			batch.wait();
+		}
+
+		state.main_after = is_main_context() && current_fiber() == state.main_fiber;
+	}
+
 	void main_wait_under_spin_lock(void*)
 	{
 		SpinMutex mutex;
@@ -1005,6 +1057,30 @@ TEST(JobSystemDeathTest, CounterPoolExhaustionIsFatal)
 			jobs::shutdown();
 		},
 		died_fatally, "counter pool exhausted");
+}
+
+TEST(JobSystem, FiberIdsFollowTheFiber)
+{
+	IdentityState state;
+
+	EXPECT_EQ(current_fiber(), NO_FIBER);
+	EXPECT_FALSE(is_main_context());
+
+	jobs::initialize({.worker_count = 4});
+	jobs::run_main(main_identity, &state);
+
+	EXPECT_NE(state.main_fiber, NO_FIBER);
+	EXPECT_TRUE(state.main_before);
+	EXPECT_TRUE(state.main_after);
+	EXPECT_EQ(state.job_main_contexts.load(), 0u);
+	EXPECT_EQ(state.null_ids.load(), 0u);
+	EXPECT_EQ(state.mismatched.load(), 0u);
+	EXPECT_GT(state.migrated.load(), 0u) << "no fiber migrated, the test proved nothing";
+
+	EXPECT_EQ(current_fiber(), NO_FIBER);
+	EXPECT_FALSE(is_main_context());
+
+	jobs::shutdown();
 }
 
 TEST(JobSystemDeathTest, WaitingWithASpinLockHeldFails)

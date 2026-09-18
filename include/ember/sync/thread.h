@@ -31,7 +31,7 @@ namespace ember
 	#define EMBER_LOCK_TAKEN() ::ember::note_lock_taken()
 	#define EMBER_LOCK_RELEASED() ::ember::note_lock_released()
 #else
-	#define EMBER_LOCK_TACKEN() ((void)0)
+	#define EMBER_LOCK_TAKEN() ((void)0)
 	#define EMBER_LOCK_RELEASED() ((void)0)
 #endif
 }

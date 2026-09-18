@@ -78,6 +78,18 @@ namespace ember::jobs
 		return worker != nullptr ? worker->index : NO_WORKER;
 	}
 
+	u32 current_fiber() noexcept
+	{
+		const Worker* worker = current_worker();
+		return worker != nullptr ? worker->current->id : NO_FIBER;
+	}
+
+	bool is_main_context() noexcept
+	{
+		const Worker* worker = current_worker();
+		return worker != nullptr && worker->index == 0 && worker->current == &worker->thread_record;
+	}
+
 	JobStats stats() noexcept { return scheduler().stats(); }
 
 	void dump_state() noexcept { scheduler().dump("job system state"); }

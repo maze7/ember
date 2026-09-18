@@ -155,6 +155,7 @@ namespace ember::jobs
 			worker.index					   = index;
 			worker.thread_record.stack		   = JobStack::Large;
 			worker.thread_record.pinned_worker = index;
+			worker.thread_record.id			   = fibers.count + index + 1;
 			worker.pinned_ready.init(queue_capacity(fibers.count + worker_count));
 		}
 
@@ -447,6 +448,7 @@ namespace ember::jobs
 			FiberRecord& record = *std::construct_at(records + index);
 			record.stack		= index < def.small_fibers ? JobStack::Small : JobStack::Large;
 			record.pool			= true;
+			record.id = index + 1;
 			std::snprintf(record.name, sizeof(record.name), "fiber %u", index);
 
 			const size_t stack_size = record.stack == JobStack::Small ? def.small_stack : def.large_stack;
