@@ -68,4 +68,21 @@ namespace ember
 		return false;
 #endif
 	}
+
+#if EMBER_LOCK_TRACKING
+	namespace
+	{
+		constinit thread_local u32 t_locks_held = 0;
+	}
+
+	void note_lock_taken() noexcept { ++t_locks_held; }
+
+	void note_lock_released() noexcept
+	{
+		EMBER_ASSERT(t_locks_held != 0 && "release of a spin lock this thread does not hold");
+		--t_locks_held;
+	}
+
+	u32 locks_held() noexcept { return t_locks_held; }
+#endif
 }

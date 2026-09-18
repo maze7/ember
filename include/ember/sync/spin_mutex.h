@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ember/core/common.h>
+#include <ember/sync/thread.h>
 
 #include <atomic>
 #include <thread>
@@ -36,7 +37,14 @@ namespace ember
 		SpinMutex(const SpinMutex&)			   = delete;
 		SpinMutex& operator=(const SpinMutex&) = delete;
 
-		[[nodiscard]] bool try_lock() noexcept { return !m_locked.test_and_set(std::memory_order_acquire); }
+		[[nodiscard]] bool try_lock() noexcept
+		{
+			if (m_locked.test_and_set(std::memory_order_acquire))
+				return false;
+
+			EMBER_LOCK_TAKEN();
+			return true;
+		}
 
 		void lock() noexcept
 		{
@@ -46,7 +54,11 @@ namespace ember
 				detail::cpu_relax(spin_count++);
 		}
 
-		void unlock() noexcept { m_locked.clear(std::memory_order_release); }
+		void unlock() noexcept
+		{
+			EMBER_LOCK_RELEASED();
+			m_locked.clear(std::memory_order_release);
+		}
 
 	private:
 		std::atomic_flag m_locked = ATOMIC_FLAG_INIT;

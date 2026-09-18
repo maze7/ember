@@ -31,6 +31,7 @@
 #endif
 
 #if !defined(NDEBUG) || defined(EMBER_PROFILE)
+	#define EMBER_LOCK_TRACKING 1
 	#define EMBER_ASSERT(expr)                                                                                         \
 		do                                                                                                             \
 		{                                                                                                              \
@@ -48,6 +49,7 @@
 			EMBER_DEBUG_BREAK();                                                                                       \
 		} while (0)
 #else
+	#define EMBER_LOCK_TRACKING 0
 	#define EMBER_ASSERT(expr) ((void)0)
 	#define EMBER_UNREACHABLE_ASSERT() ((void)0)
 #endif

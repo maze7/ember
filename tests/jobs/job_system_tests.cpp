@@ -1,5 +1,6 @@
 #include <ember/jobs/job_system.h>
 #include <ember/memory/memory.h>
+#include <ember/sync/spin_mutex.h>
 #include <ember/sync/thread.h>
 
 #include <gtest/gtest.h>
@@ -79,6 +80,15 @@ namespace
 		state.complete_after_kick = is_complete(batch);
 		wait(batch);
 		release(batch);
+	}
+
+	void main_wait_under_spin_lock(void*)
+	{
+		SpinMutex mutex;
+		std::lock_guard lock(mutex);
+
+		JobBatch child({.fn = nop_job});
+		child.wait();
 	}
 
 	void parent_job(void* data)
@@ -995,4 +1005,19 @@ TEST(JobSystemDeathTest, CounterPoolExhaustionIsFatal)
 			jobs::shutdown();
 		},
 		died_fatally, "counter pool exhausted");
+}
+
+TEST(JobSystemDeathTest, WaitingWithASpinLockHeldFails)
+{
+#if EMBER_LOCK_TRACKING
+	EXPECT_EXIT(
+		{
+			jobs::initialize({.worker_count = 2, .small_fibers = 4, .large_fibers = 1});
+			jobs::run_main(main_wait_under_spin_lock, nullptr);
+			jobs::shutdown();
+		},
+		died_fatally, "spin lock held");
+#else
+	GTEST_SKIP() << "lock tracking is off in this build";
+#endif
 }

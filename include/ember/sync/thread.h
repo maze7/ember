@@ -17,4 +17,21 @@ namespace ember
 
 	/// Pins the calling thread to one logical core. False where unsupported or refused.
 	bool set_thread_affinity(u32 core) noexcept;
+
+#if EMBER_LOCK_TRACKING
+	/**
+	 * Debug count of the spin locks the calling thread holds. A spin lock is taken and released
+	 * on one thread with no wait between, so this is useful to make sure a fiber doesn't own
+	 * any locks when switching.
+	 */
+	EMBER_NOINLINE void note_lock_taken() noexcept;
+	EMBER_NOINLINE void note_lock_released() noexcept;
+	EMBER_NOINLINE u32 locks_held() noexcept;
+
+	#define EMBER_LOCK_TAKEN() ::ember::note_lock_taken()
+	#define EMBER_LOCK_RELEASED() ::ember::note_lock_released()
+#else
+	#define EMBER_LOCK_TACKEN() ((void)0)
+	#define EMBER_LOCK_RELEASED() ((void)0)
+#endif
 }

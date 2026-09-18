@@ -787,6 +787,8 @@ namespace ember::jobs
 
 	void Scheduler::wait(JobHandle handle) noexcept
 	{
+		EMBER_ASSERT(locks_held() == 0 && "wait with a spin lock held");
+
 		JobCounter* counter = counters.resolve(handle);
 		if (counter == nullptr || counter->is_complete(handle.generation))
 			return;
