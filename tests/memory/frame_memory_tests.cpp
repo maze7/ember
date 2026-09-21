@@ -31,28 +31,18 @@ TEST(FrameMemoryJobs, WorkersAllocateInParallelWithoutOverlapping)
 	std::vector<Allocation> allocations(COUNT);
 
 	jobs::initialize({.worker_count = 4});
-	struct Args
+
+	auto body = [&](JobRange range)
 	{
-		BlockAllocator* frame;
-		std::vector<Allocation>* allocations;
-	} args{&frame, &allocations};
-
-	jobs::run_main(
-		[](void* data)
+		for (u32 i = range.begin; i < range.end; ++i)
 		{
-			auto* args = static_cast<Args*>(data);
-			auto body  = [args](JobRange range)
-			{
-				for (u32 i = range.begin; i < range.end; ++i)
-				{
-					const size_t size		= 16 + (i % 97) * 8;
-					(*args->allocations)[i] = {static_cast<u8*>(args->frame->allocate_fast(size)), size};
-				}
-			};
+			const size_t size = 16 + (i % 97) * 8;
+			allocations[i]	  = {static_cast<u8*>(frame.allocate_fast(size)), size};
+		}
+	};
 
-			parallel_for({.count = COUNT, .grain = 16, .name = "allocate"}, body);
-		},
-		&args);
+	parallel_for({.count = COUNT, .grain = 16, .name = "allocate"}, body);
+	jobs::shutdown();
 
 	std::sort(allocations.begin(), allocations.end(),
 			  [](const Allocation& a, const Allocation& b) { return a.begin < b.begin; });
@@ -79,45 +69,33 @@ TEST(FrameMemoryJobs, ContainersSurviveAFiberMigration)
 	jobs::initialize({.worker_count = 4});
 	std::atomic<u32> migrated = 0;
 
-	struct Args
+	auto body = [&](JobRange range)
 	{
-		BlockAllocator* frame;
-		std::atomic<u32>* migrated;
-	} args{&frame, &migrated};
+		std::pmr::vector<u32> values(&frame);
+		const u32 before = worker_index();
 
-	jobs::run_main(
-		[](void* data)
-		{
-			auto* args = static_cast<Args*>(data);
-			auto body  = [args](JobRange range)
-			{
-				std::pmr::vector<u32> values(args->frame);
-				const u32 before = worker_index();
+		for (u32 i = 0; i < 1000; ++i)
+			values.push_back(range.index);
 
-				for (u32 i = 0; i < 1000; ++i)
-					values.push_back(range.index);
+		// A child job forces this fiber to park; it can come back on another worker.
+		u32 counter = 0;
+		auto child	= [&counter] { ++counter; };
+		JobDef defs[]{make_job(child, "touch")};
+		Batch batch(defs);
+		batch.wait();
 
-				// A child job forces this fiber to park; it can come back on another worker.
-				u32 counter = 0;
-				auto child	= [&counter] { ++counter; };
-				JobDef defs[]{make_job(child, "touch")};
-				JobBatch batch{Span<const JobDef>(defs, 1)};
-				batch.wait();
+		for (u32 i = 0; i < 1000; ++i)
+			values.push_back(range.index);
 
-				for (u32 i = 0; i < 1000; ++i)
-					values.push_back(range.index);
+		ASSERT_EQ(values.size(), 2000u);
+		for (u32 value : values)
+			ASSERT_EQ(value, range.index);
 
-				ASSERT_EQ(values.size(), 2000u);
-				for (u32 value : values)
-					ASSERT_EQ(value, range.index);
+		if (worker_index() != before)
+			migrated.fetch_add(1, std::memory_order_relaxed);
+	};
 
-				if (worker_index() != before)
-					args->migrated->fetch_add(1, std::memory_order_relaxed);
-			};
-
-			parallel_for({.count = 64, .grain = 1, .name = "grow"}, body);
-		},
-		&args);
+	parallel_for({.count = 64, .grain = 1, .name = "grow"}, body);
 
 	EXPECT_GT(migrated.load(), 0u) << "no fiber migrated, the test proved nothing";
 

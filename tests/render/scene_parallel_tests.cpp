@@ -31,26 +31,14 @@ namespace
 		scene.clear_dirty();
 
 		ember::jobs::initialize({.worker_count = 4});
-		struct Args
+
+		auto body = [&](JobRange range)
 		{
-			RenderScene* scene;
-			std::vector<RenderObjectHandle>* handles;
-		} args{&scene, &handles};
+			for (u32 i = range.begin; i < range.end; ++i)
+				scene.set_transform(handles[i], glm::translate(glm::mat4(1.0f), glm::vec3(f32(i), 0.0f, 0.0f)));
+		};
 
-		ember::jobs::run_main(
-			[](void* data)
-			{
-				auto* args = static_cast<Args*>(data);
-				auto body  = [args](JobRange range)
-				{
-					for (u32 i = range.begin; i < range.end; ++i)
-						args->scene->set_transform((*args->handles)[i],
-												   glm::translate(glm::mat4(1.0f), glm::vec3(f32(i), 0.0f, 0.0f)));
-				};
-
-				parallel_for({.count = COUNT, .grain = 32, .name = "set_transform"}, body);
-			},
-			&args);
+		parallel_for({.count = COUNT, .grain = 32, .name = "set_transform"}, body);
 
 		// Every write landed in its own slot.
 		for (u32 i = 0; i < COUNT; ++i)

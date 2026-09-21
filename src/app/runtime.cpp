@@ -127,28 +127,7 @@ namespace ember
 		m_state			 = State::Running;
 		app.m_runtime	 = this;
 
-		struct MainArgs
-		{
-			Runtime* runtime;
-			App* app;
-		};
-
-		MainArgs main_args{
-			.runtime = this,
-			.app	 = &app,
-		};
-
-		// JobSystem::run() keeps main on worker 0 and does not return until
-		// frame_loop() finishes. Callback waits can yield to ready work without
-		// moving platform or GPU calls off the owner thread, and main_args remains
-		// alive for the scheduled entry point.
-		jobs::run_main(
-			[](void* data)
-			{
-				auto* main = static_cast<MainArgs*>(data);
-				main->runtime->frame_loop(*main->app);
-			},
-			&main_args);
+		frame_loop(app);
 
 		app.m_runtime = nullptr;
 		m_state		  = State::Ready;

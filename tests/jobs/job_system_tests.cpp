@@ -12,24 +12,16 @@
 #include <cstdio>
 #include <cstring>
 #include <thread>
-#include <utility>
 #include <vector>
 
 #if defined(EMBER_PLATFORM_LINUX)
 	#include <pthread.h>
 	#include <sched.h>
 	#include <unistd.h>
-#elif defined(EMBER_PLATFORM_WINDOWS)
-	#define WIN32_LEAN_AND_MEAN
-	#include <windows.h>
-#else
-	#include <pthread.h>
 #endif
 
-#if !defined(EMBER_PLATFORM_WINDOWS)
-	#include <csignal>
-	#include <sys/wait.h>
-#endif
+#include <csignal>
+#include <sys/wait.h>
 
 using namespace ember;
 using namespace ember::jobs;
@@ -40,14 +32,10 @@ namespace
 	{
 		std::atomic<u32> ran{0};
 		std::thread::id main_thread;
-		u32 worker_in_main		  = NO_WORKER;
-		bool complete_after_kick  = true;
-		u32 ran_after_two		  = 0;
-		bool large_ok			  = false;
-		bool small_ok			  = false;
-		bool stale_reads_complete = false;
-		bool slot_reused		  = false;
-		bool moved_from_is_null	  = false;
+		u32 worker_in_main		 = NO_WORKER;
+		bool complete_after_kick = true;
+		u32 ran_after_two		 = 0;
+		bool deep_ok			 = false;
 		std::atomic<u64> worker_mask{0};
 		std::atomic<u32> started{0};
 		std::atomic<bool> timed_out{false};
@@ -76,62 +64,10 @@ namespace
 		JobDef decls[16];
 		fill(decls, 16, &state);
 
-		JobHandle batch			  = submit(decls);
-		state.complete_after_kick = is_complete(batch);
-		wait(batch);
-		release(batch);
-	}
-
-	struct IdentityState
-	{
-		u32 main_fiber	 = NO_FIBER;
-		bool main_before = false;
-		bool main_after	 = false;
-		std::atomic<u32> job_main_contexts{0}; // jobs that saw is_main_context() true
-		std::atomic<u32> null_ids{0};		   // jobs that saw NO_FIBER or the main id
-		std::atomic<u32> mismatched{0};		   // jobs whose id changed across a wait
-		std::atomic<u32> migrated{0};
-	};
-
-	void identity_job(void* data)
-	{
-		auto& state		 = *static_cast<IdentityState*>(data);
-		const u32 id	 = current_fiber();
-		const u32 worker = worker_index();
-
-		if (id == NO_FIBER || id == state.main_fiber)
-			state.null_ids.fetch_add(1, std::memory_order_relaxed);
-
-		if (is_main_context())
-			state.job_main_contexts.fetch_add(1, std::memory_order_relaxed);
-
-		JobBatch child({.fn = nop_job, .name = "spin"});
-		child.wait();
-
-		if (current_fiber() != id)
-			state.mismatched.fetch_add(1, std::memory_order_relaxed);
-
-		if (worker_index() != worker)
-			state.migrated.fetch_add(1, std::memory_order_relaxed);
-	}
-
-	void main_identity(void* data)
-	{
-		auto& state		  = *static_cast<IdentityState*>(data);
-		state.main_fiber  = current_fiber();
-		state.main_before = is_main_context();
-
-		for (u32 round = 0; round < 20; ++round)
-		{
-			JobDef decls[32];
-			for (JobDef& decl : decls)
-				decl = {.fn = identity_job, .data = data};
-
-			JobBatch batch(decls);
-			batch.wait();
-		}
-
-		state.main_after = is_main_context() && current_fiber() == state.main_fiber;
+		Counter done;
+		kick(decls, &done);
+		state.complete_after_kick = done.is_complete();
+		jobs::wait(done);
 	}
 
 	void main_wait_under_spin_lock(void*)
@@ -139,7 +75,7 @@ namespace
 		SpinMutex mutex;
 		std::lock_guard lock(mutex);
 
-		JobBatch child({.fn = nop_job});
+		Batch child({.fn = nop_job});
 		child.wait();
 	}
 
@@ -148,7 +84,7 @@ namespace
 		JobDef children[4];
 		fill(children, 4, data);
 
-		JobBatch batch(children);
+		Batch batch(children);
 		batch.wait();
 		count_job(data);
 	}
@@ -159,34 +95,22 @@ namespace
 		for (JobDef& parent : parents)
 			parent = {.fn = parent_job, .data = data};
 
-		JobBatch batch(parents);
+		Batch batch(parents);
 		batch.wait();
 	}
 
-	void large_job(void* data)
+	// A frame most of the way to the default stack size.
+	void deep_job(void* data)
 	{
-		volatile u8 buffer[300 * 1024];
-		buffer[0]							= 1;
-		buffer[sizeof(buffer) - 1]			= 2;
-		static_cast<State*>(data)->large_ok = buffer[0] == 1 && buffer[sizeof(buffer) - 1] == 2;
+		volatile u8 buffer[200 * 1024];
+		buffer[0]						   = 1;
+		buffer[sizeof(buffer) - 1]		   = 2;
+		static_cast<State*>(data)->deep_ok = buffer[0] == 1 && buffer[sizeof(buffer) - 1] == 2;
 	}
 
-	void small_job(void* data)
+	void main_deep(void* data)
 	{
-		volatile u8 buffer[40 * 1024];
-		buffer[0]							= 1;
-		buffer[sizeof(buffer) - 1]			= 2;
-		static_cast<State*>(data)->small_ok = buffer[0] == 1 && buffer[sizeof(buffer) - 1] == 2;
-	}
-
-	void main_stack_classes(void* data)
-	{
-		const JobDef decls[] = {
-			{.fn = large_job, .data = data, .stack = JobStack::Large},
-			{.fn = small_job, .data = data},
-		};
-
-		JobBatch batch(decls);
+		Batch batch({.fn = deep_job, .data = data});
 		batch.wait();
 	}
 
@@ -194,84 +118,63 @@ namespace
 	{
 		for (u32 round = 0; round < 200; ++round)
 		{
-			JobBatch batch({.fn = parent_job, .data = data});
+			Batch batch({.fn = parent_job, .data = data});
 			batch.wait();
 		}
 	}
 
-	void main_stale_handles(void* data)
+	// Two kicks share one counter and one wait, then a fire-and-forget kick runs the next
+	// time anything waits.
+	void main_shared_counter(void* data)
 	{
 		auto& state = *static_cast<State*>(data);
 
-		JobDef decls[2];
-		fill(decls, 2, &state);
+		JobDef decls[4];
+		fill(decls, 4, &state);
 
-		JobHandle first = submit(decls);
-		wait(first);
-		release(first);
-		state.stale_reads_complete = is_complete(first);
-		wait(first); // returns at once
+		Counter done;
+		kick(decls, &done);
+		kick(decls, &done);
+		jobs::wait(done);
+		state.ran_after_two = state.ran.load();
 
-		// The pool has two slots: the next batch takes the other one, the one after reuses
-		// the first slot with a new generation, so the old handle still reads as complete.
-		JobHandle second  = submit(decls);
-		JobHandle third	  = submit(decls);
-		state.slot_reused = third.index == first.index && third != first && is_complete(first) && !is_complete(third);
-		wait(second);
-		wait(third);
-		release(second);
-		release(third);
-	}
-
-	void main_detached(void* data)
-	{
-		auto& state = *static_cast<State*>(data);
-
-		JobDef decls[3];
-		fill(decls, 3, &state);
-
-		// A detached batch keeps its slot until its last job finishes. While main waits on
-		// the second batch both run, and the slot comes back for the third.
-		JobBatch detached(decls);
-		const JobHandle detached_handle = detached.handle();
-		detached.detach();
-
-		{
-			JobBatch second(decls);
-			second.wait();
-		}
-
-		{
-			JobBatch third(decls);
-			state.slot_reused = third.handle().index == detached_handle.index && is_complete(detached_handle);
-			third.wait();
-		}
-
-		// A detached kick runs the next time anything waits.
-		submit_detached({.fn = count_job, .data = data});
-		JobBatch flush({.fn = count_job, .data = data});
+		kick({.fn = count_job, .data = data});
+		Batch flush({.fn = count_job, .data = data});
 		flush.wait();
 	}
 
-	void main_moves(void* data)
+	struct Grow
+	{
+		Counter* counter;
+		State* state;
+	};
+
+	// Kicks children onto the counter its parent waits on and returns without waiting.
+	void grow_job(void* data)
+	{
+		auto& grow = *static_cast<Grow*>(data);
+
+		JobDef children[4];
+		fill(children, 4, grow.state);
+		kick(children, grow.counter);
+
+		count_job(grow.state);
+	}
+
+	void main_grow(void* data)
 	{
 		auto& state = *static_cast<State*>(data);
 
-		JobDef decls[2];
-		fill(decls, 2, &state);
+		Counter done;
+		Grow grow{&done, &state};
 
-		JobBatch original(decls);
-		JobBatch moved			 = std::move(original);
-		state.moved_from_is_null = original.handle().is_null();
+		JobDef decls[4];
+		for (JobDef& decl : decls)
+			decl = {.fn = grow_job, .data = &grow};
 
-		std::vector<JobBatch> batches;
-		for (u32 i = 0; i < 4; ++i)
-			batches.emplace_back(decls);
-
-		batches.push_back(std::move(moved));
-
-		for (JobBatch& batch : batches)
-			batch.wait();
+		kick(decls, &done);
+		jobs::wait(done);
+		state.ran_after_two = state.ran.load(); // 4 parents and 16 children, or the wait returned early
 	}
 
 	// Every job waits for all of them to have started, so the batch only completes if they
@@ -304,7 +207,7 @@ namespace
 		for (JobDef& decl : decls)
 			decl = {.fn = barrier_job, .data = data};
 
-		JobBatch batch(decls);
+		Batch batch(decls);
 		batch.wait();
 	}
 
@@ -325,12 +228,10 @@ namespace
 		for (JobDef& decl : decls)
 			decl = {.fn = worker_mask_job, .data = data};
 
-		JobBatch batch(decls);
+		Batch batch(decls);
 		batch.wait();
 	}
 
-	// Every job burns a little time first, so the batch lasts long enough for the sleeping
-	// workers to wake and take their share.
 	void inspect_thread_job(void* data)
 	{
 		auto& state = *static_cast<State*>(data);
@@ -367,7 +268,7 @@ namespace
 		for (JobDef& decl : decls)
 			decl = {.fn = inspect_thread_job, .data = data};
 
-		JobBatch batch(decls);
+		Batch batch(decls);
 		batch.wait();
 	}
 
@@ -379,7 +280,7 @@ namespace
 			for (JobDef& parent : parents)
 				parent = {.fn = parent_job, .data = data};
 
-			JobBatch batch(parents);
+			Batch batch(parents);
 			batch.wait();
 		}
 	}
@@ -415,8 +316,6 @@ namespace
 		parallel_for({.count = static_cast<u32>(state.hits.size()), .grain = state.grain, .name = "visit"}, visit);
 	}
 
-	// Every outer job waits on its own inner split, so parked outer fibers and running inner
-	// jobs share the pool.
 	void main_parallel_for_nested(void* data)
 	{
 		auto& state = *static_cast<RangeState*>(data);
@@ -451,24 +350,13 @@ namespace
 
 		const JobDef decls[] = {make_job(a, "a"), make_job(b, "b")};
 
-		JobBatch batch(decls);
+		Batch batch(decls);
 		batch.wait();
 
 		state.ran_after_two = first + second;
 	}
 
-	[[nodiscard]] u64 os_thread_id()
-	{
-#if defined(EMBER_PLATFORM_LINUX)
-		return static_cast<u64>(gettid());
-#elif defined(EMBER_PLATFORM_WINDOWS)
-		return GetCurrentThreadId();
-#else
-		u64 id = 0;
-		pthread_threadid_np(nullptr, &id);
-		return id;
-#endif
-	}
+	[[nodiscard]] u64 os_thread_id() { return static_cast<u64>(gettid()); }
 
 	void spin_job(void*)
 	{
@@ -484,9 +372,6 @@ namespace
 		std::atomic<u32> mismatched{0};
 	};
 
-	// A parked fiber resumes on whichever worker pops it. Everything read from thread local
-	// storage before the wait must be read again after it, and the engine's own thread id
-	// must follow the thread, whatever the optimizer did to the surrounding code.
 	void migrating_job(void* data)
 	{
 		auto& state = *static_cast<MigrationState*>(data);
@@ -495,7 +380,7 @@ namespace
 		const u32 id_before = current_thread_id();
 		void* block			= memory::heap(MemoryTag::Engine).allocate(64, 16);
 
-		JobBatch child({.fn = spin_job, .name = "spin"});
+		Batch child({.fn = spin_job, .name = "spin"});
 		child.wait();
 
 		const u64 os_after = os_thread_id();
@@ -517,7 +402,7 @@ namespace
 			for (JobDef& decl : decls)
 				decl = {.fn = migrating_job, .data = data, .name = "migrating"};
 
-			JobBatch batch(decls);
+			Batch batch(decls);
 			batch.wait();
 		}
 	}
@@ -536,14 +421,12 @@ namespace
 		for (JobDef& child : children)
 			child = {.fn = stall_child, .data = data, .name = "child"};
 
-		JobBatch batch(children);
+		Batch batch(children);
 		batch.wait();
 
 		static_cast<StallState*>(data)->ran.fetch_add(1, std::memory_order_relaxed);
 	}
 
-	// Keeps one worker busy until three waits have stalled, so the stall path runs while a
-	// worker is left over to finish the children that hand the fibers back.
 	void holder_job(void* data)
 	{
 		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
@@ -565,7 +448,7 @@ namespace
 		for (u32 i = 1; i < 8; ++i)
 			decls[i] = {.fn = stall_parent, .data = data, .name = "parent"};
 
-		JobBatch batch(decls);
+		Batch batch(decls);
 		batch.wait();
 
 		state.stats = stats();
@@ -576,30 +459,30 @@ namespace
 		JobDef children[4];
 		fill(children, 4, data);
 
-		submit_detached(children);
+		kick(children);
 		count_job(data);
 	}
 
 	struct CycleState
 	{
-		std::atomic<u64> parents{0}; // the parents' handle as bits, once main knows it
+		std::atomic<Counter*> parents{nullptr};
 	};
 
 	void cycle_child(void* data)
 	{
 		auto& state = *static_cast<CycleState*>(data);
 
-		u64 bits = 0;
-		while ((bits = state.parents.load(std::memory_order_acquire)) == 0)
+		Counter* parents = nullptr;
+		while ((parents = state.parents.load(std::memory_order_acquire)) == nullptr)
 			std::this_thread::yield();
 
-		wait(JobHandle::from_bits(bits));
+		jobs::wait(*parents);
 	}
 
 	// Each parent waits for a child that waits for every parent, so nothing can finish.
 	void cycle_parent(void* data)
 	{
-		JobBatch child({.fn = cycle_child, .data = data, .name = "cycle child"});
+		Batch child({.fn = cycle_child, .data = data, .name = "cycle child"});
 		child.wait();
 	}
 
@@ -611,22 +494,105 @@ namespace
 		for (JobDef& parent : parents)
 			parent = {.fn = cycle_parent, .data = data, .name = "cycle parent"};
 
-		JobBatch batch(parents);
-		state.parents.store(batch.handle().to_bits(), std::memory_order_release);
+		Batch batch(parents);
+		state.parents.store(&batch.counter(), std::memory_order_release);
 		batch.wait();
 	}
 
-	// A fatal failure traps: SIGILL under GCC, SIGTRAP under Clang, a breakpoint exception
-	// on Windows, and abort if the trap ever returns.
 	bool died_fatally(int status)
 	{
-#if defined(EMBER_PLATFORM_WINDOWS)
-		const u32 code = static_cast<u32>(status);
-		return code == 0x80000003u || code == 3u;
-#else
 		return WIFSIGNALED(status) &&
 			   (WTERMSIG(status) == SIGILL || WTERMSIG(status) == SIGTRAP || WTERMSIG(status) == SIGABRT);
-#endif
+	}
+
+	struct SignalState
+	{
+		std::atomic<bool> signalled{false};
+		bool woke_after_signal = false;
+		u32 worker_before	   = NO_WORKER;
+		u32 worker_after	   = NO_WORKER;
+	};
+
+	// An outside thread stands in for the I/O thread: it finishes on its own clock and signals.
+	void main_manual_counter(void* data)
+	{
+		auto& state = *static_cast<SignalState*>(data);
+
+		Counter io{1};
+
+		std::thread thread(
+			[&]
+			{
+				std::this_thread::sleep_for(std::chrono::milliseconds(20));
+				state.signalled.store(true, std::memory_order_release);
+				jobs::signal(io);
+			});
+
+		state.worker_before = worker_index();
+		jobs::wait(io); // parks main; worker 0 is free for other work until the signal
+		state.woke_after_signal = state.signalled.load(std::memory_order_acquire);
+		state.worker_after		= worker_index();
+
+		thread.join();
+	}
+
+	struct FanInState
+	{
+		std::atomic<u32> signals{0};
+		std::atomic<u32> woken{0};
+		std::atomic<u32> early{0};
+	};
+
+	struct FanInJob
+	{
+		FanInState* state;
+		Counter* counter;
+	};
+
+	void fan_in_waiter(void* data)
+	{
+		const auto& job = *static_cast<const FanInJob*>(data);
+		jobs::wait(*job.counter);
+
+		if (job.state->signals.load(std::memory_order_acquire) != 3)
+			job.state->early.fetch_add(1, std::memory_order_relaxed);
+
+		job.state->woken.fetch_add(1, std::memory_order_relaxed);
+	}
+
+	// Eight fibers park on one counter that three outside threads bring down together.
+	void main_fan_in(void* data)
+	{
+		auto& state = *static_cast<FanInState*>(data);
+
+		Counter counter{3};
+
+		FanInJob params[8];
+		JobDef decls[8];
+		for (u32 i = 0; i < 8; ++i)
+		{
+			params[i] = {&state, &counter};
+			decls[i]  = {.fn = fan_in_waiter, .data = &params[i], .name = "waiter"};
+		}
+
+		Batch waiters(decls);
+
+		std::thread signallers[3];
+		for (std::thread& thread : signallers)
+		{
+			thread = std::thread(
+				[&]
+				{
+					std::this_thread::sleep_for(std::chrono::milliseconds(10));
+					state.signals.fetch_add(1, std::memory_order_acq_rel);
+					jobs::signal(counter);
+				});
+		}
+
+		waiters.wait();
+
+		for (std::thread& thread : signallers)
+			thread.join();
 	}
 
 	struct Bench
@@ -644,7 +610,7 @@ namespace
 			const auto start		 = std::chrono::steady_clock::now();
 			for (u32 i = 0; i < iterations; ++i)
 			{
-				JobBatch batch({.fn = nop_job});
+				Batch batch({.fn = nop_job});
 				batch.wait();
 			}
 			bench.round_trip_ns =
@@ -660,7 +626,7 @@ namespace
 			const auto start = std::chrono::steady_clock::now();
 			for (u32 i = 0; i < batches; ++i)
 			{
-				JobBatch batch(decls);
+				Batch batch(decls);
 				batch.wait();
 			}
 			bench.per_job_ns = std::chrono::duration<f64, std::nano>(std::chrono::steady_clock::now() - start).count() /
@@ -672,37 +638,41 @@ namespace
 TEST(JobSystem, KickAndWaitRunsEveryJob)
 {
 	State state;
-	jobs::initialize({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
-	jobs::run_main(main_kick_and_wait, &state);
+	jobs::initialize({.worker_count = 4, .fiber_count = 16});
+	main_kick_and_wait(&state);
 
 	EXPECT_EQ(state.ran.load(), 16u);
 	EXPECT_EQ(state.main_thread, std::this_thread::get_id());
 	EXPECT_EQ(state.worker_in_main, 0u);
-	EXPECT_EQ(worker_index(), NO_WORKER);
+	EXPECT_EQ(worker_index(), 0u); // this thread is worker 0 until shutdown
 	EXPECT_EQ(worker_count(), 4u);
 
+	u32 elsewhere = 0;
+	std::thread([&] { elsewhere = worker_index(); }).join();
+	EXPECT_EQ(elsewhere, NO_WORKER);
+
 	jobs::shutdown();
+	EXPECT_EQ(worker_index(), NO_WORKER);
 }
 
 TEST(JobSystem, NestedKicksAndWaits)
 {
 	State state;
-	jobs::initialize({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
-	jobs::run_main(main_nested, &state);
+	jobs::initialize({.worker_count = 4, .fiber_count = 16});
+	main_nested(&state);
 
 	EXPECT_EQ(state.ran.load(), 20u);
 
 	jobs::shutdown();
 }
 
-TEST(JobSystem, LargeJobsRunOnLargeStacks)
+TEST(JobSystem, DeepFramesFitTheStack)
 {
 	State state;
-	jobs::initialize({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
-	jobs::run_main(main_stack_classes, &state);
+	jobs::initialize({.worker_count = 2, .fiber_count = 8});
+	main_deep(&state);
 
-	EXPECT_TRUE(state.large_ok);
-	EXPECT_TRUE(state.small_ok);
+	EXPECT_TRUE(state.deep_ok);
 
 	jobs::shutdown();
 }
@@ -710,58 +680,45 @@ TEST(JobSystem, LargeJobsRunOnLargeStacks)
 TEST(JobSystem, FibersAreRecycled)
 {
 	State state;
-	jobs::initialize({.worker_count = 4, .small_fibers = 8, .large_fibers = 2});
-	jobs::run_main(main_recycle, &state);
+	jobs::initialize({.worker_count = 4, .fiber_count = 8});
+	main_recycle(&state);
 
 	EXPECT_EQ(state.ran.load(), 200u * 5u);
 
 	jobs::shutdown();
 }
 
-TEST(JobSystem, RunsTwice)
+// Main is whatever runs between initialize and shutdown, so it can loop as often as it likes.
+TEST(JobSystem, MainRunsAgainAndAgain)
 {
 	State state;
-	jobs::initialize({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
-	jobs::run_main(main_nested, &state);
-	jobs::run_main(main_nested, &state);
+	jobs::initialize({.worker_count = 4, .fiber_count = 16});
+	main_nested(&state);
+	main_nested(&state);
 
 	EXPECT_EQ(state.ran.load(), 40u);
 	jobs::shutdown();
 }
 
-TEST(JobSystem, StaleHandlesReadComplete)
+TEST(JobSystem, KicksShareACounter)
 {
 	State state;
-	jobs::initialize({.worker_count = 1, .small_fibers = 4, .large_fibers = 2, .counter_capacity = 2});
-	jobs::run_main(main_stale_handles, &state);
+	jobs::initialize({.worker_count = 2, .fiber_count = 8});
+	main_shared_counter(&state);
 
-	EXPECT_TRUE(state.stale_reads_complete);
-	EXPECT_TRUE(state.slot_reused);
-	EXPECT_EQ(state.ran.load(), 6u);
-
-	jobs::shutdown();
-}
-
-TEST(JobSystem, DetachedBatchesFreeThemselves)
-{
-	State state;
-	jobs::initialize({.worker_count = 1, .small_fibers = 4, .large_fibers = 2, .counter_capacity = 2});
-	jobs::run_main(main_detached, &state);
-
-	EXPECT_TRUE(state.slot_reused);
-	EXPECT_EQ(state.ran.load(), 11u);
-
-	jobs::shutdown();
-}
-
-TEST(JobSystem, BatchesMove)
-{
-	State state;
-	jobs::initialize({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
-	jobs::run_main(main_moves, &state);
-
-	EXPECT_TRUE(state.moved_from_is_null);
+	EXPECT_EQ(state.ran_after_two, 8u);
 	EXPECT_EQ(state.ran.load(), 10u);
+
+	jobs::shutdown();
+}
+
+TEST(JobSystem, JobsGrowTheirParentsCounter)
+{
+	State state;
+	jobs::initialize({.worker_count = 4, .fiber_count = 16});
+	main_grow(&state);
+
+	EXPECT_EQ(state.ran_after_two, 20u);
 
 	jobs::shutdown();
 }
@@ -769,8 +726,8 @@ TEST(JobSystem, BatchesMove)
 TEST(JobSystem, JobsRunInParallel)
 {
 	State state;
-	jobs::initialize({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
-	jobs::run_main(main_parallel, &state);
+	jobs::initialize({.worker_count = 4, .fiber_count = 16});
+	main_parallel(&state);
 
 	EXPECT_FALSE(state.timed_out.load());
 	EXPECT_EQ(state.started.load(), 4u);
@@ -781,8 +738,8 @@ TEST(JobSystem, JobsRunInParallel)
 TEST(JobSystem, JobsSpreadAcrossWorkers)
 {
 	State state;
-	jobs::initialize({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
-	jobs::run_main(main_spread, &state);
+	jobs::initialize({.worker_count = 4, .fiber_count = 16});
+	main_spread(&state);
 
 	EXPECT_GE(std::popcount(state.worker_mask.load()), 2);
 	EXPECT_EQ(state.worker_mask.load() & ~u64{0xF}, 0u);
@@ -790,10 +747,10 @@ TEST(JobSystem, JobsSpreadAcrossWorkers)
 	jobs::shutdown();
 }
 
-TEST(JobSystem, KicksFromAnotherThreadWithoutRun)
+TEST(JobSystem, KicksFromAnotherThread)
 {
 	State state;
-	jobs::initialize({.worker_count = 3, .small_fibers = 16, .large_fibers = 2});
+	jobs::initialize({.worker_count = 3, .fiber_count = 16});
 
 	std::thread producer(
 		[&]
@@ -803,12 +760,11 @@ TEST(JobSystem, KicksFromAnotherThreadWithoutRun)
 				JobDef decls[8];
 				fill(decls, 8, &state);
 
-				const JobHandle batch = submit(decls);
+				Counter done;
+				kick(decls, &done);
 
-				while (!is_complete(batch))
+				while (!done.is_complete())
 					std::this_thread::yield();
-
-				release(batch);
 			}
 		});
 
@@ -818,10 +774,37 @@ TEST(JobSystem, KicksFromAnotherThreadWithoutRun)
 	jobs::shutdown();
 }
 
+// The counter is a local of the loop body, destroyed the moment the poll sees zero, so any
+// touch by the last completion after its unlock would land on the next round's counter.
+TEST(JobSystem, OutsideThreadsDestroyCountersAsSoonAsTheyComplete)
+{
+	State state;
+	jobs::initialize({.worker_count = 4, .fiber_count = 16});
+
+	std::thread producer(
+		[&]
+		{
+			for (u32 round = 0; round < 5000; ++round)
+			{
+				Counter done;
+				kick({.fn = count_job, .data = &state}, &done);
+
+				while (!done.is_complete())
+				{
+				}
+			}
+		});
+
+	producer.join();
+	EXPECT_EQ(state.ran.load(), 5000u);
+
+	jobs::shutdown();
+}
+
 TEST(JobSystem, WaitsFromAThreadOutsideTheSystem)
 {
 	State state;
-	jobs::initialize({.worker_count = 3, .small_fibers = 16, .large_fibers = 2});
+	jobs::initialize({.worker_count = 3, .fiber_count = 16});
 
 	std::thread outsider(
 		[&]
@@ -829,12 +812,12 @@ TEST(JobSystem, WaitsFromAThreadOutsideTheSystem)
 			JobDef decls[8];
 			fill(decls, 8, &state);
 
-			JobBatch batch(decls);
-			batch.wait(); // blocks this thread, there is no fiber to park
+			Batch batch(decls);
+			batch.wait(); // polls, there is no fiber to park
 
-			const JobHandle handle = submit(decls);
-			wait(handle);
-			release(handle);
+			Counter done;
+			kick(decls, &done);
+			jobs::wait(done);
 		});
 
 	outsider.join();
@@ -846,8 +829,8 @@ TEST(JobSystem, WaitsFromAThreadOutsideTheSystem)
 TEST(JobSystem, WorkersAreNamedAndPinned)
 {
 	State state;
-	jobs::initialize({.worker_count = 4, .small_fibers = 16, .large_fibers = 2, .pin_workers = true});
-	jobs::run_main(main_inspect_threads, &state);
+	jobs::initialize({.worker_count = 4, .fiber_count = 16, .pin_workers = true});
+	main_inspect_threads(&state);
 
 	EXPECT_GT(state.on_workers.load(), 0u);
 	EXPECT_EQ(state.named_ok.load(), state.on_workers.load());
@@ -859,8 +842,8 @@ TEST(JobSystem, WorkersAreNamedAndPinned)
 TEST(JobSystem, StressNestedBatches)
 {
 	State state;
-	jobs::initialize({.worker_count = 8, .small_fibers = 48, .large_fibers = 4});
-	jobs::run_main(main_stress, &state);
+	jobs::initialize({.worker_count = 8, .fiber_count = 52});
+	main_stress(&state);
 
 	EXPECT_EQ(state.ran.load(), 50u * 16u * 5u);
 
@@ -870,8 +853,8 @@ TEST(JobSystem, StressNestedBatches)
 TEST(JobSystem, Bench)
 {
 	Bench bench;
-	jobs::initialize({.worker_count = 4, .small_fibers = 16, .large_fibers = 2});
-	jobs::run_main(main_bench, &bench);
+	jobs::initialize({.worker_count = 4, .fiber_count = 16});
+	main_bench(&bench);
 	std::printf("[          ] %.1f ns per one-job kick+wait, %.1f ns per job in 64-job batches, 4 workers\n",
 				bench.round_trip_ns, bench.per_job_ns);
 
@@ -885,10 +868,10 @@ TEST(JobSystem, ParallelForVisitsEveryIndexOnce)
 	state.grain = 256;
 
 	jobs::initialize({.worker_count = 4});
-	jobs::run_main(main_parallel_for, &state);
+	main_parallel_for(&state);
 
 	EXPECT_EQ(state.visited.load(), 100000u);
-	EXPECT_EQ(state.jobs.load(), MAX_RANGE_JOBS); // 391 grains capped at the job limit
+	EXPECT_EQ(state.jobs.load(), MAX_RANGE_JOBS);
 	EXPECT_EQ(state.bad_index.load(), 0u);
 
 	u32 total = 0;
@@ -909,7 +892,7 @@ TEST(JobSystem, ParallelForSplitsByGrain)
 	state.grain = 4;
 
 	jobs::initialize({.worker_count = 4});
-	jobs::run_main(main_parallel_for, &state);
+	main_parallel_for(&state);
 
 	EXPECT_EQ(state.jobs.load(), 3u);
 	EXPECT_EQ(state.sizes[0], 4u);
@@ -925,7 +908,7 @@ TEST(JobSystem, ParallelForOverNothingKicksNothing)
 	RangeState state;
 
 	jobs::initialize({.worker_count = 2});
-	jobs::run_main(main_parallel_for, &state);
+	main_parallel_for(&state);
 
 	EXPECT_EQ(state.jobs.load(), 0u);
 
@@ -938,7 +921,7 @@ TEST(JobSystem, ParallelForNests)
 	state.hits.resize(8000, 0);
 
 	jobs::initialize({.worker_count = 4});
-	jobs::run_main(main_parallel_for_nested, &state);
+	main_parallel_for_nested(&state);
 
 	EXPECT_EQ(state.visited.load(), 8000u);
 	for (const u8 hit : state.hits)
@@ -951,8 +934,8 @@ TEST(JobSystem, MakeJobRunsACallable)
 {
 	State state;
 
-	jobs::initialize({.worker_count = 2, .small_fibers = 8, .large_fibers = 2});
-	jobs::run_main(main_make_job, &state);
+	jobs::initialize({.worker_count = 2, .fiber_count = 8});
+	main_make_job(&state);
 
 	EXPECT_EQ(state.ran_after_two, 3u);
 
@@ -964,7 +947,7 @@ TEST(JobSystem, ThreadLocalsFollowTheFiber)
 	MigrationState state;
 
 	jobs::initialize({.worker_count = 4});
-	jobs::run_main(main_migration, &state);
+	main_migration(&state);
 
 	EXPECT_EQ(state.mismatched.load(), 0u);
 	EXPECT_GT(state.migrated.load(), 0u);
@@ -985,14 +968,13 @@ TEST(JobSystem, StarvedWaitsResumeWhenFibersReturn)
 {
 	StallState state;
 
-	jobs::initialize({.worker_count = 4, .small_fibers = 6, .large_fibers = 2});
-	jobs::run_main(main_stall, &state);
+	jobs::initialize({.worker_count = 4, .fiber_count = 8});
+	main_stall(&state);
 
 	EXPECT_EQ(state.ran.load(), 1u + 7u + 28u);
 	EXPECT_GE(state.stats.stalls, 3u);
 	EXPECT_EQ(state.stats.parked_fibers, 0u);
 	EXPECT_EQ(state.stats.queued_jobs, 0u);
-	EXPECT_EQ(state.stats.live_batches, 1u); // main's batch, released after the snapshot
 
 	jobs::shutdown();
 }
@@ -1002,17 +984,44 @@ TEST(JobSystem, DetachedJobsFinishBeforeShutdown)
 	State state;
 
 	{
-		jobs::initialize({.worker_count = 3, .small_fibers = 8, .large_fibers = 2});
+		jobs::initialize({.worker_count = 3, .fiber_count = 8});
 
 		JobDef parents[8];
 		for (JobDef& parent : parents)
 			parent = {.fn = detached_parent, .data = &state};
 
-		submit_detached(parents);
+		kick(parents);
 		jobs::shutdown();
 	}
 
 	EXPECT_EQ(state.ran.load(), 8u + 32u);
+}
+
+TEST(JobSystem, ManualCountersWakeParkedFibers)
+{
+	SignalState state;
+
+	jobs::initialize({.worker_count = 4});
+	main_manual_counter(&state);
+
+	EXPECT_TRUE(state.woke_after_signal);
+	EXPECT_EQ(state.worker_before, 0u);
+	EXPECT_EQ(state.worker_after, 0u);
+
+	jobs::shutdown();
+}
+
+TEST(JobSystem, ManualCountersFanIn)
+{
+	FanInState state;
+
+	jobs::initialize({.worker_count = 4});
+	main_fan_in(&state);
+
+	EXPECT_EQ(state.woken.load(), 8u);
+	EXPECT_EQ(state.early.load(), 0u);
+
+	jobs::shutdown();
 }
 
 TEST(JobSystemDeathTest, StuckWaitsReportTheStateAndFail)
@@ -1020,67 +1029,28 @@ TEST(JobSystemDeathTest, StuckWaitsReportTheStateAndFail)
 	EXPECT_EXIT(
 		{
 			CycleState state;
-			jobs::initialize({.worker_count = 2, .small_fibers = 4, .large_fibers = 1, .stall_report_ms = 200});
-			jobs::run_main(main_cycle, &state);
+			jobs::initialize({.worker_count = 2, .fiber_count = 5, .stall_report_ms = 200});
+			main_cycle(&state);
 			jobs::shutdown();
 		},
-		died_fatally, "stalled");
+		died_fatally, "waits on counter");
 }
 
 TEST(JobSystemDeathTest, FullJobQueueIsFatal)
 {
 	EXPECT_EXIT(
 		{
-			jobs::initialize({.worker_count = 1, .small_fibers = 4, .large_fibers = 2, .queue_capacity = 2});
+			jobs::initialize({.worker_count = 1, .fiber_count = 4, .queue_capacity = 2});
 
 			JobDef decls[3];
 			for (JobDef& decl : decls)
 				decl = {.fn = nop_job};
 
-			(void)submit(decls);
+			kick(decls);
 
 			jobs::shutdown();
 		},
 		died_fatally, "job queue full");
-}
-
-TEST(JobSystemDeathTest, CounterPoolExhaustionIsFatal)
-{
-	EXPECT_EXIT(
-		{
-			jobs::initialize({.worker_count = 2, .small_fibers = 4, .large_fibers = 2, .counter_capacity = 1});
-
-			const JobDef decl{.fn = nop_job};
-			const JobHandle first = submit(decl);
-			(void)first;
-			(void)submit(decl);
-			jobs::shutdown();
-		},
-		died_fatally, "counter pool exhausted");
-}
-
-TEST(JobSystem, FiberIdsFollowTheFiber)
-{
-	IdentityState state;
-
-	EXPECT_EQ(current_fiber(), NO_FIBER);
-	EXPECT_FALSE(is_main_context());
-
-	jobs::initialize({.worker_count = 4});
-	jobs::run_main(main_identity, &state);
-
-	EXPECT_NE(state.main_fiber, NO_FIBER);
-	EXPECT_TRUE(state.main_before);
-	EXPECT_TRUE(state.main_after);
-	EXPECT_EQ(state.job_main_contexts.load(), 0u);
-	EXPECT_EQ(state.null_ids.load(), 0u);
-	EXPECT_EQ(state.mismatched.load(), 0u);
-	EXPECT_GT(state.migrated.load(), 0u) << "no fiber migrated, the test proved nothing";
-
-	EXPECT_EQ(current_fiber(), NO_FIBER);
-	EXPECT_FALSE(is_main_context());
-
-	jobs::shutdown();
 }
 
 TEST(JobSystemDeathTest, WaitingWithASpinLockHeldFails)
@@ -1088,8 +1058,8 @@ TEST(JobSystemDeathTest, WaitingWithASpinLockHeldFails)
 #if EMBER_LOCK_TRACKING
 	EXPECT_EXIT(
 		{
-			jobs::initialize({.worker_count = 2, .small_fibers = 4, .large_fibers = 1});
-			jobs::run_main(main_wait_under_spin_lock, nullptr);
+			jobs::initialize({.worker_count = 2, .fiber_count = 5});
+			main_wait_under_spin_lock(nullptr);
 			jobs::shutdown();
 		},
 		died_fatally, "spin lock held");

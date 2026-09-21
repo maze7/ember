@@ -1,20 +1,9 @@
 #include <ember/jobs/job_system.h>
 
-#include <ember/containers/mpmc_queue.h>
-#include <ember/core/logger.h>
-#include <ember/core/profile.h>
 #include <ember/memory/memory.h>
-#include <ember/memory/pmr/block_allocator.h>
-#include <ember/sync/spin_mutex.h>
-#include <ember/sync/thread.h>
-#include <jobs/fiber.h>
 #include <jobs/scheduler.h>
 
 #include <algorithm>
-#include <bit>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
 
 namespace ember::jobs
 {
@@ -38,37 +27,19 @@ namespace ember::jobs
 
 	void shutdown() noexcept
 	{
-		EMBER_ASSERT(!scheduler().running && "shutdown inside run_main");
 		memory::delete_object(MemoryTag::Engine, s_scheduler);
 		s_scheduler = nullptr;
 	}
 
-	void run_main(JobFn main, void* data) noexcept { scheduler().run_main(main, data); }
-
-	JobHandle submit(Span<const JobDef> jobs) noexcept
+	void kick(Span<const JobDef> jobs, Counter* counter) noexcept
 	{
-		if (jobs.empty())
-			return {};
-
-		Scheduler& system	   = scheduler();
-		const JobHandle handle = system.counters.allocate(static_cast<u32>(jobs.size()));
-		system.submit(jobs, handle);
-		return handle;
+		if (!jobs.empty())
+			scheduler().kick(jobs, counter);
 	}
 
-	void submit_detached(Span<const JobDef> jobs) noexcept
-	{
-		if (jobs.empty())
-			return;
+	void wait(Counter& counter) noexcept { scheduler().wait(counter); }
 
-		scheduler().submit(jobs, {});
-	}
-
-	void wait(JobHandle batch) noexcept { scheduler().wait(batch); }
-
-	bool is_complete(JobHandle batch) noexcept { return scheduler().counters.is_complete(batch); }
-
-	void release(JobHandle batch) noexcept { scheduler().counters.release(batch); }
+	void signal(Counter& counter) noexcept { scheduler().complete(counter); }
 
 	u32 worker_count() noexcept { return scheduler().worker_count; }
 
@@ -76,18 +47,6 @@ namespace ember::jobs
 	{
 		const Worker* worker = current_worker();
 		return worker != nullptr ? worker->index : NO_WORKER;
-	}
-
-	u32 current_fiber() noexcept
-	{
-		const Worker* worker = current_worker();
-		return worker != nullptr ? worker->current->id : NO_FIBER;
-	}
-
-	bool is_main_context() noexcept
-	{
-		const Worker* worker = current_worker();
-		return worker != nullptr && worker->index == 0 && worker->current == &worker->thread_record;
 	}
 
 	JobStats stats() noexcept { return scheduler().stats(); }
@@ -131,19 +90,13 @@ namespace ember::jobs
 			const u32 end = begin + per_job + (i < leftover ? 1 : 0);
 
 			ranges[i] = {.range = {begin, end, i}, .fn = fn, .data = data};
-			defs[i]	  = {
-				.fn		  = run_range,
-				.data	  = &ranges[i],
-				.name	  = def.name,
-				.priority = def.priority,
-				.stack	  = def.stack,
-			};
+			defs[i]	  = {.fn = run_range, .data = &ranges[i], .name = def.name, .priority = def.priority};
 
 			begin = end;
 		}
 
-		const JobHandle batch = submit(Span<const JobDef>(defs, jobs));
-		wait(batch);
-		release(batch);
+		Counter done;
+		kick(Span<const JobDef>(defs, jobs), &done);
+		wait(done);
 	}
 }

@@ -2,60 +2,46 @@
 
 #include <ember/containers/span.h>
 #include <ember/core/common.h>
-#include <ember/core/handle.h>
 
+#include <atomic>
 #include <type_traits>
 
 /**
  * Fixed-capacity, fiber-based scheduler for short, CPU-bound engine work.
  *
- * Waiting yields the current fiber instead of blocking its worker, allowing the
- * worker to execute independent jobs while a dependency completes. A suspended
- * job may resume on a different worker, so  jobs must not retain worker-local
- * state, thread-affine resources, or locks needed by the jobs they wait for.
+ * A job is a function and a pointer. Kicking jobs adds them to a Counter the caller owns,
+ * finishing a job subtracts one, and waiting parks the calling fiber until the counter
+ * reaches zero while the worker runs other jobs. A parked job may resume on a different
+ * worker, so jobs must not keep thread-affine state, worker-local state, or spin locks
+ * across a wait.
  *
- * Each submitted batch receives one completion handle and one release obligation.
- * Copying a handle does not create additional ownership. The generation embedded
- * in the handle prevents a recycled counter slot from being mistaken for the
- * original batch.
+ * Worker 0 is the thread that calls initialize(), and main's fiber always resumes there, so
+ * platform and GPU calls made from main stay on the thread that owns them. Nothing else
+ * has a home thread. Work that blocks belongs on a thread outside the scheduler, which
+ * reports completion with signal().
  *
- * Worker 0 remains on the thread that calls run_main() so platform and windowing
- * work can retain the thread affinity required by their APIs.
+ * Fibers and queues are fixed at initialize() so the scheduler never allocates while
+ * jobs run. Filling a queue is fatal.
  *
- * Queue, counter, and fiber capacities are fixed to avoid scheduler allocation
- * during steady-state execution. Exhaustion is treated as a configuration error
- * because silently dropping work would leave dependency counters permanently
- * incomplete.
- *
- * Inspirted by Christian Gyrling's 2015 GDC presentation:
+ * Inspired by Christian Gyrling's 2015 GDC presentation:
  * https://www.gdcvault.com/play/1022186/parallelizing-the-naughty-dog-engine
  */
 namespace ember::jobs
 {
-	struct JobCounter;
+	struct FiberRecord;
+	struct Scheduler;
+	struct WaitList;
 
-	/**
-	 * Type-erased entry point to keep queued jobs allocation-free.
-	 * data is borrowed and must remain valid until the invocation returns.
-	 */
+	/** Type-erased entry point. data is borrowed and must outlive the job. */
 	using JobFn = void (*)(void* data);
 
-	/** Returned by worker_index() when the caller is not executing on a scheduler worker. */
+	/** Returned by worker_index() on a thread outside the scheduler */
 	inline constexpr u32 NO_WORKER = ~u32{0};
 
-	/** Returned by curretn_fiber() on a thread outside the scheduler. Fiber ids start at 1. */
-	inline constexpr u32 NO_FIBER = 0;
-
 	/**
-	 * Controls which queued work workers consider first.
-	 *
-	 * Priority affects scheduling latency, not execution resources or completion
-	 * guarantees. Workers always prefer higher-priority queues, so sustained high
-	 * traffic can delay Normal and Low work.
-	 *
-	 * Reserve High for short jobs that unblock the current frame or a critical
-	 * dependency chain. Use Low only for work whose delayed completion cannot
-	 * stall frame progress.
+	 * Which jobs workers drain first. Priority affects latency, not completion. Sustained
+	 * High traffic delays Normal and Low work. Reserve High for short jobs that unblock the
+	 * frame, and use Low for work whose delay cannot stall the frame.
 	 */
 	enum class JobPriority : u8
 	{
@@ -65,55 +51,63 @@ namespace ember::jobs
 		Count
 	};
 
-	/**
-	 * Selects the stack budget reserved for a job.
-	 *
-	 * Large fibers are deliberately scarce because their reserved address space is
-	 * significantly more expensive. Use one only when the job's worst-case stack
-	 * demand cannot fit safely within the normal job budget.
-	 */
-	enum class JobStack : u8
-	{
-		Small,
-		Large,
-		Count
-	};
-
 	struct JobDef
 	{
 		JobFn fn			 = nullptr;
 		void* data			 = nullptr;
 		const char* name	 = nullptr;
 		JobPriority priority = JobPriority::Normal;
-		JobStack stack		 = JobStack::Small;
 	};
 
 	/**
-	 * Identifies one generation of a completion-counter  slot.
+	 * Work not finished yet, owned by the caller like a latch. submit() adds the jobs it
+	 * kicks, each job subtracts itself when it returns, and wait() returns once the count
+	 * is zero. Several kicks may share one counter, and a job may kick more work onto the
+	 * counter its parent waits on.
 	 *
-	 * A handle returned by submit() carries exactly one release obligation.
-	 * Additional copies are borrowed observers and must not outlive that release.
+	 * The counter is one atomic integer; the scheduler keeps the fibers waiting on it. It
+	 * must outlive every job counted on it and every wait on it. The usual shape is a local:
+	 * kick, wait, leave the scope. A counter constructed with a pending count is completed
+	 * by signal(), from any thread, for work that finishes outside the scheduler: a read on
+	 * the IO thread, a fence the GPU signals, a reply on a socket.
 	 */
-	using JobHandle = Handle<JobCounter, u32>;
+	class alignas(EMBER_CACHE_LINE) Counter final
+	{
+	public:
+		explicit Counter(u32 pending = 0) noexcept : m_remaining(pending) {}
+
+		~Counter() noexcept
+		{
+			EMBER_ASSERT(m_remaining.load(std::memory_order_relaxed) == 0 && "counter destroyed with work outstanding");
+		}
+
+		Counter(const Counter&)			   = delete;
+		Counter& operator=(const Counter&) = delete;
+
+		// True once every completion landed, with the jobs' writes visible. Any thread.
+		[[nodiscard]] bool is_complete() const noexcept { return m_remaining.load(std::memory_order_acquire) == 0; }
+
+	private:
+		friend struct Scheduler;
+		friend struct WaitList;
+
+		std::atomic<u32> m_remaining{0};
+	};
+
+	static_assert(sizeof(Counter) == EMBER_CACHE_LINE, "one line per counter, so completions never share one");
 
 	struct JobSystemDef
 	{
 		u32 worker_count	 = 0;	   // 0 derives it from the hardware thread count
 		u32 reserved_threads = 1;	   // hardware threads left to the OS and engine threads when derived
-		u32 small_fibers	 = 128;	   //
-		u32 large_fibers	 = 32;	   //
-		size_t small_stack	 = 64_kb;  //
-		size_t large_stack	 = 512_kb; //
+		u32 fiber_count		 = 160;	   // jobs that may be running or parked at once
+		size_t stack_size	 = 256_kb; // per fiber; reserved address space, pages commit on first touch
 		u32 queue_capacity	 = 4096;   // jobs queued per priority
-		u32 counter_capacity = 1024;   // batches alive at once
-		u32 stall_report_ms	 = 1000;   // a wait with no fiber and no progress for this long logs the state and fails
-		bool pin_workers	 = false;  // lock each worker thread to a core, as on consoles
+		u32 stall_report_ms	 = 1000;   // a wait with no fiber and no progress for this long dumps and fails
+		bool pin_workers	 = false;  // lock each worker thread to a core
 	};
 
-	/**
-	 * The half open index range one job of a parallel_for covers, and that job's
-	 * index in the split, for per job partial results.
-	 */
+	/** The half-open index range one job of a parallel_for covers, and that job's index in the split */
 	struct JobRange
 	{
 		u32 begin = 0;
@@ -134,120 +128,70 @@ namespace ember::jobs
 		u32 grain			 = 1; // items one job is worth; sets the job count
 		const char* name	 = nullptr;
 		JobPriority priority = JobPriority::Normal;
-		JobStack stack		 = JobStack::Small;
 	};
 
-	/// A snapshot for debug views. Every count is approximate while jobs run.
+	/** A snapshot for debug views. Every count is approximate while jobs run. */
 	struct JobStats
 	{
-		u32 free_small_fibers = 0;
-		u32 free_large_fibers = 0;
-		u32 parked_fibers	  = 0; // waiting on a counter
-		u32 ready_fibers	  = 0; // woken, not yet picked up by a worker
-		u32 queued_jobs		  = 0;
-		u32 live_batches	  = 0;
-		u64 stalls			  = 0; // waits that found no fiber
+		u32 free_fibers	  = 0;
+		u32 parked_fibers = 0; // waiting on a counter
+		u32 ready_fibers  = 0; // woken, not yet picked up by a worker
+		u32 queued_jobs	  = 0;
+		u64 stalls		  = 0; // waits that found no fiber
 	};
 
 	/**
-	 * Initializes the process-wide job scheduler.
-	 *
-	 * The memory system must already be initialized. This function creates the
-	 * fixed-capacity fiber, queue, and counter pools, then starts the background
-	 * workers. Worker 0 is reserved for the thread that later calls run_main() and
-	 * is not created here.
-	 *
-	 * Pool capacities remain fixed until shutdown(), and exhausting one is fatal.
-	 *
-	 * Must be called exactly once before any other jobs API. Initialization and
-	 * shutdown must be externally serialized.
+	 * Creates the fiber pool, queues and starts the background workers. The calling thread
+	 * becomes Worker 0. The memory system must already be up.
+	 */
+
+	/**
+	 * Creates the fiber pool, queues and starts the background workers. The memory system
+	 * must already be up. Call once per process, serialized against shutdown(). The calling
+	 * thread becomes Worker 0.
 	 */
 	void initialize(const JobSystemDef& def = {}) noexcept;
 
-	/**
-	 * Destroys the process-wide job scheduler.
-	 *
-	 * run_main() must have returned, every submitted job must be complete, and
-	 * every owned JobHandle must have been released. No thread, including a worker,
-	 * may enter the jobs API while shutdown is in progress.
-	 *
-	 * This function wakes and joins the background workers before releasing the
-	 * fibers, queues, counters, and scheduler state. All outstanding job handles
-	 * are invalid after it returns.
-	 */
+	/** Joins the workers and releases the fibers and queues. Every kicked job must be complete */
 	void shutdown() noexcept;
 
 	/**
-	 * Adopts the calling thread as worker 0 and invokes main.
-	 *
-	 * The call returns when main returns. Waiting inside main parks its root fiber
-	 * while the calling thread executes other work. The root fiber always resumes
-	 * on worker 0 so thread-affine platform and GPU operations remain on the calling thread.
-	 *
-	 * Not re-entrant.
+	 * Kicks jobs. With a counter, every job is added to it before any can start and
+	 * subtracts itself when it finishes. Without one the jobs are fire and forget.
 	 */
-	void run_main(JobFn main, void* data) noexcept;
+	void kick(Span<const JobDef> jobs, Counter* counter = nullptr) noexcept;
+
+	inline void kick(const JobDef& job, Counter* counter = nullptr) noexcept
+	{
+		kick(Span<const JobDef>(&job, 1), counter);
+	}
 
 	/**
-	 * Submits a fixed batch and returns its completion handle.
-	 *
-	 * The caller owns the handle and must release it exactly once. Empty input
-	 * returns a null handle, which is considered complete.
+	 * Parks the calling job or main until the counter reaches zero. A thread outside the
+	 * scheduler has no fiber to park, so it polls instead.
 	 */
-	[[nodiscard]] JobHandle submit(Span<const JobDef> jobs) noexcept;
+	void wait(Counter& counter) noexcept;
 
 	/**
-	 * Submits a single job and returns its completion handle.
-	 *
-	 * The caller owns the handle and must release it exactly once. Empty input
-	 * returns a null handle, which is considered complete.
+	 * One completion from outside the scheduler. Signal exactly as many times as the pending
+	 * count; the last one wakes every waiter.
 	 */
-	[[nodiscard]] inline JobHandle submit(const JobDef& job) noexcept { return submit(Span<const JobDef>(&job, 1)); }
-
-	/// Kicks jobs nobody will wait for. No counter is allocated.
-	void submit_detached(Span<const JobDef> jobs) noexcept;
-	inline void submit_detached(const JobDef& job) noexcept { submit_detached(Span<const JobDef>(&job, 1)); }
-
-	/// Parks the calling job or main until the batch's last job finishes. From any other
-	/// thread it blocks that thread instead. A null handle, or one to a batch already
-	/// released and finished, returns at once.
-	void wait(JobHandle batch) noexcept;
-
-	/// True once every job in the batch finished, or the batch is gone. Any thread.
-	[[nodiscard]] bool is_complete(JobHandle batch) noexcept;
-
-	/// Gives the batch's counter back to the pool: now if the batch finished, otherwise when
-	/// its last job does. The jobs keep running either way. Once per batch.
-	void release(JobHandle batch) noexcept;
+	void signal(Counter& counter) noexcept;
 
 	[[nodiscard]] u32 worker_count() noexcept;
 
-	/// Worker the caller runs on, NO_WORKER on other threads. Stale after a wait.
+	/** Worker the caller runs on, NO_WORKER on other threads. Stale after a wait. */
 	[[nodiscard]] u32 worker_index() noexcept;
-
-	/**
-	 * Names the fiber the caller runs on. The id survives a wait and follows the job to whichever
-	 * worker resumes it, so a phase can record its owner by fiber. NO_FIBER on a thread outside
-	 * the scheduler.
-	 */
-	[[nodiscard]] u32 current_fiber() noexcept;
-
-	/**
-	 * True on the main fiber inside run_main, before and after any of its waits. False in every
-	 * job, on every other thread, and outside run_main.
-	 */
-	[[nodiscard]] bool is_main_context() noexcept;
 
 	[[nodiscard]] JobStats stats() noexcept;
 
-	/// Logs every live batch and the jobs waiting on it, for a hang you are looking at in
-	/// the debugger or the console. Any thread.
+	/** Logs every fiber waiting on a counter, for a hang you are looking at. Any thread. */
 	void dump_state() noexcept;
 
 	/**
-	 * A job over a callable the caller keeps alive until the batch completes: the callable is
+	 * A job over a callable the caller keeps alive until the job completes: the callable is
 	 * the job's data and the thunk invokes it. A local lambda kicked and waited for in the
-	 * same scope is the usual shape. The batch stores no copy, so a temporary would dangle.
+	 * same scope is the usual shape. Nothing is copied, so a temporary would dangle.
 	 */
 	template <class F> [[nodiscard]] JobDef make_job(F& fn, const char* name = nullptr) noexcept
 	{
@@ -262,12 +206,12 @@ namespace ember::jobs
 	}
 
 	/**
-	 * Splits [0, count) into at most MAX_RANGE_JOBS even ranges of about grain items, kicks one
-	 * job per range and waits for all of them. Zero items kicks nothing.
+	 * Splits [0, count) into at most MAX_RANGE_JOBS even ranges of about grain items, kicks
+	 * one job per range and waits for all of them. Zero items kicks nothing.
 	 */
 	void parallel_for(const ParallelForDef& def, RangeFn fn, void* data) noexcept;
 
-	/// The callable form; fn(JobRange) is the job body and outlives the call by construction.
+	/** The callable form; fn(JobRange) is the job body and outlives the call by construction. */
 	template <class F> void parallel_for(const ParallelForDef& def, F& fn) noexcept
 	{
 		static_assert(std::is_invocable_v<F&, JobRange>, "job range callables must be invocable and take a JobRange");
@@ -277,61 +221,26 @@ namespace ember::jobs
 	}
 
 	/**
-	 * Owns one batch. Kicks in the constructor, waits for the batch on destruction and
-	 * releases it. detach() releases without waiting, for jobs whose data outlives the
-	 * kicker.
+	 * A counter that kicks in the constructor and waits in the destructor. The jobs' data
+	 * must outlive the batch, which a local batch guarantees for locals declared above it.
 	 */
-	class JobBatch final
+	class Batch final
 	{
 	public:
-		JobBatch() noexcept = default;
-		explicit JobBatch(Span<const JobDef> jobs) noexcept : m_handle(jobs::submit(jobs)) {}
-		explicit JobBatch(const JobDef& job) noexcept : m_handle(jobs::submit(job)) {}
-		~JobBatch() noexcept { reset(); }
+		explicit Batch(Span<const JobDef> jobs) noexcept { jobs::kick(jobs, &m_counter); }
+		explicit Batch(const JobDef& job) noexcept { jobs::kick(job, &m_counter); }
+		~Batch() noexcept { wait(); }
 
-		JobBatch(JobBatch&& other) noexcept : m_handle(other.m_handle) { other.m_handle = {}; }
+		Batch(const Batch&)			   = delete;
+		Batch& operator=(const Batch&) = delete;
 
-		JobBatch& operator=(JobBatch&& other) noexcept
-		{
-			if (this != &other)
-			{
-				reset();
-				m_handle	   = other.m_handle;
-				other.m_handle = {};
-			}
+		void wait() noexcept { jobs::wait(m_counter); }
+		[[nodiscard]] bool is_complete() const noexcept { return m_counter.is_complete(); }
 
-			return *this;
-		}
-
-		JobBatch(const JobBatch&)			 = delete;
-		JobBatch& operator=(const JobBatch&) = delete;
-
-		[[nodiscard]] JobHandle handle() const noexcept { return m_handle; }
-		[[nodiscard]] bool is_complete() const noexcept { return jobs::is_complete(m_handle); }
-
-		void wait() noexcept { jobs::wait(m_handle); }
-
-		/// Releases without waiting. The jobs keep running and the counter frees itself.
-		void detach() noexcept
-		{
-			if (m_handle.is_null())
-				return;
-
-			jobs::release(m_handle);
-			m_handle = {};
-		}
+		// For kicking more work onto the same batch.
+		[[nodiscard]] Counter& counter() noexcept { return m_counter; }
 
 	private:
-		void reset() noexcept
-		{
-			if (m_handle.is_null())
-				return;
-
-			jobs::wait(m_handle);
-			jobs::release(m_handle);
-			m_handle = {};
-		}
-
-		JobHandle m_handle;
+		Counter m_counter;
 	};
 }
