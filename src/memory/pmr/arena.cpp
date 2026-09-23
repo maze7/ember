@@ -98,7 +98,7 @@ namespace ember
 		if (t_slot == NO_SLOT)
 			return;
 
-		s_slots_in_use.fetch_add(~(u64{1} << t_slot), std::memory_order_relaxed);
+		s_slots_in_use.fetch_and(~(u64{1} << t_slot), std::memory_order_relaxed);
 		t_slot = NO_SLOT;
 	}
 

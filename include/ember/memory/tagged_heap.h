@@ -30,7 +30,7 @@ namespace ember
 	[[nodiscard]] constexpr u8 kind(HeapTag tag) noexcept { return static_cast<u8>(tag >> HEAP_TAG_SEQUENCE_BITS); }
 
 	/** Retrieves the `sequence` bits from a HeapTag */
-	[[nodiscard]] constexpr u8 sequence(HeapTag tag) noexcept { return tag & HEAP_TAG_SEQUENCE_MASK; }
+	[[nodiscard]] constexpr u64 sequence(HeapTag tag) noexcept { return tag & HEAP_TAG_SEQUENCE_MASK; }
 
 	/**
 	 * The shared block pool behind every allocator, following the tagged heap design in Christian

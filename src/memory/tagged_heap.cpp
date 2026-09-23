@@ -154,24 +154,21 @@ namespace ember
 				m_tags[block].store(tag, std::memory_order_relaxed);
 			}
 
-			// A single block scan passed nothing but full words on its way here, so later scans
-			// may start at this word. A run scan skipped lone free blocks it could not use, so
-			// it  proves nothing and leaves the hint alone.
 			if (count == 1)
 				m_hint = first / 64;
-
-			m_lock.unlock();
-
-			if (first == NO_BLOCK) [[unlikely]]
-				return nullptr;
-
-			const u32 in_use = m_blocks_in_use.fetch_add(count, std::memory_order_relaxed) + count;
-			u32 peak		 = m_peak_blocks.load(std::memory_order_relaxed);
-			while (in_use > peak && !m_peak_blocks.compare_exchange_weak(peak, in_use, std::memory_order_relaxed))
-				; // intentionally empty
-
-			return m_base + static_cast<size_t>(first) * m_block_size;
 		}
+
+		m_lock.unlock();
+
+		if (first == NO_BLOCK) [[unlikely]]
+			return nullptr;
+
+		const u32 in_use = m_blocks_in_use.fetch_add(count, std::memory_order_relaxed) + count;
+		u32 peak		 = m_peak_blocks.load(std::memory_order_relaxed);
+		while (in_use > peak && !m_peak_blocks.compare_exchange_weak(peak, in_use, std::memory_order_relaxed))
+			;
+
+		return m_base + static_cast<size_t>(first) * m_block_size;
 	}
 
 	u32 TaggedHeap::free(HeapTag tag) noexcept
