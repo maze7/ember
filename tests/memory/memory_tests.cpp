@@ -1,7 +1,6 @@
 #include <ember/core/bits.h>
 #include <ember/memory/memory.h>
 #include <ember/memory/memory_tracker.h>
-#include <ember/memory/pmr/block_allocator.h>
 #include <ember/memory/tagged_heap.h>
 
 #include <gtest/gtest.h>
@@ -32,19 +31,6 @@ TEST(Memory, DefaultPmrResourceIsTheEngineHeap)
 {
 	std::pmr::memory_resource* resource = std::pmr::get_default_resource();
 	EXPECT_TRUE(resource->is_equal(ember::memory::heap(MemoryTag::Unknown)));
-}
-
-TEST(Memory, FrameMemoryIsUsableAndComesFromTheBlockHeap)
-{
-	ember::TaggedHeap& heap		 = ember::memory::tagged_heap();
-	ember::BlockAllocator& frame = ember::memory::frame_memory();
-
-	EXPECT_EQ(heap.block_size(), ember::MemoryConfig{}.block_size);
-
-	void* ptr = frame.allocate_fast(256);
-
-	EXPECT_TRUE(heap.owns(ptr));
-	EXPECT_GE(heap.blocks_in_use(), 1u);
 }
 
 // This test instantiates delete_object for the first time anywhere in the

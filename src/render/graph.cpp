@@ -458,7 +458,7 @@ namespace ember::render
 				buffer.physical = acquire(device, buffer.def, buffer.pool_slot);
 		}
 
-		auto& frame = memory::frame_memory();
+		auto& frame = memory::frame_arena();
 
 		// Barriers are derived here and recorded later: a pass's before state is whatever the pass
 		// ahead of it left behind, so deriving them is a chain and only the recording fans out.

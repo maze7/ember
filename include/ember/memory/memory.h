@@ -3,6 +3,7 @@
 #include <ember/core/common.h>
 #include <ember/core/result.h>
 #include <ember/memory/common.h>
+#include <ember/memory/pmr/arena.h>
 #include <ember/memory/pmr/heap_resource.h>
 #include <ember/memory/tagged_heap.h>
 
@@ -34,6 +35,7 @@ namespace ember
 		AlreadyInit,
 		MemoryTrackerInitFailed,
 		BlockHeapInitFailed,
+		ThreadSlotsExhausted,
 	};
 
 	class ArenaResource;
@@ -93,10 +95,9 @@ namespace ember
 		 * Returns the shared per-frame CPU allocator.
 		 *
 		 * Registered frame threads may allocate concurrently. The frame owner must
-		 * call reset() only after all jobs using the current frame tag have completed.
-		 * Every outstanding pointer is invalidated by that reset.
+		 * call begin() and end().
 		 */
-		[[nodiscard]] BlockAllocator& frame_memory() noexcept;
+		[[nodiscard]] Arena& frame_arena() noexcept;
 
 		/**
 		 * Returns the process heap view associated with a diagnostic tag.

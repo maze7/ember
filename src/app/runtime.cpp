@@ -154,7 +154,15 @@ namespace ember
 
 		while (!m_quit_requested)
 		{
-			memory::frame_memory().reset();
+			// Last frame's scratch dies here, as one bulk free by tag, and this frame's memory
+			// is named after it. Every job that used the old tag has joined: the loop is serial.
+			{
+				TaggedHeap& heap = memory::tagged_heap();
+				Arena& frame	 = memory::frame_arena();
+
+				heap.free(frame.end());
+				frame.begin(heap_tag(1, m_frame_index + 1));
+			}
 
 			// Platform event pump
 			{

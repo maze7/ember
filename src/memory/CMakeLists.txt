@@ -6,7 +6,7 @@ target_sources(ember_core
 		tagged_heap.cpp
 		pmr/arena_resource.cpp
 		pmr/heap_resource.cpp
-		pmr/block_allocator.cpp
+		pmr/arena.cpp
 		# Virtual memory backend differs per platform, swapped at compile time.
 		$<$<PLATFORM_ID:Windows>:${CMAKE_CURRENT_SOURCE_DIR}/virtual_memory_win32.cpp>
 		$<$<PLATFORM_ID:Darwin,Linux>:${CMAKE_CURRENT_SOURCE_DIR}/virtual_memory_posix.cpp>

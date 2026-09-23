@@ -129,7 +129,7 @@ namespace ember::render
 		// Writers append in whatever order they finished, so the sort happens on a frame copy;
 		// the set itself stays read only for consumers.
 		const u32 count = static_cast<u32>(dirty.size());
-		auto* slots		= static_cast<u32*>(memory::frame_memory().allocate_fast(count * sizeof(u32), alignof(u32)));
+		auto* slots		= static_cast<u32*>(memory::frame_arena().allocate_fast(count * sizeof(u32), alignof(u32)));
 
 		std::memcpy(slots, dirty.data(), count * sizeof(u32));
 		std::sort(slots, slots + count);

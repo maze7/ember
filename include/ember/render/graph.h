@@ -26,8 +26,8 @@ namespace ember::render
 	/// Command lists the graph splits its passes across, one per recording job. Passes divide
 	/// evenly between them and each list covers a contiguous run, so declaration order survives.
 	inline constexpr u32 MAX_RECORD_CHUNKS = 8;
-	inline constexpr u32 MAX_POOL_ENTRIES	= 128;
-	inline constexpr u32 GRAPH_ARENA_BYTES	= 16_kb;
+	inline constexpr u32 MAX_POOL_ENTRIES  = 128;
+	inline constexpr u32 GRAPH_ARENA_BYTES = 16_kb;
 
 	/// Frames a pooled texture may sit unused before the pool destroys it.
 	inline constexpr u32 POOL_IDLE_FRAMES = 60;
@@ -175,15 +175,14 @@ namespace ember::render
 			template <class F> void record(F&& fn) noexcept
 			{
 				using Fn = std::decay_t<F>;
-				static_assert(
-					std::is_trivially_destructible_v<Fn>, "captures live in the frame memory and are never destroyed");
-				static_assert(
-					std::is_invocable_v<Fn&, gpu::CommandList&, const PassContext&> ||
-						std::is_invocable_v<Fn&, gpu::CommandList&>,
-					"callbacks take (CommandList&) or (CommandList&, const PassContext&)");
+				static_assert(std::is_trivially_destructible_v<Fn>,
+							  "captures live in the frame memory and are never destroyed");
+				static_assert(std::is_invocable_v<Fn&, gpu::CommandList&, const PassContext&> ||
+								  std::is_invocable_v<Fn&, gpu::CommandList&>,
+							  "callbacks take (CommandList&) or (CommandList&, const PassContext&)");
 
 				m_record_data =
-					new (memory::frame_memory().allocate_fast(sizeof(Fn), alignof(Fn))) Fn(static_cast<F&&>(fn));
+					new (memory::frame_arena().allocate_fast(sizeof(Fn), alignof(Fn))) Fn(static_cast<F&&>(fn));
 				m_record = [](gpu::CommandList& cmd, const PassContext& ctx, void* data)
 				{
 					Fn& fn = *static_cast<Fn*>(data);
@@ -257,11 +256,8 @@ namespace ember::render
 		 * @param final_state is where the graph leaves it.
 		 * @param extent feeds PassContext::extent; imports without one report zero.
 		 */
-		[[nodiscard]] GraphTexture import(
-			TextureHandle texture,
-			gpu::TextureState current,
-			gpu::TextureState final_state,
-			Extent2D extent = {}) noexcept;
+		[[nodiscard]] GraphTexture import(TextureHandle texture, gpu::TextureState current,
+										  gpu::TextureState final_state, Extent2D extent = {}) noexcept;
 
 		/**
 		 * Wraps an externally owned buffer.
@@ -270,8 +266,8 @@ namespace ember::render
 		 * @param final_state is where the graph leaves it.
 		 * @param size feeds PassContext::size; imports without one report zero.
 		 */
-		[[nodiscard]] GraphBuffer
-		import(BufferHandle buffer, gpu::BufferState current, gpu::BufferState final_state, u64 size = 0) noexcept;
+		[[nodiscard]] GraphBuffer import(BufferHandle buffer, gpu::BufferState current, gpu::BufferState final_state,
+										 u64 size = 0) noexcept;
 
 		[[nodiscard]] Pass& pass(const char* name) noexcept;
 

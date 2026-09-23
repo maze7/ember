@@ -413,7 +413,12 @@ namespace ember::jobs
 	void Scheduler::worker_main(Worker& worker) noexcept
 	{
 		memory::initialize_thread();
-		BlockAllocator::register_thread();
+		if (!Arena::register_thread()) [[unlikely]]
+		{
+			EMBER_ERROR("worker {} found every arena thread slot taken; raise TaggedArena::MAX_THREADS", worker.index);
+			std::abort();
+		}
+
 		t_worker = &worker;
 
 		char name[16];
@@ -437,7 +442,7 @@ namespace ember::jobs
 		fiber_release_thread(worker.thread_record.fiber);
 		worker.thread_record.fiber = nullptr;
 		t_worker				   = nullptr;
-		BlockAllocator::unregister_thread();
+		Arena::unregister_thread();
 		memory::shutdown_thread();
 	}
 
