@@ -79,21 +79,24 @@ namespace ember
 
 		[[nodiscard]] u32 blocks_in_use() const noexcept { return m_blocks_in_use.load(std::memory_order_relaxed); }
 		[[nodiscard]] size_t used() const noexcept { return blocks_in_use() * m_block_size; }
-		[[nodiscard]] size_t peak() const noexcept { return m_peak_blocks.load(std::memory_order_relaxed) * m_block_size; }
+		[[nodiscard]] size_t peak() const noexcept
+		{
+			return m_peak_blocks.load(std::memory_order_relaxed) * m_block_size;
+		}
 
 	private:
 		[[nodiscard]] bool window_is_free(u32 first, u32 count) const noexcept;
 		[[nodiscard]] u32 claim(u32 first, u32 count, HeapTag tag) noexcept;
 		void release(u32 first, u32 count) noexcept;
 
-		std::atomic<HeapTag>* m_block_tags	  = nullptr; // NO_TAG while the block is free
-		u8*					  m_base		  = nullptr;
-		size_t				  m_capacity	  = 0;
-		size_t				  m_block_size	  = 0;
-		u32					  m_block_count	  = 0;
-		std::atomic<u32>	  m_hint		  = 0; // where the last claim finished, so scans start warm
-		std::atomic<u32>	  m_blocks_in_use = 0;
-		std::atomic<u32>	  m_peak_blocks	  = 0;
-		MemoryTag			  m_tag			  = MemoryTag::Unknown;
+		std::atomic<HeapTag>* m_block_tags = nullptr; // NO_TAG while the block is free
+		u8* m_base						   = nullptr;
+		size_t m_capacity				   = 0;
+		size_t m_block_size				   = 0;
+		u32 m_block_count				   = 0;
+		std::atomic<u32> m_hint			   = 0; // where the last claim finished, so scans start warm
+		std::atomic<u32> m_blocks_in_use   = 0;
+		std::atomic<u32> m_peak_blocks	   = 0;
+		MemoryTag m_tag					   = MemoryTag::Unknown;
 	};
 }

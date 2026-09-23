@@ -141,11 +141,6 @@ namespace ember::jobs
 	};
 
 	/**
-	 * Creates the fiber pool, queues and starts the background workers. The calling thread
-	 * becomes Worker 0. The memory system must already be up.
-	 */
-
-	/**
 	 * Creates the fiber pool, queues and starts the background workers. The memory system
 	 * must already be up. Call once per process, serialized against shutdown(). The calling
 	 * thread becomes Worker 0.
