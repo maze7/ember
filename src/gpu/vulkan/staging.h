@@ -6,8 +6,10 @@
 #include <ember/gpu/common.h>
 #include <ember/gpu/texture.h>
 #include <ember/memory/memory.h>
+#include <ember/sync/spin_mutex.h>
 #include <gpu/vulkan/common.h>
 
+#include <atomic>
 #include <vk_mem_alloc.h>
 
 namespace ember::gpu
@@ -18,8 +20,8 @@ namespace ember::gpu
 namespace ember::gpu::vk
 {
 	/**
-	 * A staging buffer only this batch reads. Out of frame uploads cannot use the ring, so they
-	 * get one of these instead.
+	 * A staging buffer only one batch reads. Uploads outside a frame cannot use the frame ring,
+	 * and uploads from other threads never do, so those get one of these instead.
 	 */
 	struct OneOffStaging
 	{
@@ -28,21 +30,21 @@ namespace ember::gpu::vk
 	};
 
 	/**
-	 * An upload batch: one command buffer of vkCmdCopyBuffer2 calls bracketed by fat global
-	 * barriers, submitted ahead of the frame's main commands (same vkQueueSubmit2).
+	 * An upload batch: one command buffer of copies bracketed by fat global barriers, submitted
+	 * on its own ahead of the frame's main commands.
 	 *
-	 * Opened lazily on the first update; when no frame is open (loading screens, boot-time
+	 * Opened lazily on the first upload; when no frame is open (loading screens, boot-time
 	 * initial_data) the batch simply stays open and rides the next end_frame or wait_idle.
 	 * One code path for both cases, no special init-time upload machinery.
 	 *
 	 * fif + 1 batches suffice by construction: at most one un-retired batch per in-flight
 	 * frame plus the open one. Acquisition therefore never waits and never queries the
-	 * timeline, frame pacing already proved what completed (FrameState::completed).
+	 * timeline, frame pacing already proved what completed.
 	 */
 	struct UploadBatch
 	{
 		VkCommandBuffer cmd = VK_NULL_HANDLE;
-		u64 value			= 0; // reusable once the upload timeline passes this; 0 = never used.
+		u64 value			= 0; // reusable once its ring's timeline passes this; 0 = never used.
 
 		/**
 		 * Freed when the batch's value passes, not through the destroy queue: the upload clock is
@@ -51,8 +53,10 @@ namespace ember::gpu::vk
 		Vector<OneOffStaging> one_offs{&memory::heap(MemoryTag::Graphics)};
 	};
 
-	/// One kind of batch. A command pool serves exactly one queue family, so critical work on the
-	/// graphics family and streamed work on the DMA family cannot share a ring.
+	/**
+	 * One kind of batch. A command pool serves exactly one queue family, so critical work on the
+	 * graphics family and streamed work on the DMA family cannot share a ring.
+	 */
 	struct UploadRing
 	{
 		VkCommandPool pool = VK_NULL_HANDLE; // RESET_COMMAND_BUFFER: batches reset individually
@@ -60,6 +64,22 @@ namespace ember::gpu::vk
 		UploadBatch batches[MAX_FRAMES_IN_FLIGHT + 1]{};
 		VkCommandBuffer open_cmd = VK_NULL_HANDLE;
 		u32 open_index			 = 0;
+
+		/**
+		 * The ring's own clock. Each submit signals the next value on it, and because one ring
+		 * submits to one queue in order, its values complete in order. A semaphore shared by the
+		 * graphics and DMA queues could not promise that: the DMA batch may finish first.
+		 */
+		VkSemaphore timeline = VK_NULL_HANDLE;
+		u64 value			 = 0;	   // last value handed to a submit; the owner writes it under the lock
+		std::atomic<u64> completed{0}; // highest value proven signalled; the owner polls, any thread reads
+
+		/**
+		 * Threads still filling staging the open batch copies from. A claim is made under the
+		 * lock and the bytes are written outside it, so the batch cannot submit until this is
+		 * zero: a submit under a half written buffer would copy garbage.
+		 */
+		std::atomic<u32> writers{0};
 	};
 
 	/// Ring 0 is critical work and rides the graphics queue; ring 1 is streamed and rides the DMA
@@ -79,13 +99,15 @@ namespace ember::gpu::vk
 		VkImageLayout steady = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	};
 
+	/// The frame ring: one slice per frame slot, rebound by begin_frame, whose wait is what proves
+	/// a slice reusable. The owner's staging for updates inside a frame.
 	struct StagingRing
 	{
 		VkBuffer buffer			 = VK_NULL_HANDLE; // raw on purpose: staging is never shader-visible,
 		VmaAllocation allocation = VK_NULL_HANDLE; // so it earns no pool slot and no bindless index.
 		u8* cpu					 = nullptr;
 		u64 slice_bytes			 = 0;
-		u64 cursor				 = 0; // plain u64: update_buffer is owner-thread by contract
+		u64 cursor				 = 0; // plain u64: the frame ring is owner-thread by contract
 		u64 slice_end			 = 0;
 		bool coherent			 = true;
 	};
@@ -96,15 +118,11 @@ namespace ember::gpu::vk
 		UploadRing rings[UPLOAD_RING_COUNT]{};
 
 		/**
-		 * Uploads keep their own clock. A batch submits on its own and signals the next value;
-		 * the frame waits for that value instead of carrying the copies itself. Two things fall
-		 * out: a copy reaches the GPU without a frame to ride, and asking whether one landed is
-		 * a counter read rather than a wait.
+		 * Guards the batches: opening one, recording into it, its one-off list, its submit and
+		 * the value that submit mints. Held for bookkeeping and command recording only, never
+		 * while bytes are copied into staging; the writer count covers that stretch instead.
 		 */
-		VkSemaphore timeline = VK_NULL_HANDLE;
-		u64 value			 = 0; // last value handed to an upload submit
-		u64 completed		 = 0; // highest value proven signalled; polled, never waited on
-		u64 critical_value	 = 0; // last value a frame must wait for; streamed uploads never raise it
+		SpinMutex lock;
 
 		/// The DMA family is its own: streamed images change hands on the way out and the
 		/// graphics queue takes them back at promotion. False when the adapter has no dedicated
@@ -112,9 +130,10 @@ namespace ember::gpu::vk
 		bool cross_family = false;
 	};
 
-	/// The value the batch now open will signal. A streamed resource records this at creation:
-	/// it is resident once the upload timeline reaches it.
-	[[nodiscard]] inline u64 pending_upload_value(const Staging& staging) noexcept { return staging.value + 1; }
+	/// The value the ring's open batch will signal. A streamed resource records this at creation:
+	/// it is resident once the ring's timeline reaches it. Read under the lock, after recording
+	/// into the batch, so a submit cannot slip in between.
+	[[nodiscard]] inline u64 pending_upload_value(const UploadRing& ring) noexcept { return ring.value + 1; }
 
 	[[nodiscard]] bool staging_boot(Backend& backend, u64 per_slot_bytes) noexcept;
 
@@ -124,36 +143,43 @@ namespace ember::gpu::vk
 	/// Resets the slot's ring slice. The caller's timeline wait proved it reclaimable.
 	void staging_begin_frame(Staging& staging, u32 slot) noexcept;
 
-	/// Records a staged copy into the current upload batch (opening it if needed).
-	/// Source memory comes from the ring while a frame s open, else a one-off buffer that
-	/// rides the desttroy queue. Owner thread only.
-	void staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, Span<const u8> data,
-						bool streamed = false) noexcept;
+	/**
+	 * Records a staged copy into the critical batch. Owner thread only: the source is the frame
+	 * ring while a frame is open, else a one-off buffer, and the frame waits for the batch. The
+	 * writer fills the staged bytes in place; a failed staging allocation logs and never calls it.
+	 */
+	void staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, u64 size, BufferWriter write,
+						void* context) noexcept;
 
-	/// The writing form: write fills the staged bytes in place instead of a span being copied in.
-	void staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, u64 size, BufferWriter write, void* context,
-						bool streamed = false) noexcept;
+	/// The copying form: the writer is a memcpy of data.
+	void staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, Span<const u8> data) noexcept;
 
-	/// Uploads the whole subresource chain (layer-major, mip-minor, tightly packed
-	/// blocks) and leaves the image in its steady layout. Empty data records only
-	/// the UNDEFINED to steady transition, which is how creation christens every
-	/// texture into a known layout. Owner thread only.
-	void staging_upload_texture(Backend& backend, const TextureUpload& upload, Span<const u8> data,
-								bool streamed = false) noexcept;
+	/**
+	 * Uploads the whole subresource chain (layer-major, mip-minor, tightly packed blocks) from a
+	 * buffer of its own and leaves the image in its steady layout. Empty data records only the
+	 * UNDEFINED to steady transition, which is how creation christens every texture into a known
+	 * layout. Any thread. Streamed rides the DMA family's batch, which no frame waits for.
+	 *
+	 * Returns the upload value the copies complete at on the batch's ring, or 0 when staging
+	 * failed and nothing was recorded.
+	 */
+	[[nodiscard]] u64 staging_upload_texture(Backend& backend, const TextureUpload& upload, Span<const u8> data,
+											 bool streamed) noexcept;
 
-	/// One subresource, steady to copy and back. The batch's entry barrier orders
-	/// all prior submitted work before the copy, so frames in flight are safe.
+	/// One subresource, steady to copy and back, on the critical batch. Owner thread only. The
+	/// batch's entry barrier orders all prior submitted work before the copy, so frames in flight
+	/// are safe.
 	void staging_update_texture(Backend& backend, const TextureUpload& upload, u32 mip, u32 layer,
 								Span<const u8> data) noexcept;
 
 	/**
-	 * Closes the open batch and submits it on its own, signalling the next upload value, which
-	 * it returns. Returns the last value handed out when there was nothing to send, so a caller
-	 * can always wait on what comes back.
+	 * Closes each open batch and submits it on its own queue, signalling the next value of its
+	 * ring. A batch a writer is still filling is left open for next time, unless `all`: then the
+	 * call waits for the writers, because wait_idle promises everything has been sent.
 	 */
-	u64 submit_uploads(Backend& backend) noexcept;
+	void submit_uploads(Backend& backend, bool all) noexcept;
 
-	/// Reads how far the upload timeline has got. Never blocks; a frame that finds nothing new
+	/// Reads how far each ring's timeline has got. Never blocks; a ring that finds nothing new
 	/// simply carries the previous answer.
 	void poll_uploads(Backend& backend) noexcept;
 

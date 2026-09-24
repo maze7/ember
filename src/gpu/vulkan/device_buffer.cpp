@@ -1,8 +1,10 @@
 #include <ember/gpu/buffer.h>
 #include <ember/gpu/common.h>
+#include <ember/sync/thread.h>
 #include <gpu/vulkan/backend.h>
 
 #include <cstring>
+#include <mutex>
 
 namespace ember::gpu
 {
@@ -45,6 +47,15 @@ namespace ember::gpu
 			return {};
 		}
 
+		// Device memory is filled through the frame's upload batch, which only the owner may
+		// write; mapped memory takes its bytes straight from this thread.
+		if (!def.initial_data.empty() && def.memory == MemoryLocation::DeviceLocal &&
+			m_backend->owner_thread != current_thread_id())
+		{
+			EMBER_ERROR("gpu: buffer '{}': DeviceLocal initial data is owner thread only", def.name);
+			return {};
+		}
+
 		VkBufferCreateInfo buffer_info{
 			.sType		 = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 			.size		 = def.size,
@@ -82,9 +93,20 @@ namespace ember::gpu
 			return {};
 		}
 
-		BufferHandle handle = m_backend->resources.buffers.insert(
-			vk::BufferHot{.handle = buffer},
-			vk::BufferCold{.allocation = allocation, .size = def.size, .mapped = result.pMappedData});
+		BufferHandle handle;
+
+		{
+			std::lock_guard lock(m_backend->resources_lock);
+
+			handle = m_backend->resources.buffers.insert(
+				vk::BufferHot{.handle = buffer},
+				vk::BufferCold{.allocation = allocation, .size = def.size, .mapped = result.pMappedData});
+
+			// Srotage buffers live in the bindless SSBO array at their pool index. A fresh slot is
+			// unreferenced by any in-flight frame, so writing is now safe.
+			if (!handle.is_null() && (def.usage & BufferUsage::Storage) != BufferUsage::None)
+				m_backend->descriptor_heap.write_buffer(m_backend->context, handle.index, buffer, def.size);
+		}
 
 		if (handle.is_null())
 		{
@@ -94,10 +116,6 @@ namespace ember::gpu
 		}
 
 		vk::set_name(m_backend->context, VK_OBJECT_TYPE_BUFFER, reinterpret_cast<u64>(buffer), def.name);
-
-		// Storage buffers live in the bindless SSBO array at their pool index.
-		if ((def.usage & BufferUsage::Storage) != BufferUsage::None)
-			m_backend->descriptor_heap.write_buffer(m_backend->context, handle.index, buffer, def.size);
 
 		if (!def.initial_data.empty())
 		{
@@ -123,6 +141,9 @@ namespace ember::gpu
 	void Device::destroy(BufferHandle handle) noexcept
 	{
 		EMBER_GPU_GUARD();
+
+		// The lookup is inside the lock so two destroys of one handle stay idempotent.
+		std::lock_guard lock(m_backend->resources_lock);
 
 		vk::BufferHot* hot = m_backend->resources.buffers.get(handle);
 		if (hot == nullptr)
@@ -162,6 +183,7 @@ namespace ember::gpu
 	{
 		EMBER_GPU_GUARD();
 		EMBER_ASSERT(write != nullptr);
+		EMBER_ASSERT(m_backend->owner_thread == current_thread_id() && "update_buffer is owner thread only");
 
 		if (size == 0)
 			return;

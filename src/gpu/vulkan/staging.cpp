@@ -1,11 +1,13 @@
 #include <ember/core/common.h>
 #include <ember/core/profile.h>
+#include <ember/sync/thread.h>
 #include <gpu/vulkan/backend.h>
 #include <gpu/vulkan/destroy_queue.h>
 #include <gpu/vulkan/formats.h>
 #include <gpu/vulkan/staging.h>
 
 #include <cstring>
+#include <mutex>
 #include <numeric>
 
 namespace ember::gpu::vk
@@ -13,7 +15,7 @@ namespace ember::gpu::vk
 	namespace
 	{
 		/// 16 keeps memcpy on its vector path; buffer-buffer copies themselves need no
-		/// alignment. Stage 2 threads caps.copy_offset_alignment through here for images.
+		/// alignment. Image copies thread the format's block size through region_alignment.
 		constexpr u64 STAGING_ALIGN = 16;
 
 		struct StagingAlloc
@@ -24,18 +26,28 @@ namespace ember::gpu::vk
 			u8* cpu					 = nullptr;
 		};
 
+		[[nodiscard]] bool is_owner(const Backend& backend) noexcept
+		{
+			return backend.owner_thread == current_thread_id();
+		}
+
 		/**
-		 * Ring while a frame is open (reclaim is proven by begin_frame's wait); one-off
-		 * buffer otherwise. Out-of-frame allocations can never use the ring: no wait has
-		 * proven any slice free, and load-time volume shouldn't be bounded by ring size
-		 * anyway. Load-time cost is dominated by IO and decode, not by VMA allocations.
+		 * Staging for one copy, under the lock. The frame ring serves the owner inside a frame
+		 * (begin_frame's wait proved the slice free); everything else is a one-off buffer that the
+		 * open batch owns and frees once its value completes. Out-of-frame and off-thread uploads
+		 * can never use the ring: no wait has proven any slice free to them, and load-time volume
+		 * shouldn't be bounded by ring size anyway. Load-time cost is dominated by IO and decode,
+		 * not by VMA allocations.
 		 */
-		[[nodiscard]] StagingAlloc staging_alloc(Backend& backend, u32 ring_index, u64 size, u64 alignment) noexcept
+		[[nodiscard]] StagingAlloc staging_alloc(Backend& backend, UploadRing& upload, u64 size, u64 alignment,
+												 bool frame_ring) noexcept
 		{
 			StagingRing& ring = backend.staging.ring;
 
-			if (backend.frame.open)
+			if (frame_ring && backend.frame.open)
 			{
+				EMBER_ASSERT(is_owner(backend) && "the frame ring is the owner thread's");
+
 				const u64 aligned = align_up(ring.cursor, alignment);
 
 				if (aligned + size <= ring.slice_end)
@@ -72,7 +84,6 @@ namespace ember::gpu::vk
 			// The batch that is about to copy out of this is the only reader, and its own value is
 			// what proves the copy done. The destroy queue runs on the frame clock and would free
 			// this too early.
-			UploadRing& upload = backend.staging.rings[ring_index];
 			EMBER_ASSERT(upload.open_cmd != VK_NULL_HANDLE && "a one-off belongs to an open batch");
 			upload.batches[upload.open_index].one_offs.push_back({buffer, allocation});
 
@@ -84,9 +95,33 @@ namespace ember::gpu::vk
 			};
 		}
 
+		/**
+		 * The bytes are in: publishes them for the copy and lets the batch submit. Pairs with a
+		 * claim made under the lock that counted the caller as a writer. A flush on coherent
+		 * memory is a defined no-op, so one-offs just call it unconditionally.
+		 */
+		void release_write(Backend& backend, UploadRing& upload, const StagingAlloc& src, u64 size) noexcept
+		{
+			if (src.allocation != VK_NULL_HANDLE)
+				(void)vmaFlushAllocation(backend.context.allocator, src.allocation, 0, size);
+			else if (!backend.staging.ring.coherent)
+				(void)vmaFlushAllocation(backend.context.allocator, backend.staging.ring.allocation, src.offset, size);
+
+			upload.writers.fetch_sub(1, std::memory_order_release);
+		}
+
 		[[nodiscard]] constexpr u64 region_alignment(const FormatInfo& info) noexcept
 		{
 			return std::lcm<u64>(16, info.block_bytes);
+		}
+
+		[[nodiscard]] constexpr VkExtent3D mip_extent(Extent3D extent, u32 mip) noexcept
+		{
+			return {
+				extent.width >> mip > 0 ? extent.width >> mip : 1,
+				extent.height >> mip > 0 ? extent.height >> mip : 1,
+				extent.depth >> mip > 0 ? extent.depth >> mip : 1,
+			};
 		}
 
 		/**
@@ -123,19 +158,19 @@ namespace ember::gpu::vk
 			batch.one_offs.clear();
 		}
 
-		[[nodiscard]] VkCommandBuffer upload_cmd(Backend& backend, bool streamed) noexcept
+		/// The ring's open batch, opened here if there is none. Under the lock.
+		[[nodiscard]] VkCommandBuffer upload_cmd(Backend& backend, UploadRing& upload) noexcept
 		{
-			Staging& staging   = backend.staging;
-			UploadRing& upload = staging.rings[streamed ? UPLOAD_RING_STREAMED : UPLOAD_RING_CRITICAL];
-
 			if (upload.open_cmd != VK_NULL_HANDLE)
 				return upload.open_cmd;
 
+			const u64 completed = upload.completed.load(std::memory_order_acquire);
+
 			for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT + 1; ++i)
 			{
-				// The upload clock, not the frame's: a batch is reusable once its own submit
+				// The ring's own clock, not the frame's: a batch is reusable once its own submit
 				// signalled, whether or not a frame has been anywhere near it.
-				if (upload.batches[i].value > staging.completed)
+				if (upload.batches[i].value > completed)
 					continue;
 
 				free_one_offs(backend, upload.batches[i]);
@@ -195,71 +230,20 @@ namespace ember::gpu::vk
 			vkCmdPipelineBarrier2(cmd, &dependency);
 		}
 
-		/// Stages one subresource and records its copy. One region per call keeps
-		/// the ring and one-off paths uniform: each region names its own buffer,
-		/// so ring exhaustion degrades per mip instead of per texture.
-		[[nodiscard]] bool copy_subresource(Backend& backend, VkCommandBuffer cmd, const TextureUpload& upload,
-											const FormatInfo& info, u32 mip, u32 layer, Span<const u8> bytes,
-											u32 ring) noexcept
-		{
-			const StagingAlloc src = staging_alloc(backend, ring, bytes.size(), region_alignment(info));
-
-			if (src.cpu == nullptr)
-			{
-				EMBER_ERROR("gpu: staging failed; texture mip {} layer {} dropped", mip, layer);
-				return false;
-			}
-
-			std::memcpy(src.cpu, bytes.data(), bytes.size());
-
-			if (src.allocation != VK_NULL_HANDLE)
-				(void)vmaFlushAllocation(backend.context.allocator, src.allocation, 0, bytes.size());
-			else if (!backend.staging.ring.coherent)
-				(void)vmaFlushAllocation(backend.context.allocator, backend.staging.ring.allocation, src.offset,
-										 bytes.size());
-
-			const VkBufferImageCopy2 region{
-				.sType			  = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
-				.bufferOffset	  = src.offset,
-				.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, layer, 1},
-				.imageExtent =
-					{
-						upload.extent.width >> mip > 0 ? upload.extent.width >> mip : 1,
-						upload.extent.height >> mip > 0 ? upload.extent.height >> mip : 1,
-						upload.extent.depth >> mip > 0 ? upload.extent.depth >> mip : 1,
-					},
-			};
-
-			const VkCopyBufferToImageInfo2 copy{
-				.sType			= VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
-				.srcBuffer		= src.buffer,
-				.dstImage		= upload.image,
-				.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-				.regionCount	= 1,
-				.pRegions		= &region,
-			};
-
-			vkCmdCopyBufferToImage2(cmd, &copy);
-			return true;
-		}
-
+		/// Closes the ring's open batch and submits it on its queue, signalling the ring's next
+		/// value. Under the lock, with no writer left on the batch.
 		void submit_ring(Backend& backend, u32 ring) noexcept
 		{
-			Staging& staging   = backend.staging;
-			UploadRing& upload = staging.rings[ring];
+			UploadRing& upload = backend.staging.rings[ring];
 
-			if (upload.open_cmd == VK_NULL_HANDLE)
-				return;
+			EMBER_ASSERT(upload.open_cmd != VK_NULL_HANDLE);
+			EMBER_ASSERT(upload.writers.load(std::memory_order_relaxed) == 0);
 
 			record_upload_barrier(upload.open_cmd, false);
 			EMBER_VK_CHECK(vkEndCommandBuffer(upload.open_cmd));
 
-			const u64 value							= ++staging.value;
+			const u64 value							= ++upload.value;
 			upload.batches[upload.open_index].value = value;
-
-			// Only critical work moves the watermark a frame waits on.
-			if (ring == UPLOAD_RING_CRITICAL)
-				staging.critical_value = value;
 
 			const VkCommandBufferSubmitInfo cmd_info{
 				.sType		   = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
@@ -268,7 +252,7 @@ namespace ember::gpu::vk
 
 			const VkSemaphoreSubmitInfo signal{
 				.sType	   = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-				.semaphore = staging.timeline,
+				.semaphore = upload.timeline,
 				.value	   = value,
 				.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 			};
@@ -330,7 +314,9 @@ namespace ember::gpu::vk
 		// two are the same index and the second pool is simply a duplicate.
 		staging.cross_family = backend.context.transfer.family != backend.context.graphics.family;
 
-		const u32 families[UPLOAD_RING_COUNT] = {backend.context.graphics.family, backend.context.transfer.family};
+		const u32 families[UPLOAD_RING_COUNT]	   = {backend.context.graphics.family, backend.context.transfer.family};
+		const char* const names[UPLOAD_RING_COUNT] = {"ember.upload_timeline.critical",
+													  "ember.upload_timeline.streamed"};
 
 		for (u32 ring = 0; ring < UPLOAD_RING_COUNT; ++ring)
 		{
@@ -364,38 +350,37 @@ namespace ember::gpu::vk
 
 			for (u32 i = 0; i < MAX_FRAMES_IN_FLIGHT + 1; ++i)
 				upload.batches[i].cmd = commands[i];
+
+			const VkSemaphoreTypeCreateInfo timeline_type{
+				.sType		   = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
+				.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
+				.initialValue  = 0,
+			};
+
+			const VkSemaphoreCreateInfo semaphore_info{
+				.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+				.pNext = &timeline_type,
+			};
+
+			if (vkCreateSemaphore(backend.context.device, &semaphore_info, nullptr, &upload.timeline) != VK_SUCCESS)
+			{
+				EMBER_ERROR("gpu: upload timeline creation failed");
+				return false;
+			}
+
+			set_name(backend.context, VK_OBJECT_TYPE_SEMAPHORE, reinterpret_cast<u64>(upload.timeline), names[ring]);
 		}
-
-		const VkSemaphoreTypeCreateInfo timeline_type{
-			.sType		   = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
-			.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE,
-			.initialValue  = 0,
-		};
-
-		const VkSemaphoreCreateInfo semaphore_info{
-			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-			.pNext = &timeline_type,
-		};
-
-		if (vkCreateSemaphore(backend.context.device, &semaphore_info, nullptr, &staging.timeline) != VK_SUCCESS)
-		{
-			EMBER_ERROR("gpu: upload timeline creation failed");
-			return false;
-		}
-
-		set_name(backend.context, VK_OBJECT_TYPE_SEMAPHORE, reinterpret_cast<u64>(staging.timeline),
-				 "ember.upload_timeline");
 
 		return true;
 	}
 
 	void staging_destroy(const Context& ctx, Staging& staging) noexcept
 	{
-		if (staging.timeline != VK_NULL_HANDLE)
-			vkDestroySemaphore(ctx.device, staging.timeline, nullptr);
-
 		for (UploadRing& upload : staging.rings)
 		{
+			if (upload.timeline != VK_NULL_HANDLE)
+				vkDestroySemaphore(ctx.device, upload.timeline, nullptr);
+
 			// Idle by contract, so anything still parked here has been read.
 			for (UploadBatch& batch : upload.batches)
 			{
@@ -412,16 +397,19 @@ namespace ember::gpu::vk
 		if (staging.ring.buffer != VK_NULL_HANDLE)
 			vmaDestroyBuffer(ctx.allocator, staging.ring.buffer, staging.ring.allocation);
 
-		// Field by field: the batches own PMR vectors, which a whole-struct reset cannot rebind.
-		staging.ring	 = {};
-		staging.timeline = VK_NULL_HANDLE;
-		staging.value = staging.completed = staging.critical_value = 0;
+		// Field by field: the batches own PMR vectors and the rings own atomics, which a
+		// whole-struct reset cannot rebind.
+		staging.ring = {};
 
 		for (UploadRing& upload : staging.rings)
 		{
 			upload.pool		  = VK_NULL_HANDLE;
 			upload.open_cmd	  = VK_NULL_HANDLE;
 			upload.open_index = 0;
+			upload.timeline	  = VK_NULL_HANDLE;
+			upload.value	  = 0;
+			upload.completed.store(0, std::memory_order_relaxed);
+			upload.writers.store(0, std::memory_order_relaxed);
 
 			for (UploadBatch& batch : upload.batches)
 			{
@@ -437,147 +425,273 @@ namespace ember::gpu::vk
 		staging.ring.slice_end = staging.ring.cursor + staging.ring.slice_bytes;
 	}
 
-	void staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, u64 size, BufferWriter write, void* context,
-						bool streamed) noexcept
+	void staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, u64 size, BufferWriter write,
+						void* context) noexcept
 	{
-		const u32 ring = streamed ? UPLOAD_RING_STREAMED : UPLOAD_RING_CRITICAL;
+		EMBER_ASSERT(is_owner(backend) && "buffer uploads are the owner thread's");
 
-		VkCommandBuffer cmd = upload_cmd(backend, streamed);
-		if (cmd == VK_NULL_HANDLE)
-			return;
+		UploadRing& upload = backend.staging.rings[UPLOAD_RING_CRITICAL];
+		StagingAlloc src;
 
-		const StagingAlloc src = staging_alloc(backend, ring, size, STAGING_ALIGN);
-
-		if (src.cpu == nullptr)
+		// The copy is recorded before its bytes exist: the GPU only reads them at submit, and the
+		// writer count holds the submit back until they are in.
 		{
-			EMBER_ERROR("gpu: staging allocation failed; {}-byte update dropped", size);
-			return;
+			std::lock_guard lock(backend.staging.lock);
+
+			VkCommandBuffer cmd = upload_cmd(backend, upload);
+			if (cmd == VK_NULL_HANDLE)
+				return;
+
+			src = staging_alloc(backend, upload, size, STAGING_ALIGN, true);
+
+			if (src.cpu == nullptr)
+			{
+				EMBER_ERROR("gpu: staging allocation failed; {}-byte update dropped", size);
+				return;
+			}
+
+			const VkBufferCopy2 region{
+				.sType	   = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+				.srcOffset = src.offset,
+				.dstOffset = dst_offset,
+				.size	   = size,
+			};
+
+			const VkCopyBufferInfo2 copy_info{
+				.sType		 = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
+				.srcBuffer	 = src.buffer,
+				.dstBuffer	 = dst,
+				.regionCount = 1,
+				.pRegions	 = &region,
+			};
+
+			vkCmdCopyBuffer2(cmd, &copy_info);
+			upload.writers.fetch_add(1, std::memory_order_relaxed);
 		}
 
-		// The caller fills the staging bytes in place; the copying form's writer is a memcpy.
+		// The caller fills the staged bytes in place; the copying form's writer is a memcpy.
 		write(src.cpu, size, context);
-
-		// Publication needs the flush on non-coherent memory; a flush on coherent memory is
-		// a defined no-op, so one-offs just call it unconditionally.
-		if (src.allocation != VK_NULL_HANDLE)
-			(void)vmaFlushAllocation(backend.context.allocator, src.allocation, 0, size);
-		else if (!backend.staging.ring.coherent)
-			(void)vmaFlushAllocation(backend.context.allocator, backend.staging.ring.allocation, src.offset, size);
-
-		VkBufferCopy2 region{
-			.sType	   = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
-			.srcOffset = src.offset,
-			.dstOffset = dst_offset,
-			.size	   = size,
-		};
-
-		VkCopyBufferInfo2 copy_info{
-			.sType		 = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
-			.srcBuffer	 = src.buffer,
-			.dstBuffer	 = dst,
-			.regionCount = 1,
-			.pRegions	 = &region,
-		};
-
-		vkCmdCopyBuffer2(cmd, &copy_info);
+		release_write(backend, upload, src, size);
 	}
 
-	void staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, Span<const u8> data, bool streamed) noexcept
+	void staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, Span<const u8> data) noexcept
 	{
 		Span<const u8> source = data;
 
 		staging_upload(
 			backend, dst, dst_offset, data.size(), [](u8* cpu, u64 size, void* context) noexcept
-			{ std::memcpy(cpu, static_cast<const Span<const u8>*>(context)->data(), size); }, &source, streamed);
+			{ std::memcpy(cpu, static_cast<const Span<const u8>*>(context)->data(), size); }, &source);
 	}
 
-	u64 submit_uploads(Backend& backend) noexcept
+	void submit_uploads(Backend& backend, bool all) noexcept
 	{
 		EMBER_PROFILE_SCOPE_C("gpu: submit uploads", PROFILE_COLOR_IO);
 
-		submit_ring(backend, UPLOAD_RING_CRITICAL);
-		submit_ring(backend, UPLOAD_RING_STREAMED);
+		for (u32 ring = 0; ring < UPLOAD_RING_COUNT; ++ring)
+		{
+			UploadRing& upload = backend.staging.rings[ring];
 
-		return backend.staging.value;
+			for (u32 spins = 0;; ++spins)
+			{
+				{
+					std::lock_guard lock(backend.staging.lock);
+
+					if (upload.open_cmd == VK_NULL_HANDLE)
+						break;
+
+					// No writer can join the batch while the lock is held, so zero here is final.
+					if (upload.writers.load(std::memory_order_acquire) == 0)
+					{
+						submit_ring(backend, ring);
+						break;
+					}
+
+					// Only the owner fills the critical batch, and it is done by the time it submits.
+					EMBER_ASSERT(ring == UPLOAD_RING_STREAMED && "a critical upload is still being written");
+				}
+
+				// A streamed batch mid fill goes next time; nothing waits on streamed work. Idle
+				// is the exception: it promises that everything requested has been sent.
+				if (!all)
+					break;
+
+				ember::detail::cpu_relax(spins);
+			}
+		}
 	}
 
 	void poll_uploads(Backend& backend) noexcept
 	{
-		Staging& staging = backend.staging;
+		for (UploadRing& upload : backend.staging.rings)
+		{
+			// value is the owner's, written under the lock by submits the owner made; reading it
+			// here, on the owner, needs no lock.
+			if (upload.timeline == VK_NULL_HANDLE || upload.completed.load(std::memory_order_relaxed) >= upload.value)
+				continue;
 
-		if (staging.timeline == VK_NULL_HANDLE || staging.completed >= staging.value)
-			return;
-
-		u64 counter = 0;
-		if (vkGetSemaphoreCounterValue(backend.context.device, staging.timeline, &counter) == VK_SUCCESS)
-			staging.completed = counter;
+			u64 counter = 0;
+			if (vkGetSemaphoreCounterValue(backend.context.device, upload.timeline, &counter) == VK_SUCCESS)
+				upload.completed.store(counter, std::memory_order_release);
+		}
 	}
 
-	void staging_upload_texture(Backend& backend, const TextureUpload& upload, Span<const u8> data,
-								bool streamed) noexcept
+	u64 staging_upload_texture(Backend& backend, const TextureUpload& upload, Span<const u8> data,
+							   bool streamed) noexcept
 	{
-		const u32 ring		   = streamed ? UPLOAD_RING_STREAMED : UPLOAD_RING_CRITICAL;
+		UploadRing& ring	   = backend.staging.rings[streamed ? UPLOAD_RING_STREAMED : UPLOAD_RING_CRITICAL];
 		const FormatInfo& info = format_info(upload.format);
-
-		VkCommandBuffer cmd = upload_cmd(backend, streamed);
-		if (cmd == VK_NULL_HANDLE)
-			return;
 
 		// Empty data: just the christening transition into the steady layout.
 		// Depth targets take this path, so the color-only rule starts below it.
 		if (data.empty())
 		{
+			std::lock_guard lock(backend.staging.lock);
+
+			VkCommandBuffer cmd = upload_cmd(backend, ring);
+			if (cmd == VK_NULL_HANDLE)
+				return 0;
+
 			image_barrier(cmd, upload.image, info.aspect, 0, upload.mip_count, 0, upload.layer_count,
 						  VK_IMAGE_LAYOUT_UNDEFINED, upload.steady, false);
-			return;
+
+			return pending_upload_value(ring);
 		}
 
 		EMBER_ASSERT(info.aspect == VK_IMAGE_ASPECT_COLOR_BIT && "depth-stencil uploads are out of contract");
 
-		// One barrier pair brackets the whole chain; the copies land in between.
-		image_barrier(cmd, upload.image, info.aspect, 0, upload.mip_count, 0, upload.layer_count,
-					  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, true);
+		// The whole chain from one buffer of its own, laid out exactly as the copies read it: the
+		// caller validated the chain size, and every subresource is whole blocks, so the running
+		// offset stays a multiple of the block size the copy rule asks for.
+		StagingAlloc src;
+		u64 value = 0;
 
-		u64 cursor = 0;
-		for (u32 layer = 0; layer < upload.layer_count; ++layer)
 		{
-			for (u32 mip = 0; mip < upload.mip_count; ++mip)
+			std::lock_guard lock(backend.staging.lock);
+
+			VkCommandBuffer cmd = upload_cmd(backend, ring);
+			if (cmd == VK_NULL_HANDLE)
+				return 0;
+
+			src = staging_alloc(backend, ring, data.size(), region_alignment(info), false);
+
+			if (src.cpu == nullptr)
 			{
-				const u64 bytes = subresource_bytes(info, upload.extent, mip);
-				(void)copy_subresource(backend, cmd, upload, info, mip, layer, {data.data() + cursor, bytes}, ring);
-				cursor += bytes;
+				EMBER_ERROR("gpu: staging failed; texture upload of {} bytes dropped", data.size());
+				return 0;
 			}
+
+			// One barrier pair brackets the whole chain; the copies land in between.
+			image_barrier(cmd, upload.image, info.aspect, 0, upload.mip_count, 0, upload.layer_count,
+						  VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, true);
+
+			u64 cursor = 0;
+			for (u32 layer = 0; layer < upload.layer_count; ++layer)
+			{
+				VkBufferImageCopy2 regions[MAX_MIP_LEVELS];
+
+				for (u32 mip = 0; mip < upload.mip_count; ++mip)
+				{
+					regions[mip] = {
+						.sType			  = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+						.bufferOffset	  = src.offset + cursor,
+						.imageSubresource = {info.aspect, mip, layer, 1},
+						.imageExtent	  = mip_extent(upload.extent, mip),
+					};
+
+					cursor += subresource_bytes(info, upload.extent, mip);
+				}
+
+				const VkCopyBufferToImageInfo2 copy{
+					.sType			= VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
+					.srcBuffer		= src.buffer,
+					.dstImage		= upload.image,
+					.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					.regionCount	= upload.mip_count,
+					.pRegions		= regions,
+				};
+
+				vkCmdCopyBufferToImage2(cmd, &copy);
+			}
+
+			EMBER_ASSERT(cursor == data.size() && "the caller validates the chain size; this is the tripwire");
+
+			// A streamed image leaves the DMA family here and the graphics queue takes it back when
+			// the texture is promoted. Both halves name the same layouts and the same families.
+			const bool release	 = streamed && backend.staging.cross_family;
+			const u32 src_family = release ? backend.context.transfer.family : VK_QUEUE_FAMILY_IGNORED;
+			const u32 dst_family = release ? backend.context.graphics.family : VK_QUEUE_FAMILY_IGNORED;
+
+			image_barrier(cmd, upload.image, info.aspect, 0, upload.mip_count, 0, upload.layer_count,
+						  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, upload.steady, false, src_family, dst_family);
+
+			ring.writers.fetch_add(1, std::memory_order_relaxed);
+			value = pending_upload_value(ring);
 		}
 
-		EMBER_ASSERT(cursor == data.size() && "the caller validates the chain size; this is the tripwire");
+		// The long part, outside the lock: the batch cannot submit until the writer count drops.
+		std::memcpy(src.cpu, data.data(), data.size());
+		release_write(backend, ring, src, data.size());
 
-		// A streamed image leaves the DMA family here and the graphics queue takes it back when
-		// the texture is promoted. Both halves name the same layouts and the same families.
-		const bool release	 = streamed && backend.staging.cross_family;
-		const u32 src_family = release ? backend.context.transfer.family : VK_QUEUE_FAMILY_IGNORED;
-		const u32 dst_family = release ? backend.context.graphics.family : VK_QUEUE_FAMILY_IGNORED;
-
-		image_barrier(cmd, upload.image, info.aspect, 0, upload.mip_count, 0, upload.layer_count,
-					  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, upload.steady, false, src_family, dst_family);
+		return value;
 	}
 
 	void staging_update_texture(Backend& backend, const TextureUpload& upload, u32 mip, u32 layer,
 								Span<const u8> data) noexcept
 	{
+		EMBER_ASSERT(is_owner(backend) && "texture updates are the owner thread's");
+
 		const FormatInfo& info = format_info(upload.format);
 		EMBER_ASSERT(info.aspect == VK_IMAGE_ASPECT_COLOR_BIT && "depth-stencil uploads are out of contract");
 
-		constexpr bool streamed = false; // an update targets a live resource: the frame always waits for it
-		VkCommandBuffer cmd		= upload_cmd(backend, streamed);
-		if (cmd == VK_NULL_HANDLE)
-			return;
+		// An update targets a live resource: the frame always waits for it, so it is critical.
+		UploadRing& ring = backend.staging.rings[UPLOAD_RING_CRITICAL];
+		StagingAlloc src;
 
-		// Round-trip the one subresource so whole-image layout tracking stays true.
-		image_barrier(cmd, upload.image, info.aspect, mip, 1, layer, 1, upload.steady,
-					  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, true);
-		(void)copy_subresource(backend, cmd, upload, info, mip, layer, data, UPLOAD_RING_CRITICAL);
-		image_barrier(cmd, upload.image, info.aspect, mip, 1, layer, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-					  upload.steady, false);
+		{
+			std::lock_guard lock(backend.staging.lock);
+
+			VkCommandBuffer cmd = upload_cmd(backend, ring);
+			if (cmd == VK_NULL_HANDLE)
+				return;
+
+			src = staging_alloc(backend, ring, data.size(), region_alignment(info), true);
+
+			if (src.cpu == nullptr)
+			{
+				EMBER_ERROR("gpu: staging failed; texture mip {} layer {} update dropped", mip, layer);
+				return;
+			}
+
+			// Round-trip the one subresource so whole-image layout tracking stays true.
+			image_barrier(cmd, upload.image, info.aspect, mip, 1, layer, 1, upload.steady,
+						  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, true);
+
+			const VkBufferImageCopy2 region{
+				.sType			  = VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2,
+				.bufferOffset	  = src.offset,
+				.imageSubresource = {info.aspect, mip, layer, 1},
+				.imageExtent	  = mip_extent(upload.extent, mip),
+			};
+
+			const VkCopyBufferToImageInfo2 copy{
+				.sType			= VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
+				.srcBuffer		= src.buffer,
+				.dstImage		= upload.image,
+				.dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+				.regionCount	= 1,
+				.pRegions		= &region,
+			};
+
+			vkCmdCopyBufferToImage2(cmd, &copy);
+
+			image_barrier(cmd, upload.image, info.aspect, mip, 1, layer, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+						  upload.steady, false);
+
+			ring.writers.fetch_add(1, std::memory_order_relaxed);
+		}
+
+		std::memcpy(src.cpu, data.data(), data.size());
+		release_write(backend, ring, src, data.size());
 	}
 
 	void staging_acquire_image(Backend& backend, VkCommandBuffer cmd, VkImage image, VkImageAspectFlags aspect,

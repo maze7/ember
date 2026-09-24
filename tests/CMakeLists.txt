@@ -27,5 +27,6 @@ if(EMBER_ENABLE_APP)
 endif()
 
 if(EMBER_ENABLE_GRAPHICS)
+	add_subdirectory(gpu)
 	add_subdirectory(render)
 endif()

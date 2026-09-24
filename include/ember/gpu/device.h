@@ -173,10 +173,17 @@ namespace ember::gpu
 	 *   wait is what makes command pools, transient memory and deferred deletions safe to reuse.
 	 *
 	 * THREADING
-	 *   Owner thread (the constructing thread): lifecycle, create/destroy/update, begin/end_frame,
-	 *   acquire, begin_command_list, wait_idle. Any frame thread: CommandList recording and the
-	 *   submit that seals it (one list at a time per thread, but a list may migrate between
-	 *   threads mid record), and allocate_transient. Violations assert in debug builds.
+	 *   Any thread: create and destroy of buffers, textures, samplers and pipelines, is_valid,
+	 * 	 is_resident, is_complete, transient(), CommandList recording and the submit that seals it
+	 *   (one list at a time per thread, but a list may migrate between threads mid record). The
+	 *   one rule for creation off the owner thread: a texture's initial data uploads streamed
+	 *   there whatever its def says, and a DeviceLocal buffer cannot carry initial data at all,
+	 *   because the frame's upload batch is the owner's to fill.
+	 * 	 Owner thread: lifecycle, begin/end_frame, acquire, swapchains, begin_command_list, update_buffer
+	 *   update_texture, wait_idle. Violations assert in debug builds.
+	 *
+	 *   A haandle is a weak reference: destroying one while another thread still dereferences it is
+	 *   the caller's lifetime bug, as it is on one thread.
 	 *
 	 * FAILURE MODEL
 	 *   No exceptions. Resource creation returns a null handle and logs; the constructor logs

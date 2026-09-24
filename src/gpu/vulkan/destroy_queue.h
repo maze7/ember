@@ -52,7 +52,10 @@ namespace ember::gpu::vk
 		/// old descriptor has retired.
 		void reset_slot(u16 slot, HeapArray heap_mask) noexcept;
 
-		/// Destroys every entry whose value has provably completed.
+		/**
+		 * Every call runs under Backend::resource_lock: destroys come from any thread, the drain
+		 * from the owner, and the stamp reads the frame timeline that the same lock orders against end_frame's bump.
+		 */
 		void drain(const Context& ctx, DescriptorHeap& heap, ResourcePools& pools, u64 completed) noexcept;
 
 		/// Entries not yet destroyed; telemetry and teardown asserts.

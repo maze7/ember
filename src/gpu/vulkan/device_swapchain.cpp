@@ -116,6 +116,8 @@ namespace ember::gpu
 		 */
 		void retire_backbuffers(Backend& backend, vk::SwapchainData& data) noexcept
 		{
+			std::lock_guard lock(backend.resources_lock);
+
 			for (u32 i = 0; i < data.image_count; ++i)
 			{
 				if (const vk::TextureHot* hot = backend.resources.textures.get(data.images[i]))
@@ -134,6 +136,7 @@ namespace ember::gpu
 		void destroy_swapchain_data(Backend& backend, vk::SwapchainData& data) noexcept
 		{
 			retire_backbuffers(backend, data);
+			std::lock_guard lock(backend.resources_lock);
 
 			for (auto& semaphore : data.acquire_semaphores)
 			{
@@ -226,7 +229,10 @@ namespace ember::gpu
 			retire_backbuffers(backend, data);
 
 			if (old != VK_NULL_HANDLE)
+			{
+				std::lock_guard lock(backend.resources_lock);
 				backend.destroy_queue.destroy(old);
+			}
 
 			data.swapchain = swapchain;
 			data.extent	   = extent;
@@ -266,13 +272,17 @@ namespace ember::gpu
 				EMBER_VK_CHECK(
 					vkCreateSemaphore(backend.context.device, &semaphore_info, nullptr, &data.present_semaphores[i]));
 
-				data.images[i] = backend.resources.textures.insert(
-					vk::TextureHot{.image = images[i], .sampled_view = view},
-					vk::TextureCold{
-						.extent		= {extent.width, extent.height, 1},
-						.format		= data.surface_format.format,
-						.owns_image = false, // the swapchain owns these; destroy() must skip them
-					});
+				{
+					std::lock_guard lock(backend.resources_lock);
+
+					data.images[i] = backend.resources.textures.insert(
+						vk::TextureHot{.image = images[i], .sampled_view = view},
+						vk::TextureCold{
+							.extent		= {extent.width, extent.height, 1},
+							.format		= data.surface_format.format,
+							.owns_image = false, // the swapchain owns these; destroy() must skip them
+						});
+				}
 
 				vk::set_name(backend.context, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<u64>(images[i]),
 							 "ember.backbuffer");

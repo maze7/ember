@@ -97,3 +97,66 @@ if(EMBER_ENABLE_IMGUI AND EMBER_ENABLE_GRAPHICS)
 	)
 	add_library(imgui::imgui ALIAS imgui)
 endif()
+
+# efsw watches the asset directory for hot reload. Built here as a static library, the way imgui
+# is: upstream's CMake wants 3.27 and steers BUILD_SHARED_LIBS, which is not ours to touch.
+if(EMBER_ENABLE_ASSETS)
+	set(EFSW_DIR "${CMAKE_CURRENT_SOURCE_DIR}/efsw")
+
+	add_library(efsw STATIC
+		${EFSW_DIR}/src/efsw/Debug.cpp
+		${EFSW_DIR}/src/efsw/DirectorySnapshot.cpp
+		${EFSW_DIR}/src/efsw/DirectorySnapshotDiff.cpp
+		${EFSW_DIR}/src/efsw/DirWatcherGeneric.cpp
+		${EFSW_DIR}/src/efsw/FileInfo.cpp
+		${EFSW_DIR}/src/efsw/FileSystem.cpp
+		${EFSW_DIR}/src/efsw/FileWatcher.cpp
+		${EFSW_DIR}/src/efsw/FileWatcherGeneric.cpp
+		${EFSW_DIR}/src/efsw/FileWatcherImpl.cpp
+		${EFSW_DIR}/src/efsw/Log.cpp
+		${EFSW_DIR}/src/efsw/String.cpp
+		${EFSW_DIR}/src/efsw/System.cpp
+		${EFSW_DIR}/src/efsw/Watcher.cpp
+		${EFSW_DIR}/src/efsw/WatcherGeneric.cpp
+	)
+	add_library(efsw::efsw ALIAS efsw)
+
+	if(WIN32)
+		target_sources(efsw PRIVATE
+			${EFSW_DIR}/src/efsw/platform/win/FileSystemImpl.cpp
+			${EFSW_DIR}/src/efsw/platform/win/SystemImpl.cpp
+			${EFSW_DIR}/src/efsw/FileWatcherWin32.cpp
+			${EFSW_DIR}/src/efsw/WatcherWin32.cpp
+		)
+		target_compile_definitions(efsw PRIVATE _SCL_SECURE_NO_WARNINGS)
+	else()
+		target_sources(efsw PRIVATE
+			${EFSW_DIR}/src/efsw/platform/posix/FileSystemImpl.cpp
+			${EFSW_DIR}/src/efsw/platform/posix/SystemImpl.cpp
+		)
+		find_package(Threads REQUIRED)
+		target_link_libraries(efsw PRIVATE Threads::Threads)
+
+		if(APPLE)
+			target_sources(efsw PRIVATE
+				${EFSW_DIR}/src/efsw/FileWatcherFSEvents.cpp
+				${EFSW_DIR}/src/efsw/FileWatcherKqueue.cpp
+				${EFSW_DIR}/src/efsw/WatcherFSEvents.cpp
+				${EFSW_DIR}/src/efsw/WatcherKqueue.cpp
+			)
+			target_link_libraries(efsw PRIVATE "-framework CoreFoundation" "-framework CoreServices")
+		else()
+			target_sources(efsw PRIVATE
+				${EFSW_DIR}/src/efsw/FileWatcherInotify.cpp
+				${EFSW_DIR}/src/efsw/WatcherInotify.cpp
+			)
+		endif()
+	endif()
+
+	target_include_directories(efsw
+		SYSTEM PUBLIC "$<BUILD_INTERFACE:${EFSW_DIR}/include>"
+		PRIVATE "${EFSW_DIR}/src"
+	)
+	target_compile_features(efsw PRIVATE cxx_std_11)
+	target_compile_definitions(efsw PRIVATE $<IF:$<CONFIG:Debug>,DEBUG,NDEBUG>)
+endif()

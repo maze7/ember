@@ -1,9 +1,11 @@
 #include <ember/gpu/device.h>
 #include <ember/gpu/texture.h>
+#include <ember/sync/thread.h>
 #include <gpu/vulkan/backend.h>
 #include <gpu/vulkan/formats.h>
 
 #include <algorithm>
+#include <mutex>
 
 namespace ember::gpu
 {
@@ -93,6 +95,20 @@ namespace ember::gpu
 		}
 
 		const vk::FormatInfo& info = vk::format_info(def.format);
+		const bool sampled		   = (def.usage & TextureUsage::Sampled) != TextureUsage::None;
+		const bool storage		   = (def.usage & TextureUsage::Storage) != TextureUsage::None;
+		const bool owner		   = m_backend->owner_thread == current_thread_id();
+
+		// Off the owner thread the pixels upload streamed whatever the def says: the heap slot shows
+		// the fallback until they land, and no frame waits. That is the only way another thread can
+		// hand the GPU data, because the critical batch is the owner's frame to fill.
+		const bool streamed = !def.initial_data.empty() && (def.streamed || !owner);
+
+		if (streamed && !sampled)
+		{
+			EMBER_ERROR("gpu: texture '{}': streamed initial data needs Sampled usage", def.name);
+			return {};
+		}
 
 		// Content validation the def validator can't do. A corrupted asset is an
 		// error and a reject, never an assert in release.
@@ -172,7 +188,7 @@ namespace ember::gpu
 		// Storage access addresses one mip; mip 0 is the contract until per-mip
 		// views arrive. Cube storage views must be 2D arrays.
 		VkImageView storage_view = VK_NULL_HANDLE;
-		if ((def.usage & TextureUsage::Storage) != TextureUsage::None)
+		if (storage)
 		{
 			VkImageViewCreateInfo storage_info = view_info;
 			storage_info.viewType =
@@ -189,68 +205,56 @@ namespace ember::gpu
 		}
 
 		const VkImageLayout steady = steady_layout(def.usage);
+		TextureHandle handle;
 
-		const TextureHandle handle = m_backend->resources.textures.insert(
-			vk::TextureHot{
-				.image		  = image,
-				.sampled_view = view,
-				.storage_view = storage_view,
-			},
-			vk::TextureCold{
-				.allocation	 = allocation,
-				.extent		 = image_info.extent,
-				.format		 = info.vk,
-				.api_format	 = def.format,
-				.mip_count	 = def.mip_count,
-				.layer_count = def.layers,
-				.layout		 = steady,
-				.type		 = def.type,
-			});
+		{
+			std::lock_guard lock(m_backend->resources_lock);
+
+			handle = m_backend->resources.textures.insert(
+				vk::TextureHot{
+					.image		  = image,
+					.sampled_view = view,
+					.storage_view = storage_view,
+				},
+				vk::TextureCold{
+					.allocation	 = allocation,
+					.extent		 = image_info.extent,
+					.format		 = info.vk,
+					.api_format	 = def.format,
+					.mip_count	 = def.mip_count,
+					.layer_count = def.layers,
+					.layout		 = steady,
+					.type		 = def.type,
+				});
+
+			// A fresh slot is unreferenced by any in-flight frame, so writing now is safe. A
+			// streamed texture keeps the fallback in its sampled slot until the pixels land; the
+			// handle is live either way, so callers never branch on readiness.
+			if (!handle.is_null())
+			{
+				if (sampled && !streamed)
+					m_backend->descriptor_heap.write_sampled(m_backend->context, handle.index, view, steady, def.type);
+				if (storage)
+					m_backend->descriptor_heap.write_storage(m_backend->context, handle.index, storage_view, def.type);
+			}
+		}
 
 		if (handle.is_null())
 		{
 			EMBER_ERROR("gpu: texture pool exhausted ({})", def.name);
+			vkDestroyImageView(m_backend->context.device, storage_view, nullptr);
 			vkDestroyImageView(m_backend->context.device, view, nullptr);
 			vmaDestroyImage(m_backend->context.allocator, image, allocation);
 			return {};
 		}
 
-		// A streamed texture keeps the fallback in its slot until the pixels land. The handle is
-		// live either way, so callers never branch on readiness.
-		const bool sampled	= (def.usage & TextureUsage::Sampled) != TextureUsage::None;
-		const bool deferred = sampled && def.streamed && !def.initial_data.empty() &&
-							  m_backend->pending_residency_count < MAX_PENDING_RESIDENCY;
-
-		// A fresh slot is unreferenced by any in-flight frame, so writing now is safe.
-		if (sampled && !deferred)
-			m_backend->descriptor_heap.write_sampled(m_backend->context, handle.index, view, steady, def.type);
-		if ((def.usage & TextureUsage::Storage) != TextureUsage::None)
-			m_backend->descriptor_heap.write_storage(m_backend->context, handle.index, storage_view, def.type);
-
+		// The slot is ours until the handle is returned: nothing else can reach its cold data yet.
 		vk::TextureCold& cold = *m_backend->resources.textures.get_cold(handle);
-
-		if (deferred)
-		{
-			cold.ready_value = vk::pending_upload_value(m_backend->staging);
-
-			m_backend->pending_residency[m_backend->pending_residency_count++] = {
-				.texture	   = handle,
-				.view		   = view,
-				.layout		   = steady,
-				.type		   = def.type,
-				.ready_value   = cold.ready_value,
-				.image		   = image,
-				.aspect		   = info.aspect,
-				.mip_count	   = def.mip_count,
-				.layer_count   = def.layers,
-				.needs_acquire = m_backend->staging.cross_family,
-			};
-		}
 
 		// Deep mips get their own storage entries so shaders can write any level by
 		// index. Hidden pool slots: created with the texture, destroyed with it,
 		// never handed out as user handles.
-		if ((def.usage & TextureUsage::Storage) != TextureUsage::None)
+		if (storage)
 		{
 			for (u32 mip = 1; mip < def.mip_count; ++mip)
 			{
@@ -268,22 +272,31 @@ namespace ember::gpu
 					return {};
 				}
 
-				const TextureHandle entry =
-					m_backend->resources.textures.insert(vk::TextureHot{.image = image, .storage_view = mip_view},
-														 vk::TextureCold{
-															 .extent =
-																 {
-																	 std::max(def.extent.width >> mip, 1u),
-																	 std::max(def.extent.height >> mip, 1u),
-																	 std::max(def.extent.depth >> mip, 1u),
-																 },
-															 .format	 = info.vk,
-															 .api_format = def.format,
-															 .layout	 = steady,
-															 .owns_image = false,
-															 .type		 = def.type,
-															 .parent	 = handle,
-														 });
+				TextureHandle entry;
+
+				{
+					std::lock_guard lock(m_backend->resources_lock);
+
+					entry =
+						m_backend->resources.textures.insert(vk::TextureHot{.image = image, .storage_view = mip_view},
+															 vk::TextureCold{
+																 .extent =
+																	 {
+																		 std::max(def.extent.width >> mip, 1u),
+																		 std::max(def.extent.height >> mip, 1u),
+																		 std::max(def.extent.depth >> mip, 1u),
+																	 },
+																 .format	 = info.vk,
+																 .api_format = def.format,
+																 .layout	 = steady,
+																 .owns_image = false,
+																 .type		 = def.type,
+																 .parent	 = handle,
+															 });
+
+					if (!entry.is_null())
+						m_backend->descriptor_heap.write_storage(m_backend->context, entry.index, mip_view, def.type);
+				}
 
 				if (entry.is_null())
 				{
@@ -294,7 +307,6 @@ namespace ember::gpu
 				}
 
 				cold.mip_storage[mip] = entry;
-				m_backend->descriptor_heap.write_storage(m_backend->context, entry.index, mip_view, def.type);
 			}
 		}
 
@@ -341,17 +353,47 @@ namespace ember::gpu
 		}
 
 		// Data lands and/or the image transitions into its steady layout; either way
-		// every texture leaves creation resting in a known layout.
-		vk::staging_upload_texture(*m_backend,
-								   {
-									   .image		= image,
-									   .format		= def.format,
-									   .extent		= def.extent,
-									   .mip_count	= def.mip_count,
-									   .layer_count = def.layers,
-									   .steady		= steady,
-								   },
-								   def.initial_data, deferred);
+		// every texture leaves creation resting in a known layout. The value comes back
+		// from the batch the copies went into, so it is exact whichever thread submits.
+		const u64 upload_value = vk::staging_upload_texture(*m_backend,
+															{
+																.image		 = image,
+																.format		 = def.format,
+																.extent		 = def.extent,
+																.mip_count	 = def.mip_count,
+																.layer_count = def.layers,
+																.steady		 = steady,
+															},
+															def.initial_data, streamed);
+
+		if (upload_value == 0)
+		{
+			// Nothing was recorded, so the image was never touched by a batch and the handle
+			// carries a descriptor at most: the deferred destroy is still the tidy way out.
+			EMBER_ERROR("gpu: texture '{}' upload failed", def.name);
+			destroy(handle);
+			return {};
+		}
+
+		if (streamed)
+		{
+			std::lock_guard lock(m_backend->resources_lock);
+
+			cold.ready_value = upload_value;
+
+			m_backend->pending_residency.push_back({
+				.texture	   = handle,
+				.view		   = view,
+				.layout		   = steady,
+				.type		   = def.type,
+				.ready_value   = upload_value,
+				.image		   = image,
+				.aspect		   = info.aspect,
+				.mip_count	   = def.mip_count,
+				.layer_count   = def.layers,
+				.needs_acquire = m_backend->staging.cross_family,
+			});
+		}
 
 		vk::set_name(m_backend->context, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<u64>(image), def.name);
 
@@ -361,6 +403,9 @@ namespace ember::gpu
 	void Device::destroy(TextureHandle handle) noexcept
 	{
 		EMBER_GPU_GUARD();
+
+		// The lookup is inside the lock so two destroys of one handle stay idempotent.
+		std::lock_guard lock(m_backend->resources_lock);
 
 		vk::TextureHot* hot = m_backend->resources.textures.get(handle);
 		if (hot == nullptr)
@@ -397,6 +442,7 @@ namespace ember::gpu
 
 		// Retire only: the drain that resets this slot's descriptor releases it, so
 		// the index cannot be reclaimed while an in-flight frame can still read it.
+		// A pending residency entry for this handle finds the slot gone and skips its write.
 		(void)m_backend->resources.textures.retire(handle);
 	}
 
@@ -408,6 +454,7 @@ namespace ember::gpu
 	void Device::update_texture(TextureHandle handle, u32 mip, u32 layer, Span<const u8> data) noexcept
 	{
 		EMBER_GPU_GUARD();
+		EMBER_ASSERT(m_backend->owner_thread == current_thread_id());
 
 		if (data.empty())
 			return;

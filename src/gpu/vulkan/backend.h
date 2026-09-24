@@ -4,6 +4,8 @@
 #include <ember/gpu/common.h>
 #include <ember/gpu/device.h>
 #include <ember/gpu/transient.h>
+#include <ember/memory/memory.h>
+#include <ember/sync/spin_mutex.h>
 #include <ember/sync/thread.h>
 #include <gpu/vulkan/common.h>
 #include <gpu/vulkan/descriptor_heap.h>
@@ -161,7 +163,7 @@ namespace ember::gpu
 	{
 		VkSemaphore timeline   = VK_NULL_HANDLE; // frame N signals value N
 		VkQueryPool timestamps = VK_NULL_HANDLE; // zone ticks, sliced per slot; null without caps.timestamps
-		u64 timeline_value	   = 0;				 // last value handed to a submit
+		u64 timeline_value	   = 0;				 // last value handed to a submit; bumped under resources_lock
 		u64 index			   = 0;				 // slot = index % frames_in_flight
 		bool open			   = false;
 
@@ -169,8 +171,8 @@ namespace ember::gpu
 		/// the caller asked for them in, and that is the order they reach the queue.
 		u32 lists_claimed = 0;
 
-		/// Highest upload value this frame took ownership back at. The submit waits on it, which
-		/// costs nothing because promotion only runs on uploads the timeline already passed.
+		/// Highest streamed upload value this frame took ownership back at. The submit waits on it,
+		/// which costs nothing because promotion only runs on uploads that timeline already passed.
 		u64 acquire_value = 0;
 
 		/// Highest timeline value proven complete (begin_frame waits, wait_idle). Batch and
@@ -206,7 +208,7 @@ namespace ember::gpu
 	 *
 	 *   context  - written by boot, read-only afterwards
 	 *   frame    - written by the frame loop (begin/end_frame, acquire)
-	 *   services - written by user calls (create/destroy), drained by the frame loop
+	 *   services - written by user calls (create/destroy) from any thread, drained by the frame loop
 	 */
 	struct Backend
 	{
@@ -219,10 +221,19 @@ namespace ember::gpu
 		vk::DescriptorHeap descriptor_heap{}; // bindless heap
 		TransientAllocator transient{};		  // fast path; user-facing via Device::transient()
 		vk::TransientRing transient_ring{};	  // its memory, overflow pages, telemetry
-		vk::Staging staging{};				  // staging ring + upload batches
+		vk::Staging staging{};				  // staging ring + upload batches, with a lock of its own
 
-		PendingResidency pending_residency[MAX_PENDING_RESIDENCY]{};
-		u32 pending_residency_count = 0;
+		/**
+		 * Guards what creation and destruction share with the frame loop's drain: the pools' slot
+		 * bookkeeping, the descriptor writes that go with it, the destroy queue's entries, the
+		 * residency list and the timeline stamp destroy takes. Held for bookkeeping only; the
+		 * driver calls that make or fill an object run outside it, and so does every lookup by
+		 * handle, which the pools serve lock free. Never held together with staging.lock.
+		 */
+		SpinMutex resources_lock;
+
+		/** Streamed textures whose pixels are in flight, compacted by promotion each frame. */
+		Vector<PendingResidency> pending_residency{&memory::heap(MemoryTag::Graphics)};
 
 		/// Zones from the most recently retired frame, refreshed by begin_frame.
 		GpuZoneTiming gpu_zones[MAX_COMMAND_LISTS * MAX_GPU_ZONES]{};

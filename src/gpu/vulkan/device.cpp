@@ -6,6 +6,7 @@
 #include <gpu/vulkan/formats.h>
 
 #include <atomic>
+#include <mutex>
 #include <utility>
 
 namespace ember::gpu
@@ -107,25 +108,34 @@ namespace ember::gpu
 		 * present semaphore (WSI). Submission order plus the batch's exit barrier is what makes
 		 * this frame's reads see this frame's uploads.
 		 */
-		void submit_frame(Backend& backend, u64 upload_value, Span<const VkCommandBuffer> lists, u64 value) noexcept
+		void submit_frame(Backend& backend, Span<const VkCommandBuffer> lists, u64 value) noexcept
 		{
 			FrameState& frame = backend.frame;
 			const u32 slot	  = static_cast<u32>(frame.index % backend.context.frames_in_flight);
 
-			VkSemaphoreSubmitInfo waits[MAX_SWAPCHAINS + 1];
+			VkSemaphoreSubmitInfo waits[MAX_SWAPCHAINS + vk::UPLOAD_RING_COUNT];
 			VkSemaphoreSubmitInfo signals[MAX_SWAPCHAINS + 1];
 			u32 wait_count	 = 0;
 			u32 signal_count = 0;
 
-			// Uploads run on their own submit now, so the frame names what it needs instead of
-			// carrying it: everything staged up to this value is visible before a draw reads it.
-			if (upload_value != 0)
+			// Uploads run on their own submits, so the frame names what it needs instead of
+			// carrying it: every critical copy, the streamed images it took ownership of.
+			// Streamed uploads otherwise never hold a frame back.
+			const u64 upload_values[vk::UPLOAD_RING_COUNT] = {backend.staging.rings[vk::UPLOAD_RING_CRITICAL].value,
+															  frame.acquire_value};
+
+			for (u32 ring = 0; ring < vk::UPLOAD_RING_COUNT; ++ring)
+			{
+				if (upload_values[ring] == 0)
+					continue;
+
 				waits[wait_count++] = {
 					.sType	   = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-					.semaphore = backend.staging.timeline,
-					.value	   = upload_value,
+					.semaphore = backend.staging.rings[ring].timeline,
+					.value	   = upload_values[ring],
 					.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
 				};
+			}
 
 			for (u32 i = 0; i < frame.pending_present_count; ++i)
 			{
@@ -218,21 +228,28 @@ namespace ember::gpu
 		 * Streamed textures whose pixels have landed take their real view in the heap, and the
 		 * graphics queue takes back ownership of the images the DMA family released. Anything
 		 * still in flight stays on the fallback and is retried next frame; nothing here waits.
+		 *
+		 * Under resources_lock: creation appends to the list from any thread.
 		 */
 		void promote_residents(Device& device, Backend& backend) noexcept
 		{
 			FrameState& frame = backend.frame;
 			const u32 slot	  = static_cast<u32>(frame.index % backend.context.frames_in_flight);
 
+			std::lock_guard lock(backend.resources_lock);
+
+			const u64 completed =
+				backend.staging.rings[vk::UPLOAD_RING_STREAMED].completed.load(std::memory_order_acquire);
+
 			CommandList acquires;
 			VkCommandBuffer acquire_cmd = VK_NULL_HANDLE;
 			u32 remaining				= 0;
 
-			for (u32 i = 0; i < backend.pending_residency_count; ++i)
+			for (u32 i = 0; i < backend.pending_residency.size(); ++i)
 			{
-				const PendingResidency& pending = backend.pending_residency[i];
+				const PendingResidency pending = backend.pending_residency[i];
 
-				if (pending.ready_value > backend.staging.completed)
+				if (pending.ready_value > completed)
 				{
 					backend.pending_residency[remaining++] = pending;
 					continue;
@@ -276,13 +293,11 @@ namespace ember::gpu
 				}
 			}
 
-			backend.pending_residency_count = remaining;
+			backend.pending_residency.resize(remaining);
 
 			if (!acquires.is_null())
 				device.submit(acquires);
 		}
-
-		u64 flush_uploads(Backend& backend) noexcept { return vk::submit_uploads(backend); }
 	}
 
 	Device::Device(const DeviceDef& def) noexcept : Device(nullptr, def) {}
@@ -332,6 +347,7 @@ namespace ember::gpu
 
 			// Idle means everything signaled: even entries stamped for a submit that never
 			// happened (an open frame at teardown) are safe now.
+			std::lock_guard lock(m_backend->resources_lock);
 			m_backend->destroy_queue.drain(m_backend->context, m_backend->descriptor_heap, m_backend->resources,
 										   UINT64_MAX);
 		}
@@ -406,18 +422,22 @@ namespace ember::gpu
 	{
 		EMBER_GPU_GUARD();
 		EMBER_PROFILE_SCOPE_C("gpu: wait_idle", PROFILE_COLOR_WAIT);
+		EMBER_ASSERT(m_backend->owner_thread == current_thread_id());
 
-		// An open out-of-frame upload batch rides this wait: submit it so "idle" means
+		// Every open upload batch rides this wait, writers included: "idle" means
 		// "every requested copy has landed", which is what loading-screen callers want.
-		flush_uploads(*m_backend);
-
+		vk::submit_uploads(*m_backend, true);
 		vk::note_result(*m_backend, vkDeviceWaitIdle(m_backend->context.device));
 
 		// Idle proves every handed-out timeline value signalled, so batch and page
 		// recycling may reclaim everything the frame pacing hadn't caught up to yet.
 		m_backend->frame.completed = m_backend->frame.timeline_value;
 		m_backend->completed.store(m_backend->frame.completed, std::memory_order_release);
-		m_backend->staging.completed = m_backend->staging.value;
+
+		for (vk::UploadRing& upload : m_backend->staging.rings)
+			upload.completed.store(upload.value, std::memory_order_release);
+
+		std::lock_guard lock(m_backend->resources_lock);
 		m_backend->destroy_queue.drain(m_backend->context, m_backend->descriptor_heap, m_backend->resources,
 									   UINT64_MAX);
 	}
@@ -427,11 +447,16 @@ namespace ember::gpu
 		if (m_backend == nullptr)
 			return false;
 
+		// ready_value is written by promotion under the lock; the read take sit too.
+		std::lock_guard lock(m_backend->resources_lock);
+
 		const vk::TextureCold* cold = m_backend->resources.textures.get_cold(handle);
 		if (cold == nullptr)
 			return false;
 
-		return cold->ready_value == 0 || cold->ready_value <= m_backend->staging.completed;
+		return cold->ready_value == 0 ||
+			   cold->ready_value <=
+				   m_backend->staging.rings[vk::UPLOAD_RING_STREAMED].completed.load(std::memory_order_acquire);
 	}
 
 	const DeviceCaps& Device::caps() const noexcept
@@ -523,9 +548,13 @@ namespace ember::gpu
 		vk::poll_uploads(*m_backend);
 		frame.acquire_value = 0;
 
-		// The graveyard rides the frame pacing and needs no extra queries.
-		m_backend->destroy_queue.drain(m_backend->context, m_backend->descriptor_heap, m_backend->resources,
-									   frame.completed);
+		// The graveyard rides the frame pacing and needs no extra queries. Under the lock, because
+		// the entries it walks arrive from any thread.
+		{
+			std::lock_guard lock(m_backend->resources_lock);
+			m_backend->destroy_queue.drain(m_backend->context, m_backend->descriptor_heap, m_backend->resources,
+										   frame.completed);
+		}
 
 		// Resolve the slot's zones from the frame that just retired, then hand the
 		// query range back. Consuming zone_count keeps a later placeholder frame
@@ -594,7 +623,14 @@ namespace ember::gpu
 
 		FrameState& frame = m_backend->frame;
 		const u32 slot	  = static_cast<u32>(frame.index % m_backend->context.frames_in_flight);
-		const u64 value	  = ++frame.timeline_value;
+		u64 value		  = 0;
+
+		// The bump is under the lock a destroy takes for its stamp: whichever side of it
+		// the destroy lands, its entry retires no earlier than this frame.
+		{
+			std::lock_guard lock(m_backend->resources_lock);
+			value = ++frame.timeline_value;
+		}
 
 		VkCommandBuffer lists[MAX_COMMAND_LISTS];
 		u32 list_count = 0;
@@ -619,13 +655,12 @@ namespace ember::gpu
 		// flushes and poisons, then the staged copies go out on their own submits.
 		vk::transient_end_frame(*m_backend, value);
 
-		// Streamed uploads deliberately do not raise the critical watermark: the frame renders
-		// with the fallback rather than waiting for pixels it can live without.
-		(void)vk::submit_uploads(*m_backend);
+		// Streamed uploads deliberately do not hold the frame: it renders with the fallback rather
+		// than waiting for pixels it can live without, and a streamed batch still being filled by
+		// a worker simply goes next frame.
+		vk::submit_uploads(*m_backend, false);
 
-		const u64 upload_wait = std::max(m_backend->staging.critical_value, frame.acquire_value);
-
-		submit_frame(*m_backend, upload_wait, {lists, list_count}, value);
+		submit_frame(*m_backend, {lists, list_count}, value);
 		present_pending(*m_backend);
 
 		frame.slots[slot].submitted = value;

@@ -31,11 +31,13 @@ namespace ember::gpu::vk
 	void DestroyQueue::enqueue(Entry dead) noexcept
 	{
 		EMBER_ASSERT(m_frame != nullptr && "DestroyQueue used before bind");
-		EMBER_ASSERT(m_owner == current_thread_id());
 		EMBER_ASSERT(dead.kind != Kind::None);
 
 		// The pending value: what the next submit will signal. Read live here so out-of-frame
-		// defers (one-off staging, load screens) stamp against the submit that actually consumes them.
+		// defers (one-off staging, load screens) stamp against the submit that actually consumes
+		// them. The caller holds resources_lock, which end_frame takes to bump the value, so a
+		// destroy from another thread stamps either this frame or the next: both retire after the
+		// last submit that could have named the resource.
 		dead.value = m_frame->timeline_value + 1;
 		m_entries.push_back(dead);
 	}

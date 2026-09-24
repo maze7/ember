@@ -46,9 +46,21 @@ namespace ember::gpu::vk
 				return false;
 			}
 
-			BufferHandle handle = backend.resources.buffers.insert(
-				BufferHot{.handle = buffer},
-				BufferCold{.allocation = allocation, .size = size, .mapped = result.pMappedData});
+			BufferHandle handle;
+			{
+				std::lock_guard lock(backend.resources_lock);
+
+				handle = backend.resources.buffers.insert(
+					BufferHot{.handle = buffer},
+					BufferCold{.allocation = allocation, .size = size, .mapped = result.pMappedData});
+
+				if (!handle.is_null())
+				{
+					// Transient memory is reachable by handle index like any storage buffer;
+					// an unwritten slot still holds the boot fallback and reads zeros.
+					backend.descriptor_heap.write_buffer(backend.context, handle.index, buffer, size);
+				}
+			}
 
 			if (handle.is_null())
 			{
@@ -61,10 +73,6 @@ namespace ember::gpu::vk
 			vmaGetAllocationMemoryProperties(backend.context.allocator, allocation, &properties);
 
 			set_name(backend.context, VK_OBJECT_TYPE_BUFFER, reinterpret_cast<u64>(buffer), name);
-
-			// Transient memory is reachable by handle index like any storage buffer;
-			// an unwritten slot still holds the boot fallback and reads zeros.
-			backend.descriptor_heap.write_buffer(backend.context, handle.index, buffer, size);
 
 			out = {
 				.handle		= handle,

@@ -111,16 +111,17 @@ namespace ember
 		if constexpr (HAS_COLD_STORAGE)
 			m_cold = reinterpret_cast<Cold*>(base + layout.cold_offset);
 
-		m_generations = reinterpret_cast<Component*>(base + layout.gens_offset);
+		m_generations = reinterpret_cast<std::atomic<Component>*>(base + layout.gens_offset);
 		m_free		  = reinterpret_cast<Component*>(base + layout.free_offset);
-		m_live		  = reinterpret_cast<u64*>(base + layout.live_offset);
+		m_live		  = reinterpret_cast<std::atomic<u64>*>(base + layout.live_offset);
 		m_capacity	  = capacity;
 
 		// Generation zero is reserved for the null handle.
 		for (u32 index = 0; index < capacity; ++index)
-			m_generations[index] = 1;
+			std::construct_at(m_generations + index, Component{1});
 
-		std::memset(m_live, 0, ((capacity + 63) / 64) * sizeof(u64));
+		for (u32 word = 0; word < (capacity + 63) / 64; ++word)
+			std::construct_at(m_live + word, u64{0});
 
 		reset_free_ring();
 	}
@@ -190,7 +191,7 @@ namespace ember
 
 		// The live test keeps a generation-matching garbage handle from retiring
 		// a slot twice and double-counting it.
-		if (m_generations[index] != handle.generation || !is_live(index))
+		if (m_generations[index].load(std::memory_order_relaxed) != handle.generation || !is_live(index))
 			return false;
 
 		destroy_slot(index);
@@ -216,7 +217,8 @@ namespace ember
 		if (handle.index >= m_capacity) [[unlikely]]
 			return false;
 
-		return m_generations[handle.index] == handle.generation && is_live(handle.index);
+		return m_generations[handle.index].load(std::memory_order_relaxed) == handle.generation &&
+			   is_live(handle.index);
 	}
 
 	template <class Tag, class Hot, class Cold, class Component>
@@ -225,7 +227,7 @@ namespace ember
 		if (handle.index >= m_capacity) [[unlikely]]
 			return nullptr;
 
-		const bool match = m_generations[handle.index] == handle.generation;
+		const bool match = m_generations[handle.index].load(std::memory_order_relaxed) == handle.generation;
 
 		EMBER_ASSERT(!match || is_live(handle.index));
 
@@ -238,7 +240,7 @@ namespace ember
 		if (handle.index >= m_capacity) [[unlikely]]
 			return nullptr;
 
-		const bool match = m_generations[handle.index] == handle.generation;
+		const bool match = m_generations[handle.index].load(std::memory_order_relaxed) == handle.generation;
 
 		EMBER_ASSERT(!match || is_live(handle.index));
 
@@ -252,7 +254,7 @@ namespace ember
 		if (handle.index >= m_capacity) [[unlikely]]
 			return nullptr;
 
-		const bool match = m_generations[handle.index] == handle.generation;
+		const bool match = m_generations[handle.index].load(std::memory_order_relaxed) == handle.generation;
 
 		EMBER_ASSERT(!match || is_live(handle.index));
 
@@ -266,7 +268,7 @@ namespace ember
 		if (handle.index >= m_capacity) [[unlikely]]
 			return nullptr;
 
-		const bool match = m_generations[handle.index] == handle.generation;
+		const bool match = m_generations[handle.index].load(std::memory_order_relaxed) == handle.generation;
 
 		EMBER_ASSERT(!match || is_live(handle.index));
 
@@ -331,19 +333,19 @@ namespace ember
 	template <class Tag, class Hot, class Cold, class Component>
 	EMBER_FINLINE bool Pool<Tag, Hot, Cold, Component>::is_live(u32 index) const noexcept
 	{
-		return (m_live[index >> 6] & (u64{1} << (index & 63))) != 0;
+		return (m_live[index >> 6].load(std::memory_order_relaxed) & (u64{1} << (index & 63))) != 0;
 	}
 
 	template <class Tag, class Hot, class Cold, class Component>
 	EMBER_FINLINE void Pool<Tag, Hot, Cold, Component>::set_live(u32 index) noexcept
 	{
-		m_live[index >> 6] |= u64{1} << (index & 63);
+		m_live[index >> 6].fetch_or(u64{1} << (index & 63), std::memory_order_relaxed);
 	}
 
 	template <class Tag, class Hot, class Cold, class Component>
 	EMBER_FINLINE void Pool<Tag, Hot, Cold, Component>::clear_live(u32 index) noexcept
 	{
-		m_live[index >> 6] &= ~(u64{1} << (index & 63));
+		m_live[index >> 6].fetch_and(~(u64{1} << (index & 63)), std::memory_order_relaxed);
 	}
 
 	template <class Tag, class Hot, class Cold, class Component>
@@ -381,11 +383,11 @@ namespace ember
 	{
 		EMBER_ASSERT(index < m_capacity);
 		EMBER_ASSERT(!is_live(index));
-		EMBER_ASSERT(m_generations[index] != 0);
+		EMBER_ASSERT(m_generations[index].load(std::memory_order_relaxed) != 0);
 
 		set_live(index);
 
-		return {static_cast<Component>(index), m_generations[index]};
+		return {static_cast<Component>(index), m_generations[index].load(std::memory_order_relaxed)};
 	}
 
 	template <class Tag, class Hot, class Cold, class Component>
@@ -394,7 +396,7 @@ namespace ember
 		EMBER_ASSERT(index < m_capacity);
 		EMBER_ASSERT(is_live(index));
 
-		return {static_cast<Component>(index), m_generations[index]};
+		return {static_cast<Component>(index), m_generations[index].load(std::memory_order_relaxed)};
 	}
 
 	template <class Tag, class Hot, class Cold, class Component>
@@ -405,11 +407,11 @@ namespace ember
 
 		// Invalidate before user destructors run. Zero is skipped so the null
 		// handle stays unmatchable.
-		Component generation = static_cast<Component>(m_generations[index] + 1);
+		Component generation = static_cast<Component>(m_generations[index].load(std::memory_order_relaxed) + 1);
 		if (generation == 0) [[unlikely]]
 			generation = 1;
 
-		m_generations[index] = generation;
+		m_generations[index].store(generation, std::memory_order_relaxed);
 		clear_live(index);
 
 		if constexpr (HAS_COLD_STORAGE)
@@ -444,8 +446,8 @@ namespace ember
 	}
 
 	template <class Tag, class Hot, class Cold, class Component>
-	size_t
-	Pool<Tag, Hot, Cold, Component>::carve(size_t& cursor, size_t count, size_t stride, size_t alignment) const noexcept
+	size_t Pool<Tag, Hot, Cold, Component>::carve(size_t& cursor, size_t count, size_t stride,
+												  size_t alignment) const noexcept
 	{
 		EMBER_ASSERT(is_power_of_two(alignment));
 
@@ -480,9 +482,9 @@ namespace ember
 			layout.cold_offset = carve(cursor, count, sizeof(Cold), BLOCK_ALIGNMENT);
 
 		// Metadata starts on a separate cache-line boundary.
-		layout.gens_offset = carve(cursor, count, sizeof(Component), BLOCK_ALIGNMENT);
-		layout.free_offset = carve(cursor, count, sizeof(Component), BLOCK_ALIGNMENT);
-		layout.live_offset = carve(cursor, (count + 63) / 64, sizeof(u64), BLOCK_ALIGNMENT);
+		layout.gens_offset = carve(cursor, count, sizeof(std::atomic<Component>), BLOCK_ALIGNMENT);
+		layout.free_offset = carve(cursor, count, sizeof(std::atomic<Component>), BLOCK_ALIGNMENT);
+		layout.live_offset = carve(cursor, (count + 63) / 64, sizeof(std::atomic<u64>), BLOCK_ALIGNMENT);
 		layout.total_size  = cursor;
 		return layout;
 	}

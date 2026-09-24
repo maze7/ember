@@ -251,8 +251,13 @@ namespace ember::gpu
 			return {};
 		}
 
-		const GraphicsPipelineHandle handle = m_backend->resources.graphics_pipelines.insert(
-			vk::PipelineData{.pipeline = pipeline, .layout = info.layout});
+		GraphicsPipelineHandle handle;
+		{
+			std::lock_guard lock(m_backend->resources_lock);
+
+			handle = m_backend->resources.graphics_pipelines.insert(
+				vk::PipelineData{.pipeline = pipeline, .layout = info.layout});
+		}
 
 		if (handle.is_null())
 		{
@@ -308,8 +313,13 @@ namespace ember::gpu
 			return {};
 		}
 
-		const ComputePipelineHandle handle = m_backend->resources.compute_pipelines.insert(
-			vk::PipelineData{.pipeline = pipeline, .layout = info.layout});
+		ComputePipelineHandle handle;
+		{
+			std::lock_guard lock(m_backend->resources_lock);
+
+			handle = m_backend->resources.compute_pipelines.insert(
+				vk::PipelineData{.pipeline = pipeline, .layout = info.layout});
+		}
 
 		if (handle.is_null())
 		{
@@ -327,6 +337,8 @@ namespace ember::gpu
 	{
 		EMBER_GPU_GUARD();
 
+		std::lock_guard lock(m_backend->resources_lock);
+
 		vk::PipelineData* data = m_backend->resources.compute_pipelines.get(handle);
 		if (data == nullptr)
 			return;
@@ -343,6 +355,8 @@ namespace ember::gpu
 	void Device::destroy(GraphicsPipelineHandle handle) noexcept
 	{
 		EMBER_GPU_GUARD();
+
+		std::lock_guard lock(m_backend->resources_lock);
 
 		vk::PipelineData* data = m_backend->resources.graphics_pipelines.get(handle);
 		if (data == nullptr)

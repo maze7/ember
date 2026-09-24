@@ -99,7 +99,15 @@ namespace ember::gpu
 			return {};
 		}
 
-		const SamplerHandle handle = m_backend->resources.samplers.insert(vk::SamplerData{.handle = sampler});
+		SamplerHandle handle;
+		{
+			std::lock_guard lock(m_backend->resources_lock);
+
+			handle = m_backend->resources.samplers.insert(vk::SamplerData{.handle = sampler});
+
+			if (!handle.is_null())
+				m_backend->descriptor_heap.write_sampler(ctx, handle.index, sampler);
+		}
 
 		if (handle.is_null())
 		{
@@ -108,7 +116,6 @@ namespace ember::gpu
 			return {};
 		}
 
-		m_backend->descriptor_heap.write_sampler(ctx, handle.index, sampler);
 		vk::set_name(ctx, VK_OBJECT_TYPE_SAMPLER, reinterpret_cast<u64>(sampler), def.name);
 
 		return handle;
@@ -117,6 +124,8 @@ namespace ember::gpu
 	void Device::destroy(SamplerHandle handle) noexcept
 	{
 		EMBER_GPU_GUARD();
+
+		std::lock_guard lock(m_backend->resources_lock);
 
 		vk::SamplerData* data = m_backend->resources.samplers.get(handle);
 		if (data == nullptr)
