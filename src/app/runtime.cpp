@@ -52,6 +52,7 @@ namespace ember
 		}
 
 		jobs::initialize(config.jobs);
+		m_io.init(config.io);
 
 		m_platform = memory::make_unique<Platform>(MemoryTag::Engine);
 		if (!m_platform)
@@ -115,6 +116,9 @@ namespace ember
 			m_window = {};
 			m_platform.reset();
 		}
+
+		// The file thread signals job counters, so it stops while the scheduler still exists.
+		m_io.shutdown();
 
 		// Worker teardown may still touch engine allocators, so stop the scheduler before
 		// releasing the memory system. The lifetimes go between the two: each arena frees

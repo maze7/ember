@@ -6,6 +6,7 @@
 #include <ember/gpu/common.h>
 #include <ember/gpu/device.h>
 #include <ember/input/input.h>
+#include <ember/io/file.h>
 #include <ember/jobs/job_system.h>
 #include <ember/memory/memory.h>
 #include <ember/platform/window.h>
@@ -19,6 +20,7 @@ namespace ember
 	{
 		MemoryConfig memory			  = {};
 		jobs::JobSystemDef jobs		  = {};
+		io::FileIoDef io			  = {};
 		WindowDef window			  = {};
 		gpu::DeviceDef gpu			  = {};
 		gpu::PresentMode present_mode = gpu::PresentMode::VSync;
@@ -66,6 +68,7 @@ namespace ember
 		[[nodiscard]] render::Renderer& renderer() noexcept;
 		[[nodiscard]] WindowHandle window() const noexcept;
 		[[nodiscard]] SwapchainHandle swapchain() const noexcept;
+		[[nodiscard]] io::FileIo& io() noexcept;
 
 		/**
 		 * One of the last FrameRing::CAPACITY frames by number, the current one included: what an

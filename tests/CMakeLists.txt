@@ -20,6 +20,7 @@ add_subdirectory(containers)
 add_subdirectory(memory)
 add_subdirectory(math)
 add_subdirectory(jobs)
+add_subdirectory(io)
 add_subdirectory(assets)
 
 if(EMBER_ENABLE_APP)

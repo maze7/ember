@@ -42,6 +42,12 @@ namespace ember
 		return m_runtime->m_swapchain;
 	}
 
+	io::FileIo& App::io() noexcept
+	{
+		EMBER_ASSERT(m_runtime != nullptr);
+		return m_runtime->m_io;
+	}
+
 	void App::quit(int exit_code) noexcept
 	{
 		EMBER_ASSERT(m_runtime != nullptr);

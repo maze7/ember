@@ -14,6 +14,7 @@ add_subdirectory(core)
 add_subdirectory(memory)
 add_subdirectory(sync)
 add_subdirectory(jobs)
+add_subdirectory(io)
 
 if(WIN32)
 	target_compile_definitions(ember_core PUBLIC EMBER_PLATFORM_WINDOWS)

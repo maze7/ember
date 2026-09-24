@@ -5,6 +5,7 @@
 #include <ember/core/common.h>
 #include <ember/core/result.h>
 #include <ember/gpu/common.h>
+#include <ember/io/file.h>
 #include <ember/jobs/job_system.h>
 #include <ember/memory/unique.h>
 #include <ember/platform/platform.h>
@@ -103,6 +104,9 @@ namespace ember
 		Unique<render::Renderer> m_renderer;
 
 		Input m_input;
+
+		// The file thread, up for exactly as long as the scheduler its  reads signal into.
+		io::FileIo m_io;
 
 		/**
 		 * The frame lifetimes, one arena on the shared heap. The loop names them after  the
