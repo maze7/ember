@@ -146,8 +146,8 @@ namespace ember
 			m_next_state.m_keyboard.on_text(text, window);
 		}
 
-		void
-		on_composition(std::string_view text, i32 selection_start, i32 selection_length, WindowHandle window) noexcept
+		void on_composition(std::string_view text, i32 selection_start, i32 selection_length,
+							WindowHandle window) noexcept
 		{
 			m_next_state.m_keyboard.on_composition(text, selection_start, selection_length, window);
 		}

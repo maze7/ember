@@ -96,6 +96,14 @@ namespace ember
 
 		Input m_input;
 
+		/**
+		 * The frame lifetimes, one arena on the shared heap. The loop names them after  the
+		 * frame and frees  them by tag; the context hand them to the app. See MemoryLifetime.
+		 */
+		Arena m_sim_scratch;
+		Arena m_sim_to_render;
+		Arena m_render_scratch;
+
 		State m_state				= State::Empty;
 		Args m_args					= {};
 		WindowHandle m_window		= {};

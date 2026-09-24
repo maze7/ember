@@ -8,9 +8,14 @@
 #include <ember/gpu/common.h>
 #include <ember/render/common.h>
 
-namespace ember::gpu
+namespace ember
 {
-	class Device;
+	class Arena;
+
+	namespace gpu
+	{
+		class Device;
+	}
 }
 
 namespace ember::render
@@ -113,7 +118,7 @@ namespace ember::render
 
 		/// Uploads every dirty record. Call once per frame, inside
 		/// begin/end_frame, before the graph executes.
-		void sync(gpu::Device& device) noexcept;
+		void sync(gpu::Device& device, Arena& scratch) noexcept;
 
 		[[nodiscard]] bool is_valid(MaterialHandle handle) const noexcept { return m_records.contains(handle); }
 

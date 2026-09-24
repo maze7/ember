@@ -10,6 +10,8 @@
 #include <ember/gpu/texture.h>
 #include <ember/gpu/transient.h>
 
+#include <type_traits>
+
 // Forward declarations.
 namespace ember
 {
@@ -268,6 +270,24 @@ namespace ember::gpu
 		 * in-flight GPU reads are the caller's to avoid (version per frame, or use transient).
 		 */
 		void update_buffer(BufferHandle handle, u64 offset, Span<const u8> data) noexcept;
+
+		/**
+		 * update_buffer without the source copy: the caller writes the bytes straight into the
+		 * staging destination, or the mapping for Upload and Readback memory, so data that only
+		 * exists to be uploaded never needs memory of its own. Same ordering contract as the
+		 * copying form. A failed staging allocation logs and never calls the writer.
+		 */
+		void update_buffer(BufferHandle handle, u64 offset, u64 size, BufferWriter write, void* context) noexcept;
+
+		/// The callable form: fn(u8* dst, u64 size) fills the destination.
+		template <class F> void update_buffer(BufferHandle handle, u64 offset, u64 size, F&& fn) noexcept
+		{
+			using Fn = std::remove_reference_t<F>;
+
+			update_buffer(
+				handle, offset, size,
+				[](u8* dst, u64 bytes, void* context) noexcept { (*static_cast<Fn*>(context))(dst, bytes); }, &fn);
+		}
 
 		/**
 		 * Replaces one subresource, staged through the ring; lands before this frame's GPU work.

@@ -153,9 +153,17 @@ namespace ember::gpu
 
 	void Device::update_buffer(BufferHandle handle, u64 offset, Span<const u8> data) noexcept
 	{
-		EMBER_GPU_GUARD();
+		// The copying form is the writing form with a memcpy for a writer.
+		update_buffer(handle, offset, data.size(),
+					  [&data](u8* dst, u64 size) noexcept { std::memcpy(dst, data.data(), size); });
+	}
 
-		if (data.empty())
+	void Device::update_buffer(BufferHandle handle, u64 offset, u64 size, BufferWriter write, void* context) noexcept
+	{
+		EMBER_GPU_GUARD();
+		EMBER_ASSERT(write != nullptr);
+
+		if (size == 0)
 			return;
 
 		const vk::BufferHot* hot = m_backend->resources.buffers.get(handle);
@@ -169,17 +177,17 @@ namespace ember::gpu
 		}
 
 		const vk::BufferCold& cold = *m_backend->resources.buffers.get_cold(handle);
-		EMBER_ASSERT(offset + data.size() <= cold.size);
+		EMBER_ASSERT(offset + size <= cold.size);
 
 		if (cold.mapped != nullptr)
 		{
 			// Upload/Readback: straight through the mapping. GPU-side hazards are the
 			// caller's contract (per-frame versioning); the GPU never copies here at all.
-			std::memcpy(static_cast<u8*>(cold.mapped) + offset, data.data(), data.size());
-			(void)vmaFlushAllocation(m_backend->context.allocator, cold.allocation, offset, data.size());
+			write(static_cast<u8*>(cold.mapped) + offset, size, context);
+			(void)vmaFlushAllocation(m_backend->context.allocator, cold.allocation, offset, size);
 			return;
 		}
 
-		vk::staging_upload(*m_backend, hot->handle, offset, data);
+		vk::staging_upload(*m_backend, hot->handle, offset, size, write, context);
 	}
 }

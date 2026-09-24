@@ -437,7 +437,8 @@ namespace ember::gpu::vk
 		staging.ring.slice_end = staging.ring.cursor + staging.ring.slice_bytes;
 	}
 
-	void staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, Span<const u8> data, bool streamed) noexcept
+	void staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, u64 size, BufferWriter write, void* context,
+						bool streamed) noexcept
 	{
 		const u32 ring = streamed ? UPLOAD_RING_STREAMED : UPLOAD_RING_CRITICAL;
 
@@ -445,29 +446,29 @@ namespace ember::gpu::vk
 		if (cmd == VK_NULL_HANDLE)
 			return;
 
-		const StagingAlloc src = staging_alloc(backend, ring, data.size(), STAGING_ALIGN);
+		const StagingAlloc src = staging_alloc(backend, ring, size, STAGING_ALIGN);
 
 		if (src.cpu == nullptr)
 		{
-			EMBER_ERROR("gpu: staging allocation failed; {}-byte update dropped", data.size());
+			EMBER_ERROR("gpu: staging allocation failed; {}-byte update dropped", size);
 			return;
 		}
 
-		std::memcpy(src.cpu, data.data(), data.size());
+		// The caller fills the staging bytes in place; the copying form's writer is a memcpy.
+		write(src.cpu, size, context);
 
 		// Publication needs the flush on non-coherent memory; a flush on coherent memory is
 		// a defined no-op, so one-offs just call it unconditionally.
 		if (src.allocation != VK_NULL_HANDLE)
-			(void)vmaFlushAllocation(backend.context.allocator, src.allocation, 0, data.size());
+			(void)vmaFlushAllocation(backend.context.allocator, src.allocation, 0, size);
 		else if (!backend.staging.ring.coherent)
-			(void)vmaFlushAllocation(backend.context.allocator, backend.staging.ring.allocation, src.offset,
-									 data.size());
+			(void)vmaFlushAllocation(backend.context.allocator, backend.staging.ring.allocation, src.offset, size);
 
 		VkBufferCopy2 region{
 			.sType	   = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
 			.srcOffset = src.offset,
 			.dstOffset = dst_offset,
-			.size	   = data.size(),
+			.size	   = size,
 		};
 
 		VkCopyBufferInfo2 copy_info{
@@ -479,6 +480,15 @@ namespace ember::gpu::vk
 		};
 
 		vkCmdCopyBuffer2(cmd, &copy_info);
+	}
+
+	void staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, Span<const u8> data, bool streamed) noexcept
+	{
+		Span<const u8> source = data;
+
+		staging_upload(
+			backend, dst, dst_offset, data.size(), [](u8* cpu, u64 size, void* context) noexcept
+			{ std::memcpy(cpu, static_cast<const Span<const u8>*>(context)->data(), size); }, &source, streamed);
 	}
 
 	u64 submit_uploads(Backend& backend) noexcept

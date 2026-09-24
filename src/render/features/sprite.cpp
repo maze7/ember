@@ -103,7 +103,7 @@ namespace ember::render
 		if (m_pipeline.is_null()) [[unlikely]]
 			return;
 
-		m_materials.sync(frame.device);
+		m_materials.sync(frame.device, frame.scratch);
 
 		// The world family owns the color and depth targets; sprites compose onto
 		// them. Without a world family ahead there is nothing to stand on.

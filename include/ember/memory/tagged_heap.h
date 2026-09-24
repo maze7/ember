@@ -7,6 +7,20 @@
 
 namespace ember
 {
+	/**
+	 * The engine's memory lifetimes: the kind half of every frame tag. The sequence half is the frame
+	 * number, so one tag names one lifetime of one frame and nothing  else ever reuses  it. Allocators
+	 * are per lifetime, not per stage: a stage that produces for a later stage allocates from that
+	 * lifetime's arena and the consumer frees the tag when it is done.
+	 */
+	enum class MemoryLifetime : u8
+	{
+		None = 0,	   // the kind of NO_TAG; never a lifetime
+		SimScratch,	   // dies when the frame's game stage has been joined
+		SimToRender,   // written by the game stage, read by the render stage of the same frame
+		RenderScratch, // dies when the frame's render stage has submitted
+	};
+
 	/** Names the lifetime a block belongs to. Everything allocated under one tag is freed together */
 	using HeapTag = u64;
 
@@ -15,8 +29,9 @@ namespace ember
 	inline constexpr u64 HEAP_TAG_SEQUENCE_MASK = (u64{1} << HEAP_TAG_SEQUENCE_BITS) - 1;
 
 	/**
-	 * Builds a HeapTag from kind and sequence. 8 bits for kind, 54 for sequence.
-	 * Kind must be non-zero.
+	 * Builds a HeapTag from kind and sequence. 8 bits for kind, 56 for sequence. Kind must be
+	 * non-zero. The raw form is the heap's own, for tools and tests that name any kind; engine
+	 * code names a MemoryLifetime through the overload below.
 	 */
 	[[nodiscard]] constexpr HeapTag heap_tag(u8 kind, u64 sequence = 0) noexcept
 	{
@@ -24,6 +39,11 @@ namespace ember
 		EMBER_ASSERT(sequence <= HEAP_TAG_SEQUENCE_MASK);
 
 		return (static_cast<HeapTag>(kind) << HEAP_TAG_SEQUENCE_BITS) | (sequence & HEAP_TAG_SEQUENCE_MASK);
+	}
+
+	[[nodiscard]] constexpr HeapTag heap_tag(MemoryLifetime kind, u64 sequence = 0) noexcept
+	{
+		return heap_tag(static_cast<u8>(kind), sequence);
 	}
 
 	/** Retrieves the `kind` bits from a HeapTag */

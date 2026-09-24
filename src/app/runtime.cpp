@@ -2,7 +2,7 @@
 #include <ember/core/logger.h>
 #include <ember/core/profile.h>
 #include <ember/gpu/device.h>
-#include <ember/memory/pmr/arena_resource.h>
+#include <ember/memory/memory.h>
 #include <ember/platform/platform.h>
 
 #include <chrono>
@@ -29,6 +29,20 @@ namespace ember
 
 		if (!memory::initialize(config.memory))
 			return rollback(RuntimeError::MemoryInitFailed);
+
+		// The frame lifetimes, one arena each on the shared heap. Sequence 0 is the boot frame:
+		// whatever initialization allocates from them lives until the first frame begins.
+		{
+			TaggedHeap& heap = memory::tagged_heap();
+
+			m_sim_scratch.init(heap, "game_scratch");
+			m_sim_to_render.init(heap, "game_to_render");
+			m_render_scratch.init(heap, "render_scratch");
+
+			m_sim_scratch.begin(heap_tag(MemoryLifetime::SimScratch, 0));
+			m_sim_to_render.begin(heap_tag(MemoryLifetime::SimToRender, 0));
+			m_render_scratch.begin(heap_tag(MemoryLifetime::RenderScratch, 0));
+		}
 
 		jobs::initialize(config.jobs);
 
@@ -95,9 +109,13 @@ namespace ember
 			m_platform.reset();
 		}
 
-		// Worker teardown may still touch engine allocators, so stop the scheduler
-		// before releasing the memory system.
+		// Worker teardown may still touch engine allocators, so stop the scheduler before
+		// releasing the memory system. The lifetimes go between the two: each arena frees
+		// whatever tag it still holds, and the heap asserts on blocks still owned.
 		jobs::shutdown();
+		m_render_scratch.shutdown();
+		m_sim_to_render.shutdown();
+		m_sim_scratch.shutdown();
 		m_input.clear();
 		memory::shutdown();
 
@@ -154,14 +172,22 @@ namespace ember
 
 		while (!m_quit_requested)
 		{
-			// Last frame's scratch dies here, as one bulk free by tag, and this frame's memory
-			// is named after it. Every job that used the old tag has joined: the loop is serial.
+			// Last frame's lifetimes die here, three bulk frees by tag, and this frame's are named
+			// after it (sequence 0 was boot). The loop is serial: every job that allocated under the
+			// old tags has joined and every staged copy out of them has been recorded, so all three
+			// retire at one point. The overlapped loop moves the frees apart, game scratch at the
+			// join and the other two after end_frame, without changing what the tags mean.
 			{
-				TaggedHeap& heap = memory::tagged_heap();
-				Arena& frame	 = memory::frame_arena();
+				TaggedHeap& heap   = memory::tagged_heap();
+				const u64 sequence = m_frame_index + 1;
 
-				heap.free(frame.end());
-				frame.begin(heap_tag(1, m_frame_index + 1));
+				heap.free(m_sim_scratch.end());
+				heap.free(m_sim_to_render.end());
+				heap.free(m_render_scratch.end());
+
+				m_sim_scratch.begin(heap_tag(MemoryLifetime::SimScratch, sequence));
+				m_sim_to_render.begin(heap_tag(MemoryLifetime::SimToRender, sequence));
+				m_render_scratch.begin(heap_tag(MemoryLifetime::RenderScratch, sequence));
 			}
 
 			// Platform event pump
@@ -181,8 +207,11 @@ namespace ember
 			m_previous_frame = tick;
 
 			FrameParams frame_params{
-				.frame_index = m_frame_index++,
-				.dt			 = dt,
+				.frame_index	= m_frame_index++,
+				.dt				= dt,
+				.sim_scratch	= m_sim_scratch,
+				.sim_to_render	= m_sim_to_render,
+				.render_scratch = m_render_scratch,
 			};
 
 			{

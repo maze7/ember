@@ -1,6 +1,6 @@
 #include <ember/core/logger.h>
 #include <ember/gpu/device.h>
-#include <ember/memory/pmr/block_allocator.h>
+#include <ember/memory/pmr/arena.h>
 #include <ember/render/gpu_scene.h>
 #include <ember/render/material.h>
 
@@ -120,7 +120,7 @@ namespace ember::render
 		(void)erased;
 	}
 
-	void MaterialPool::sync(gpu::Device& device) noexcept
+	void MaterialPool::sync(gpu::Device& device, Arena& scratch) noexcept
 	{
 		const Span<const u32> dirty = m_dirty.slots();
 		if (dirty.empty())
@@ -129,7 +129,7 @@ namespace ember::render
 		// Writers append in whatever order they finished, so the sort happens on a frame copy;
 		// the set itself stays read only for consumers.
 		const u32 count = static_cast<u32>(dirty.size());
-		auto* slots		= static_cast<u32*>(memory::frame_arena().allocate_fast(count * sizeof(u32), alignof(u32)));
+		auto* slots		= static_cast<u32*>(scratch.allocate_fast(count * sizeof(u32), alignof(u32)));
 
 		std::memcpy(slots, dirty.data(), count * sizeof(u32));
 		std::sort(slots, slots + count);

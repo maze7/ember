@@ -3,7 +3,6 @@
 
 #include <ember/core/logger.h>
 #include <ember/memory/memory.h>
-#include <ember/memory/pmr/block_allocator.h>
 #include <ember/sync/spin_mutex.h>
 #include <ember/sync/thread.h>
 
@@ -415,7 +414,7 @@ namespace ember::jobs
 		memory::initialize_thread();
 		if (!Arena::register_thread()) [[unlikely]]
 		{
-			EMBER_ERROR("worker {} found every arena thread slot taken; raise TaggedArena::MAX_THREADS", worker.index);
+			EMBER_ERROR("worker {} found every arena thread slot taken; raise Arena::MAX_THREADS", worker.index);
 			std::abort();
 		}
 

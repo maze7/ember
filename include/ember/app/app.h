@@ -14,6 +14,18 @@ namespace ember
 {
 	class Runtime;
 
+	/**
+	 * One frame as the app sees it, handed to update() and then to render(). A frame is a
+	 * piece of data, not a length of time. Everything a stage needs is in here or reachable
+	 * from here.
+	 *
+	 * The arenas are the frame's memory lifetimes, freed by tag, never per allocation.
+	 *
+	 * Each stage allocates only from the ones it owns:
+	 * 		sim_scratch 	update() only						Gone once update() returns.
+	 * 		sim_to_render	update() writes, render() reads.	Gone once the frame has been rendered.
+	 *		render_scratch 	render() only. 						Gone oncew the frame has been submitted.
+	 */
 	struct FrameParams
 	{
 		u64 frame_index = 0;
@@ -22,6 +34,10 @@ namespace ember
 
 		TextureHandle backbuffer   = {};
 		Extent2D backbuffer_extent = {};
+
+		Arena& sim_scratch;	   // MemoryLifetime::SimScratch
+		Arena& sim_to_render;  // MemoryLifetime::SimToRender
+		Arena& render_scratch; // MemoryLifetime::RenderScratch
 	};
 
 	struct AppConfig

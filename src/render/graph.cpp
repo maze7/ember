@@ -2,7 +2,6 @@
 #include <ember/core/logger.h>
 #include <ember/gpu/device.h>
 #include <ember/jobs/job_system.h>
-#include <ember/memory/pmr/block_allocator.h>
 #include <ember/render/graph.h>
 
 #include <algorithm>
@@ -24,12 +23,12 @@ namespace ember::render
 		};
 
 		/// Parks a derived run in frame memory, where it outlives this scope but not the frame.
-		template <class T> [[nodiscard]] T* park(std::pmr::memory_resource& frame, const T* source, u32 count) noexcept
+		template <class T> [[nodiscard]] T* park(Arena& frame, const T* source, u32 count) noexcept
 		{
 			if (count == 0)
 				return nullptr;
 
-			T* parked = static_cast<T*>(frame.allocate(count * sizeof(T), alignof(T)));
+			T* parked = static_cast<T*>(frame.allocate_fast(count * sizeof(T), alignof(T)));
 			std::memcpy(parked, source, count * sizeof(T));
 			return parked;
 		}
@@ -193,8 +192,11 @@ namespace ember::render
 		return *this;
 	}
 
-	void RenderGraph::begin() noexcept
+	void RenderGraph::begin(Arena& scratch) noexcept
 	{
+		EMBER_ASSERT(m_scratch == nullptr && "begin() twice without execute()");
+
+		m_scratch		= &scratch;
 		m_pass_count	= 0;
 		m_texture_count = 0;
 		m_buffer_count	= 0;
@@ -458,7 +460,8 @@ namespace ember::render
 				buffer.physical = acquire(device, buffer.def, buffer.pool_slot);
 		}
 
-		auto& frame = memory::frame_arena();
+		EMBER_ASSERT(m_scratch != nullptr && "execute() without begin()");
+		Arena& frame = *m_scratch;
 
 		// Barriers are derived here and recorded later: a pass's before state is whatever the pass
 		// ahead of it left behind, so deriving them is a chain and only the recording fans out.
@@ -640,6 +643,7 @@ namespace ember::render
 
 		release(device);
 		++m_frame;
+		m_scratch = nullptr;
 	}
 
 	void RenderGraph::shutdown(gpu::Device& device) noexcept

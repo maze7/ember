@@ -18,9 +18,9 @@ namespace
 	constexpr size_t BLOCK	  = 64_kb;
 	constexpr size_t CAPACITY = 16 * BLOCK;
 
-	constexpr HeapTag TAG_A = heap_tag(1, 7);
-	constexpr HeapTag TAG_B = heap_tag(2, 7);
-	constexpr HeapTag TAG_C = heap_tag(3, 7);
+	constexpr HeapTag TAG_A = heap_tag(MemoryLifetime::SimScratch, 7);
+	constexpr HeapTag TAG_B = heap_tag(MemoryLifetime::SimToRender, 7);
+	constexpr HeapTag TAG_C = heap_tag(MemoryLifetime::RenderScratch, 7);
 
 	constexpr u32 NONE = ~u32{0};
 
@@ -653,3 +653,15 @@ TEST(TaggedHeapDeathTest, ATagWithKindZeroAsserts)
 	EXPECT_DEATH((void)heap_tag(zero, 0), "assert");
 }
 #endif
+
+TEST(LifetimeTag, CarriesItsKindAndFrame)
+{
+	constexpr HeapTag tag = heap_tag(MemoryLifetime::SimToRender, 1234);
+
+	static_assert(kind(tag) == static_cast<u8>(MemoryLifetime::SimToRender));
+	static_assert(sequence(tag) == 1234);
+	static_assert(tag != heap_tag(MemoryLifetime::SimScratch, 1234), "the kind tells one frame's lifetimes apart");
+	static_assert(tag != heap_tag(MemoryLifetime::SimToRender, 1235), "the sequence tells one lifetime's frames apart");
+
+	EXPECT_NE(tag, NO_TAG);
+}

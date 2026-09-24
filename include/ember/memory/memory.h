@@ -39,7 +39,6 @@ namespace ember
 	};
 
 	class ArenaResource;
-	class BlockAllocator;
 	class TaggedHeap;
 
 	namespace memory
@@ -48,8 +47,8 @@ namespace ember
 		 * Initializes the process-wide memory services.
 		 *
 		 * The caller must serialize initialization and shutdown. On success, the
-		 * calling OS thread owns a block-allocation slot and the Unknown tagged
-		 * heap becomes the default PMR resource.
+		 * calling OS thread holds an Arena slot and the Unknown heap becomes the
+		 * default PMR resource.
 		 *
 		 * A successful call must be paired with shutdown() on the same OS thread,
 		 * after every other thread using engine memory has stopped.
@@ -70,8 +69,8 @@ namespace ember
 		/**
 		 * Initializes allocator state owned by the calling OS thread.
 		 *
-		 * Every engine-created thread that uses the process heap must pair this with
-		 * shutdown_thread(). This does not register the thread for block-backed allocation.
+		 * The thread must release all thread-local heap allocations and unregister
+		 * from Arena before calling this function.
 		 */
 		void initialize_thread() noexcept;
 
@@ -90,14 +89,6 @@ namespace ember
 		 * shutdown().
 		 */
 		[[nodiscard]] TaggedHeap& tagged_heap() noexcept;
-
-		/**
-		 * Returns the shared per-frame CPU allocator.
-		 *
-		 * Registered frame threads may allocate concurrently. The frame owner must
-		 * call begin() and end().
-		 */
-		[[nodiscard]] Arena& frame_arena() noexcept;
 
 		/**
 		 * Returns the process heap view associated with a diagnostic tag.

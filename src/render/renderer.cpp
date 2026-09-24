@@ -65,13 +65,13 @@ namespace ember::render
 		m_device = nullptr;
 	}
 
-	void Renderer::render(const View& main_view, const RenderOutput& output, u32 frame_slot) noexcept
+	void Renderer::render(const View& main_view, const RenderOutput& output, u32 frame_slot, Arena& scratch) noexcept
 	{
 		EMBER_ASSERT(m_device != nullptr && "render before init");
 
-		m_gpu_scene.sync(*m_device, m_scene);
+		m_gpu_scene.sync(*m_device, m_scene, scratch);
 
-		m_graph.begin();
+		m_graph.begin(scratch);
 
 		RenderFrame frame{
 			.device		= *m_device,
@@ -79,6 +79,7 @@ namespace ember::render
 			.gpu_scene	= m_gpu_scene,
 			.geometry	= m_geometry,
 			.graph		= m_graph,
+			.scratch	= scratch,
 			.frame_slot = frame_slot,
 		};
 

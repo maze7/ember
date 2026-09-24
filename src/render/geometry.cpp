@@ -1,6 +1,5 @@
 #include <ember/core/logger.h>
 #include <ember/gpu/device.h>
-#include <ember/memory/pmr/block_allocator.h>
 #include <ember/render/geometry.h>
 
 namespace ember::render
@@ -113,19 +112,19 @@ namespace ember::render
 		device.update_buffer(m_attributes, u64{first_vertex} * sizeof(AttributeData), def.attributes);
 
 		// Rebase to pool-global vertex ids so draws carry no base vertex and
-		// SV_VertexID addresses the shared streams directly. The scratch only
-		// feeds the staging copy inside update_buffer, so frame arena lifetime
-		// is enough even during boot.
-		u32* rebased = static_cast<u32*>(memory::frame_arena().allocate_fast(index_count * sizeof(u32), alignof(u32)));
+		// SV_VertexID addresses the shared streams directly. Written straight
+		// into the staged copy, so the rebased list never needs memory of its own.
+		device.update_buffer(m_indices, u64{first_index} * sizeof(u32), u64{index_count} * sizeof(u32),
+							 [&](u8* dst, u64) noexcept
+							 {
+								 u32* rebased = reinterpret_cast<u32*>(dst);
 
-		for (u32 i = 0; i < index_count; ++i)
-		{
-			EMBER_ASSERT(def.indices[i] < vertex_count && "index outside its vertex range");
-			rebased[i] = def.indices[i] + first_vertex;
-		}
-
-		device.update_buffer(m_indices, u64{first_index} * sizeof(u32),
-							 {reinterpret_cast<const u8*>(rebased), index_count * sizeof(u32)});
+								 for (u32 i = 0; i < index_count; ++i)
+								 {
+									 EMBER_ASSERT(def.indices[i] < vertex_count && "index outside its vertex range");
+									 rebased[i] = def.indices[i] + first_vertex;
+								 }
+							 });
 
 		const GeometryData* record = m_records.get(handle);
 		device.update_buffer(m_table, u64{handle.index} * sizeof(GeometryData),

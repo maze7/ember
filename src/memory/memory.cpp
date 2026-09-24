@@ -3,7 +3,6 @@
 #include <ember/memory/memory.h>
 #include <ember/memory/memory_tracker.h>
 #include <ember/memory/pmr/arena.h>
-#include <ember/memory/pmr/block_allocator.h>
 #include <ember/memory/tagged_heap.h>
 
 #include <atomic>
@@ -14,7 +13,6 @@
 namespace
 {
 	constinit ember::TaggedHeap s_block_heap;
-	constinit ember::Arena s_frame_arena;
 	constinit std::atomic<bool> s_initialized = false;
 }
 
@@ -51,9 +49,6 @@ namespace ember::memory
 			return fail(MemoryError::BlockHeapInitFailed);
 		}
 
-		s_frame_arena.init(s_block_heap, "frame");
-		s_frame_arena.begin(heap_tag(1, 0));
-
 		// Last, after every fallible step: from here on, resource-less PMR containers
 		// allocate from the engine heap instead of global operator new.
 		std::pmr::set_default_resource(&ember::memory::heap(ember::MemoryTag::Unknown));
@@ -65,7 +60,6 @@ namespace ember::memory
 		if (!s_initialized.exchange(false, std::memory_order_acq_rel))
 			return;
 
-		s_frame_arena.shutdown();
 		s_block_heap.shutdown();
 		ember::Arena::unregister_thread();
 #if EMBER_MEMORY_TRACKING >= 2
@@ -84,13 +78,6 @@ namespace ember::memory
 		EMBER_ASSERT(s_initialized.load(std::memory_order_acquire));
 
 		return s_block_heap;
-	}
-
-	Arena& frame_arena() noexcept
-	{
-		EMBER_ASSERT(s_initialized.load(std::memory_order_acquire));
-
-		return s_frame_arena;
 	}
 
 	void out_of_memory(size_t size, size_t alignment, MemoryTag tag) noexcept

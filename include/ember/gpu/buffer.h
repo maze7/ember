@@ -22,11 +22,11 @@ namespace ember::gpu
 
 	/// Index width for draw_indexed and the indexed indirect draws. Bound with the
 	/// buffer because every target API takes it at bind time.
-	enum class IndexFormat : u8 {
+	enum class IndexFormat : u8
+	{
 		U16,
 		U32,
 	};
-
 
 	/// Where the memory lives and how the CPU touches it.
 	enum class MemoryLocation : u8
@@ -47,4 +47,10 @@ namespace ember::gpu
 		// Upload memcpys straight into the mapping.
 		Span<const u8> initial_data = {};
 	};
+
+	/**
+	 * Fills a buffer write in place: dst is size bytes of staging or mapped memory the caller
+	 * writes in full. It is write-combined, so write sequentially and never read it back.
+	 */
+	using BufferWriter = void (*)(u8* dst, u64 size, void* context);
 }

@@ -70,7 +70,7 @@ namespace ember::render
 		if (m_pipeline.is_null()) [[unlikely]]
 			return;
 
-		m_materials.sync(frame.device);
+		m_materials.sync(frame.device, frame.scratch);
 
 		const GraphTexture target =
 			frame.resources.scene_color.is_null() ? frame.resources.output : frame.resources.scene_color;

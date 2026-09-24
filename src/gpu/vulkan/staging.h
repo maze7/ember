@@ -2,6 +2,7 @@
 
 #include <ember/containers/span.h>
 #include <ember/core/common.h>
+#include <ember/gpu/buffer.h>
 #include <ember/gpu/common.h>
 #include <ember/gpu/texture.h>
 #include <ember/memory/memory.h>
@@ -126,20 +127,24 @@ namespace ember::gpu::vk
 	/// Records a staged copy into the current upload batch (opening it if needed).
 	/// Source memory comes from the ring while a frame s open, else a one-off buffer that
 	/// rides the desttroy queue. Owner thread only.
-	void
-	staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, Span<const u8> data, bool streamed = false) noexcept;
+	void staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, Span<const u8> data,
+						bool streamed = false) noexcept;
+
+	/// The writing form: write fills the staged bytes in place instead of a span being copied in.
+	void staging_upload(Backend& backend, VkBuffer dst, u64 dst_offset, u64 size, BufferWriter write, void* context,
+						bool streamed = false) noexcept;
 
 	/// Uploads the whole subresource chain (layer-major, mip-minor, tightly packed
 	/// blocks) and leaves the image in its steady layout. Empty data records only
 	/// the UNDEFINED to steady transition, which is how creation christens every
 	/// texture into a known layout. Owner thread only.
-	void staging_upload_texture(
-		Backend& backend, const TextureUpload& upload, Span<const u8> data, bool streamed = false) noexcept;
+	void staging_upload_texture(Backend& backend, const TextureUpload& upload, Span<const u8> data,
+								bool streamed = false) noexcept;
 
 	/// One subresource, steady to copy and back. The batch's entry barrier orders
 	/// all prior submitted work before the copy, so frames in flight are safe.
-	void staging_update_texture(
-		Backend& backend, const TextureUpload& upload, u32 mip, u32 layer, Span<const u8> data) noexcept;
+	void staging_update_texture(Backend& backend, const TextureUpload& upload, u32 mip, u32 layer,
+								Span<const u8> data) noexcept;
 
 	/**
 	 * Closes the open batch and submits it on its own, signalling the next upload value, which
@@ -157,12 +162,6 @@ namespace ember::gpu::vk
 	 * DMA batch wrote hands the image over, and this takes it back. Layouts and families must
 	 * match the release exactly, which is why both halves live in this file.
 	 */
-	void staging_acquire_image(
-		Backend& backend,
-		VkCommandBuffer cmd,
-		VkImage image,
-		VkImageAspectFlags aspect,
-		u32 mips,
-		u32 layers,
-		VkImageLayout layout) noexcept;
+	void staging_acquire_image(Backend& backend, VkCommandBuffer cmd, VkImage image, VkImageAspectFlags aspect,
+							   u32 mips, u32 layers, VkImageLayout layout) noexcept;
 }

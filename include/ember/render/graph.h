@@ -6,7 +6,7 @@
 #include <ember/gpu/common.h>
 #include <ember/gpu/texture.h>
 #include <ember/memory/memory.h>
-#include <ember/memory/pmr/block_allocator.h>
+#include <ember/memory/pmr/arena.h>
 
 #include <type_traits>
 
@@ -181,8 +181,9 @@ namespace ember::render
 								  std::is_invocable_v<Fn&, gpu::CommandList&>,
 							  "callbacks take (CommandList&) or (CommandList&, const PassContext&)");
 
+				EMBER_ASSERT(m_graph->m_scratch != nullptr && "record outside begin() and execute()");
 				m_record_data =
-					new (memory::frame_arena().allocate_fast(sizeof(Fn), alignof(Fn))) Fn(static_cast<F&&>(fn));
+					new (m_graph->m_scratch->allocate_fast(sizeof(Fn), alignof(Fn))) Fn(static_cast<F&&>(fn));
 				m_record = [](gpu::CommandList& cmd, const PassContext& ctx, void* data)
 				{
 					Fn& fn = *static_cast<Fn*>(data);
@@ -240,8 +241,12 @@ namespace ember::render
 		/// Destroys pooled textures. Call before the device goes down.
 		void shutdown(gpu::Device& device) noexcept;
 
-		/// Opens a frame: forgets last frame's passes, textures and captures.
-		void begin() noexcept;
+		/**
+		 * Opens a frame: forgets last frame's passes, textures and captures. Everything the graph
+		 * allocates from here until execute() returns comes from scratch, the pass captures and the
+		 * barriers derived for them. Hand it the frame's render scratch.
+		 */
+		void begin(Arena& scratch) noexcept;
 
 		/// Creates a new GraphTexture
 		[[nodiscard]] GraphTexture create(const GraphTextureDef& def) noexcept;
@@ -343,5 +348,7 @@ namespace ember::render
 		BufferPoolEntry m_buffer_pool[MAX_POOL_ENTRIES]	  = {};
 
 		u32 m_frame = 0;
+
+		Arena* m_scratch = nullptr; // from begin() to the end of execute()
 	};
 }

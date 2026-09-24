@@ -324,26 +324,90 @@ TEST_F(ArenaJobs, RandomSizesAndAlignmentsFromEveryWorkerStayDisjointAndAligned)
 	(void)memory::tagged_heap().free(arena.end());
 }
 
-TEST(FrameArena, IsLiveFromInitialisationAndCyclesThroughTheHeap)
+/// One turn of Runtime::frame_loop, several times over: the game stage fills its scratch and
+/// publishes a packet on every worker, the render stage reads the packet while filling its own
+/// scratch, and the three lifetimes retire together at the top of the next frame. Nothing leaks,
+/// nothing mixes, and the packet is intact when render reads it.
+TEST_F(ArenaJobs, ThreeLifetimesCycleLikeTheRuntimeLoop)
 {
+	constexpr u32 FRAMES	= 8;
+	constexpr u32 PER_SLICE = 64;
+
 	TaggedHeap& heap = memory::tagged_heap();
-	Arena& frame	 = memory::frame_arena();
 
-	EXPECT_TRUE(frame.is_active()); // boot time scratch needs it before any frame begins
-	EXPECT_NE(frame.tag(), NO_TAG);
+	// The fixture's arena plays game scratch; the other two lifetimes are locals on the same heap.
+	Arena& game_scratch = arena;
+	Arena game_to_render;
+	Arena render_scratch;
 
-	void* boot = frame.allocate_fast(256);
-	EXPECT_TRUE(frame.owns(boot));
-	EXPECT_EQ(heap.tag_of(boot), frame.tag());
+	game_to_render.init(heap, "game_to_render");
+	render_scratch.init(heap, "render_scratch");
 
-	// One turn of the runtime's loop.
-	const HeapTag old = frame.end();
-	const u32 owned	  = heap.blocks_owned(old);
-	EXPECT_GT(owned, 0u);
-	EXPECT_EQ(heap.free(old), owned);
+	for (u32 frame = 0; frame < FRAMES; ++frame)
+	{
+		const u64 seq = frame + 1;
 
-	frame.begin(heap_tag(1, sequence(old) + 1));
-	EXPECT_NE(frame.tag(), old);
-	EXPECT_FALSE(frame.owns(boot));
-	EXPECT_TRUE(frame.owns(frame.allocate_fast(16)));
+		game_scratch.begin(heap_tag(MemoryLifetime::SimScratch, seq));
+		game_to_render.begin(heap_tag(MemoryLifetime::SimToRender, seq));
+		render_scratch.begin(heap_tag(MemoryLifetime::RenderScratch, seq));
+
+		EXPECT_EQ(kind(game_to_render.tag()), static_cast<u8>(MemoryLifetime::SimToRender));
+		EXPECT_EQ(sequence(game_to_render.tag()), seq);
+
+		// Game stage: every job scribbles in scratch and publishes one slice of the packet.
+		const u32* packet[WORKERS] = {};
+
+		auto game = [&](JobRange range)
+		{
+			for (u32 i = range.begin; i < range.end; ++i)
+			{
+				void* junk = game_scratch.allocate_fast(1024);
+				std::memset(junk, 0xAB, 1024);
+
+				auto* slice = static_cast<u32*>(game_to_render.allocate_fast(PER_SLICE * sizeof(u32), alignof(u32)));
+				for (u32 k = 0; k < PER_SLICE; ++k)
+					slice[k] = frame * 1000 + i * PER_SLICE + k;
+
+				packet[i] = slice;
+			}
+		};
+
+		parallel_for({.count = WORKERS, .grain = 1, .name = "game"}, game);
+
+		// Render stage: reads the packet on whichever worker, allocating only from its own scratch.
+		std::atomic<u32> faults{0};
+
+		auto render = [&](JobRange range)
+		{
+			for (u32 i = range.begin; i < range.end; ++i)
+			{
+				const u32* slice = packet[i];
+				auto* copy = static_cast<u32*>(render_scratch.allocate_fast(PER_SLICE * sizeof(u32), alignof(u32)));
+				std::memcpy(copy, slice, PER_SLICE * sizeof(u32));
+
+				for (u32 k = 0; k < PER_SLICE; ++k)
+					if (copy[k] != frame * 1000 + i * PER_SLICE + k)
+						faults.fetch_add(1, std::memory_order_relaxed);
+
+				// Ownership is exact: the slice is game to render memory and nothing else's.
+				if (!game_to_render.owns(slice) || game_scratch.owns(slice) || render_scratch.owns(slice) ||
+					!render_scratch.owns(copy))
+					faults.fetch_add(1, std::memory_order_relaxed);
+			}
+		};
+
+		parallel_for({.count = WORKERS, .grain = 1, .name = "render"}, render);
+
+		EXPECT_EQ(faults.load(), 0u) << "frame " << frame;
+		EXPECT_GT(heap.blocks_in_use(), before);
+
+		// Top of the next frame: all three retire at once and the heap is back where it started.
+		EXPECT_GT(heap.free(game_scratch.end()), 0u);
+		EXPECT_GT(heap.free(game_to_render.end()), 0u);
+		EXPECT_GT(heap.free(render_scratch.end()), 0u);
+		EXPECT_EQ(heap.blocks_in_use(), before) << "frame " << frame << " leaked";
+	}
+
+	render_scratch.shutdown();
+	game_to_render.shutdown();
 }

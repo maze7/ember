@@ -3,6 +3,7 @@
 #include <ember/containers/span.h>
 #include <ember/core/common.h>
 #include <ember/gpu/common.h>
+#include <ember/memory/memory.h>
 #include <ember/render/geometry.h>
 #include <ember/render/gpu_scene.h>
 #include <ember/render/graph.h>
@@ -58,6 +59,7 @@ namespace ember::render
 		GpuScene& gpu_scene;
 		GeometryPool& geometry;
 		RenderGraph& graph;
+		Arena& scratch;
 
 		u32 frame_slot = 0;
 
@@ -190,7 +192,12 @@ namespace ember::render
 			return *feature;
 		}
 
-		void render(const View& main_view, const RenderOutput& output, u32 frame_slot) noexcept;
+		/**
+		 * Renders one frame: syncs the GPU mirrors, runs the feature phases and
+		 * executes the graph. scratch is the frame's render scratch; everything
+		 * the renderer allocates for the frame comes from it.
+		 */
+		void render(const View& main_view, const RenderOutput& output, u32 frame_slot, Arena& scratch) noexcept;
 
 		/// Debug: view 0 culls with this view while it is set, and features keep
 		/// rasterizing the main view. The freeze harness. The pointee outlives

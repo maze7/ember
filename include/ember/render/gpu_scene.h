@@ -6,9 +6,14 @@
 #include <ember/gpu/common.h>
 #include <ember/render/scene.h>
 
-namespace ember::gpu
+namespace ember
 {
-	class Device;
+	class Arena;
+
+	namespace gpu
+	{
+		class Device;
+	}
 }
 
 namespace ember::render
@@ -84,9 +89,13 @@ namespace ember::render
 		/// Destroys the tables. Call before the device goes down.
 		void shutdown(gpu::Device& device) noexcept;
 
-		/// Uploads every dirty slot and clears the scene's dirty list. Call once
-		/// per frame, inside begin/end_frame, before the graph executes.
-		void sync(gpu::Device& device, RenderScene& scene) noexcept;
+		/**
+		 * Uploads every dirty slot and clears the scene's dirty list. Call once per
+		 * frame, inside begin/end_frame, before the graph executes. The sorted slot
+		 * list and the gathered transforms live in scratch only until the staged
+		 * copies are recorded, inside the call: pass the frame's render scratch.
+		 */
+		void sync(gpu::Device& device, RenderScene& scene, Arena& scratch) noexcept;
 
 		/// Bindless slots for shaders; slot i of each table is scene slot i.
 		[[nodiscard]] u32 objects_index() const noexcept { return bindless_index(m_objects); }
