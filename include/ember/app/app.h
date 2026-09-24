@@ -14,17 +14,11 @@ namespace ember
 {
 	class Runtime;
 
-	struct UpdateContext
+	struct FrameParams
 	{
-		f32 dt			= 0.0f;
-		u64 frame_index = 0;
-	};
-
-	struct RenderContext
-	{
-		f32 dt			= 0.0f;
 		u64 frame_index = 0;
 		u32 frame_slot	= 0;
+		f32 dt			= 0.0f;
 
 		TextureHandle backbuffer   = {};
 		Extent2D backbuffer_extent = {};
@@ -87,9 +81,9 @@ namespace ember
 		 */
 		virtual bool init() noexcept { return true; }
 
-		virtual void update(const UpdateContext&) noexcept {}
+		virtual void update(const FrameParams&) noexcept {}
 
-		virtual void render(const RenderContext&) noexcept {}
+		virtual void render(const FrameParams&) noexcept {}
 
 		virtual void shutdown() noexcept {}
 

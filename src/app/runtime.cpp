@@ -180,14 +180,14 @@ namespace ember
 
 			m_previous_frame = tick;
 
-			const UpdateContext update{
-				.dt			 = dt,
+			FrameParams frame_params{
 				.frame_index = m_frame_index++,
+				.dt			 = dt,
 			};
 
 			{
 				EMBER_PROFILE_SCOPE_C("update", PROFILE_COLOR_GAMEPLAY);
-				app.update(update);
+				app.update(frame_params);
 			}
 
 			if (m_quit_requested)
@@ -209,16 +209,12 @@ namespace ember
 
 			if (!output.is_null())
 			{
-				const RenderContext render{
-					.dt				   = dt,
-					.frame_index	   = frame.frame_index,
-					.frame_slot		   = frame.slot,
-					.backbuffer		   = output,
-					.backbuffer_extent = m_gpu->swapchain_extent(m_swapchain),
-				};
+				frame_params.frame_slot		   = frame.slot;
+				frame_params.backbuffer		   = output;
+				frame_params.backbuffer_extent = m_gpu->swapchain_extent(m_swapchain);
 
 				EMBER_PROFILE_SCOPE_C("render", PROFILE_COLOR_RENDER);
-				app.render(render);
+				app.render(frame_params);
 			}
 
 			// No control-flow statement may bypass this after begin_frame().
