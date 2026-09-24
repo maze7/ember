@@ -2,6 +2,7 @@
 #include <ember/core/logger.h>
 #include <ember/core/profile.h>
 #include <ember/gpu/device.h>
+#include <ember/io/file.h>
 #include <ember/memory/memory.h>
 #include <ember/platform/platform.h>
 

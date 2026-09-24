@@ -72,6 +72,7 @@ endif()
 target_link_libraries(ember INTERFACE
 	Ember::Core
 	Ember::Jobs
+	Ember::Io
 	$<$<BOOL:${EMBER_ENABLE_PLATFORM}>:Ember::Platform>
 	$<$<BOOL:${EMBER_ENABLE_GRAPHICS}>:Ember::Gpu>
 	$<$<BOOL:${EMBER_ENABLE_IMGUI}>:Ember::ImGui>
