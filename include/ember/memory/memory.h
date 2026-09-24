@@ -19,7 +19,7 @@ namespace ember
 		 * Total capacity of the shared tagged block heap.
 		 * The capacity is rounded up to a whole number of blocks during init.
 		 */
-		size_t block_heap_capacity = 64_mb;
+		size_t block_heap_capacity = 256_mb;
 
 		/**
 		 * Size of each independently claimed block.
