@@ -232,6 +232,10 @@ namespace ember::gpu
 		u32 owner_thread = current_thread_id(); // the thread that constructed the Device
 		std::atomic<bool> lost{false};			// sticky VK_ERROR_DEVICE_LOST
 
+		// frame.completed again, for is_complete() on any thread: game code asks from jobs.
+		// Stored wherever frame.completed advances.
+		std::atomic<u64> completed{0};
+
 		Backend() noexcept				   = default;
 		Backend(const Backend&)			   = delete;
 		Backend& operator=(const Backend&) = delete;

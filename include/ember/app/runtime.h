@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ember/app/app.h>
+#include <ember/app/frame.h>
 #include <ember/core/common.h>
 #include <ember/core/result.h>
 #include <ember/gpu/common.h>
@@ -33,7 +34,7 @@ namespace ember
 	class Runtime final
 	{
 	public:
-		Runtime() noexcept = default;
+		Runtime() noexcept : m_frames(m_sim_scratch, m_sim_to_render, m_render_scratch) {}
 		~Runtime() noexcept;
 
 		// Runtime is the main engine orchestrator, it should not be copied or moved.
@@ -60,7 +61,7 @@ namespace ember
 		void shutdown() noexcept;
 
 		/** Returns true if the Runtime has initialized successfully. */
-		[[nodiscard]] bool initialized() const noexcept;
+		bool initialized() const noexcept;
 
 		/**
 		 * Runs `app` synchronously until the platform or application requests exit.
@@ -78,6 +79,9 @@ namespace ember
 
 	private:
 		friend class App;
+
+		/** Returns true if the given frame has completed and been presented. */
+		bool is_frame_complete(u64 index) const noexcept;
 
 		enum class State : u8
 		{
@@ -103,6 +107,10 @@ namespace ember
 		Arena m_sim_scratch;
 		Arena m_sim_to_render;
 		Arena m_render_scratch;
+
+		/// The last FrameRing::CAPACITY frames. The loop begins one per frame, after the arenas
+		/// it names, and the app reads them through frame().
+		FrameRing m_frames;
 
 		State m_state				= State::Empty;
 		Args m_args					= {};

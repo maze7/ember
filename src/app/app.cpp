@@ -28,12 +28,6 @@ namespace ember
 		return *m_runtime->m_renderer;
 	}
 
-	const Input& App::input() const noexcept
-	{
-		EMBER_ASSERT(m_runtime != nullptr);
-		return m_runtime->m_input;
-	}
-
 	WindowHandle App::window() const noexcept
 	{
 		EMBER_ASSERT(m_runtime != nullptr);
@@ -50,5 +44,17 @@ namespace ember
 	{
 		EMBER_ASSERT(m_runtime != nullptr);
 		m_runtime->request_quit(exit_code);
+	}
+
+	const FrameParams* App::frame(u64 index) const noexcept
+	{
+		EMBER_ASSERT(m_runtime != nullptr);
+		return m_runtime->m_frames.find(index);
+	}
+
+	bool App::is_frame_complete(u64 index) const noexcept
+	{
+		EMBER_ASSERT(m_runtime != nullptr);
+		return m_runtime->is_frame_complete(index);
 	}
 }

@@ -22,6 +22,10 @@ add_subdirectory(math)
 add_subdirectory(jobs)
 add_subdirectory(assets)
 
+if(EMBER_ENABLE_APP)
+	add_subdirectory(app)
+endif()
+
 if(EMBER_ENABLE_GRAPHICS)
 	add_subdirectory(render)
 endif()

@@ -8,6 +8,17 @@
 #include <chrono>
 #include <thread>
 
+namespace
+{
+	/// Steady clock nanoseconds for the frame's stage stamps. Only differences mean anything.
+	[[nodiscard]] ember::u64 now_ns() noexcept
+	{
+		return static_cast<ember::u64>(
+			std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+				.count());
+	}
+}
+
 namespace ember
 {
 	Runtime::~Runtime() noexcept { shutdown(); }
@@ -126,6 +137,7 @@ namespace ember
 		m_exit_code			= 0;
 		m_quit_requested	= false;
 		m_state				= State::Empty;
+		m_frames.clear();
 	}
 
 	bool Runtime::initialized() const noexcept { return m_state == State::Ready || m_state == State::Running; }
@@ -144,6 +156,7 @@ namespace ember
 		m_previous_frame = {};
 		m_state			 = State::Running;
 		app.m_runtime	 = this;
+		m_frames.clear();
 
 		frame_loop(app);
 
@@ -172,22 +185,25 @@ namespace ember
 
 		while (!m_quit_requested)
 		{
-			// Last frame's lifetimes die here, three bulk frees by tag, and this frame's are named
-			// after it (sequence 0 was boot). The loop is serial: every job that allocated under the
-			// old tags has joined and every staged copy out of them has been recorded, so all three
-			// retire at one point. The overlapped loop moves the frees apart, game scratch at the
-			// join and the other two after end_frame, without changing what the tags mean.
+			// The frame's number is its identity: the ring entry it takes and the sequence half
+			// of its three lifetime tags. Boot was 0, so the first frame is 1.
+			const u64 index = m_frame_index + 1;
+
+			// Last frame's lifetimes die here, three bulk frees by tag, and this frame's are tagged
+			// with its number. The loop is serial: every job that allocated under the old tags has
+			// joined and every staged copy out of them has been recorded, so all three retire at
+			// one point. The overlapped loop moves the frees apart, sim scratch at the join and
+			// the other two after end_frame, without changing what the tags mean.
 			{
-				TaggedHeap& heap   = memory::tagged_heap();
-				const u64 sequence = m_frame_index + 1;
+				TaggedHeap& heap = memory::tagged_heap();
 
 				heap.free(m_sim_scratch.end());
 				heap.free(m_sim_to_render.end());
 				heap.free(m_render_scratch.end());
 
-				m_sim_scratch.begin(heap_tag(MemoryLifetime::SimScratch, sequence));
-				m_sim_to_render.begin(heap_tag(MemoryLifetime::SimToRender, sequence));
-				m_render_scratch.begin(heap_tag(MemoryLifetime::RenderScratch, sequence));
+				m_sim_scratch.begin(heap_tag(MemoryLifetime::SimScratch, index));
+				m_sim_to_render.begin(heap_tag(MemoryLifetime::SimToRender, index));
+				m_render_scratch.begin(heap_tag(MemoryLifetime::RenderScratch, index));
 			}
 
 			// Platform event pump
@@ -206,17 +222,16 @@ namespace ember
 
 			m_previous_frame = tick;
 
-			FrameParams frame_params{
-				.frame_index	= m_frame_index++,
-				.dt				= dt,
-				.sim_scratch	= m_sim_scratch,
-				.sim_to_render	= m_sim_to_render,
-				.render_scratch = m_render_scratch,
-			};
+			// The frame begins: its entry takes the number and a copy of the input the pump just
+			// published, and nothing the stages read from it changes from here on.
+			FrameParams& frame = m_frames.begin(index, dt, m_input.state());
+			m_frame_index	   = index;
 
 			{
 				EMBER_PROFILE_SCOPE_C("update", PROFILE_COLOR_GAMEPLAY);
-				app.update(frame_params);
+				frame.update_begin_ns = now_ns();
+				app.update(frame);
+				frame.update_end_ns = now_ns();
 			}
 
 			if (m_quit_requested)
@@ -225,7 +240,7 @@ namespace ember
 			Extent2D pixels = m_platform->window_pixel_size(m_window);
 			if (pixels.width == 0 || pixels.height == 0)
 			{
-				// A minimzed window has no drawable. Sleep to avoid a hot loop
+				// A minimized window has no drawable. Sleep to avoid a hot loop
 				// while continuing to poll for restore events.
 				std::this_thread::sleep_for(std::chrono::milliseconds(16));
 
@@ -233,21 +248,25 @@ namespace ember
 				continue;
 			}
 
-			const gpu::FrameInfo frame = m_gpu->begin_frame();
+			const gpu::FrameInfo info  = m_gpu->begin_frame();
 			const TextureHandle output = m_gpu->acquire(m_swapchain);
 
 			if (!output.is_null())
 			{
-				frame_params.frame_slot		   = frame.slot;
-				frame_params.backbuffer		   = output;
-				frame_params.backbuffer_extent = m_gpu->swapchain_extent(m_swapchain);
+				frame.frame_slot		= info.slot;
+				frame.backbuffer		= output;
+				frame.backbuffer_extent = m_gpu->swapchain_extent(m_swapchain);
 
+				// Stamped after begin_frame's wait for the GPU, so render time is work, not waiting.
 				EMBER_PROFILE_SCOPE_C("render", PROFILE_COLOR_RENDER);
-				app.render(frame_params);
+				frame.render_begin_ns = now_ns();
+				app.render(frame);
+				frame.render_end_ns = now_ns();
 			}
 
-			// No control-flow statement may bypass this after begin_frame().
-			m_gpu->end_frame();
+			// No control-flow statement may bypass this after begin_frame(). What it submitted is
+			// the frame's GPU work, which has_frame_completed() asks after.
+			frame.gpu = m_gpu->end_frame();
 
 			if (m_gpu->device_lost())
 			{
@@ -261,6 +280,21 @@ namespace ember
 		app.shutdown();
 	}
 
+	bool Runtime::is_frame_complete(u64 index) const noexcept
+	{
+		// The frame in progress has not submitted, and nothing after it exists yet.
+		if (index >= m_frames.current_index())
+			return false;
+
+		// Older than the ring: the device keeps at most frames_in_flight frames pending and the
+		// ring is longer than that, so a frame it has forgotten retired long ago.
+		const FrameParams* frame = m_frames.find(index);
+		if (frame == nullptr)
+			return true;
+
+		// A frame that never reached the GPU carries a zero submission, which reads complete.
+		return m_gpu->is_complete(frame->gpu);
+	}
 	void Runtime::request_quit(int exit_code) noexcept
 	{
 		m_exit_code		 = exit_code;

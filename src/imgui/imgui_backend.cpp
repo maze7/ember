@@ -389,7 +389,7 @@ namespace ember::imgui
 		s_state = {};
 	}
 
-	void new_frame(const Input& input, WindowHandle window, Extent2D display, f32 dt) noexcept
+	void new_frame(const InputState& input, WindowHandle window, Extent2D display, f32 dt) noexcept
 	{
 		EMBER_ASSERT(s_state.device != nullptr);
 

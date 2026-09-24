@@ -10,7 +10,7 @@
 
 namespace ember
 {
-	class Input;
+	class InputState;
 	class Platform;
 }
 
@@ -43,7 +43,7 @@ namespace ember::imgui
 	 * before any ImGui:: calls. Owns cursor shape and text input activation
 	 * while the UI wants them.
 	 */
-	void new_frame(const Input& input, WindowHandle window, Extent2D display, f32 dt) noexcept;
+	void new_frame(const InputState& input, WindowHandle window, Extent2D display, f32 dt) noexcept;
 
 	/**
 	 * Closes the UI frame and hands the device every texture the core created, changed or
@@ -54,7 +54,9 @@ namespace ember::imgui
 
 	/// Records the frame's draw data. Any frame thread, inside an open rendering pass whose
 	/// target matches BackendDef::color_format. Leaves the scissor modified.
-	void render(gpu::CommandList& cmd) noexcept;	/// Ends a UI frame without drawing it (minimized window, skipped frame).
+	void render(gpu::CommandList& cmd) noexcept;
+
+	/// Ends a UI frame without drawing it (minimized window, skipped frame).
 	void discard() noexcept;
 
 	/// True while the UI wants the device; game input should skip it.

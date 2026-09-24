@@ -415,7 +415,8 @@ namespace ember::gpu
 
 		// Idle proves every handed-out timeline value signalled, so batch and page
 		// recycling may reclaim everything the frame pacing hadn't caught up to yet.
-		m_backend->frame.completed	 = m_backend->frame.timeline_value;
+		m_backend->frame.completed = m_backend->frame.timeline_value;
+		m_backend->completed.store(m_backend->frame.completed, std::memory_order_release);
 		m_backend->staging.completed = m_backend->staging.value;
 		m_backend->destroy_queue.drain(m_backend->context, m_backend->descriptor_heap, m_backend->resources,
 									   UINT64_MAX);
@@ -445,6 +446,15 @@ namespace ember::gpu
 	{
 		// acquire pairs with note_result's exchange: a true here happens-after the loss.
 		return m_backend != nullptr && m_backend->lost.load(std::memory_order_acquire);
+	}
+
+	bool Device::is_complete(FrameSubmission submission) const noexcept
+	{
+		// Nothing submitted, or no device to submit to: nothing outstanding.
+		if (submission.value == 0 || m_backend == nullptr)
+			return true;
+
+		return submission.value <= m_backend->completed.load(std::memory_order_acquire);
 	}
 
 	TransientAllocator& Device::transient() noexcept
@@ -500,7 +510,10 @@ namespace ember::gpu
 		// The wait proved wait_value (wait_idle may have proven more; keep the max). Batch
 		// acquisition, page recycling and the drain below all key off this, never the semaphore.
 		if (wait_value > frame.completed)
+		{
 			frame.completed = wait_value;
+			m_backend->completed.store(wait_value, std::memory_order_release);
+		}
 
 		for (VkCommandPool pool : frame.slots[slot].pools)
 			EMBER_VK_CHECK(vkResetCommandPool(m_backend->context.device, pool, 0));
@@ -574,9 +587,9 @@ namespace ember::gpu
 		return {.frame_index = static_cast<u32>(frame.index), .slot = slot};
 	}
 
-	void Device::end_frame() noexcept
+	FrameSubmission Device::end_frame() noexcept
 	{
-		EMBER_GPU_GUARD();
+		EMBER_GPU_GUARD({});
 		EMBER_ASSERT(m_backend->frame.open && "end_frame without begin_frame");
 
 		FrameState& frame = m_backend->frame;
@@ -618,6 +631,8 @@ namespace ember::gpu
 		frame.slots[slot].submitted = value;
 		frame.open					= false;
 		++frame.index;
+
+		return {value};
 	}
 
 	CommandList Device::begin_command_list() noexcept

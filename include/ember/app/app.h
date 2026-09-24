@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ember/app/frame.h>
 #include <ember/app/main.h>
 #include <ember/core/common.h>
 #include <ember/gpu/common.h>
@@ -13,32 +14,6 @@
 namespace ember
 {
 	class Runtime;
-
-	/**
-	 * One frame as the app sees it, handed to update() and then to render(). A frame is a
-	 * piece of data, not a length of time. Everything a stage needs is in here or reachable
-	 * from here.
-	 *
-	 * The arenas are the frame's memory lifetimes, freed by tag, never per allocation.
-	 *
-	 * Each stage allocates only from the ones it owns:
-	 * 		sim_scratch 	update() only						Gone once update() returns.
-	 * 		sim_to_render	update() writes, render() reads.	Gone once the frame has been rendered.
-	 *		render_scratch 	render() only. 						Gone oncew the frame has been submitted.
-	 */
-	struct FrameParams
-	{
-		u64 frame_index = 0;
-		u32 frame_slot	= 0;
-		f32 dt			= 0.0f;
-
-		TextureHandle backbuffer   = {};
-		Extent2D backbuffer_extent = {};
-
-		Arena& sim_scratch;	   // MemoryLifetime::SimScratch
-		Arena& sim_to_render;  // MemoryLifetime::SimToRender
-		Arena& render_scratch; // MemoryLifetime::RenderScratch
-	};
 
 	struct AppConfig
 	{
@@ -83,8 +58,20 @@ namespace ember
 		[[nodiscard]] gpu::Device& gpu() noexcept;
 		[[nodiscard]] render::Renderer& renderer() noexcept;
 		[[nodiscard]] WindowHandle window() const noexcept;
-		[[nodiscard]] const Input& input() const noexcept;
 		[[nodiscard]] SwapchainHandle swapchain() const noexcept;
+
+		/**
+		 * One of the last FrameRing::CAPACITY frames by number, the current one included: what an
+		 * earlier stage saw and measured. Null for a frame older than that or not begun yet.
+		 */
+		[[nodiscard]] const FrameParams* frame(u64 index) const noexcept;
+
+		/**
+		 * True once the GPU has retired everything frame index submitted, or the frame is older
+		 * than the ring remembers. False for the current frame and every frame after it. Data the
+		 * GPU reads for a frame must stay put until this says so.
+		 */
+		[[nodiscard]] bool is_frame_complete(u64 index) const noexcept;
 
 		void quit(int exit_code = 0) noexcept;
 

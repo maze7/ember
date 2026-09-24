@@ -81,4 +81,16 @@ namespace ember
 #else
 	inline constexpr bool GPU_VALIDATION_DEFAULT = false;
 #endif
+
+	namespace gpu
+	{
+		/**
+		 * What one end_frame() handed the GPU: the timeline value the frame's submit signals.
+		 * Zero is a frame that submitted nothing. Device::is_complete() answers whether it has retured.
+		 */
+		struct FrameSubmission
+		{
+			u64 value = 0;
+		};
+	}
 }

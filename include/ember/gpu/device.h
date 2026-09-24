@@ -296,7 +296,14 @@ namespace ember::gpu
 		void update_texture(TextureHandle handle, u32 mip, u32 layer, Span<const u8> data) noexcept;
 
 		FrameInfo begin_frame() noexcept;
-		void end_frame() noexcept;
+		FrameSubmission end_frame() noexcept;
+
+		/**
+		 * True once the GPU has retired everything the submission covered, or when it covered nothing.
+		 * Any thread. The device learns of completion at begin_frame() and wait_idle(), so the answer
+		 * is as fresh as the last of those.
+		 */
+		bool is_complete(FrameSubmission submission) const noexcept;
 
 		/// Blocks until the GPU is idle and drains every deferred deletion.l Never call it per frame.
 		void wait_idle() noexcept;
