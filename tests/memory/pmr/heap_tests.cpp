@@ -1,21 +1,19 @@
 #include <ember/core/bits.h>
 #include <ember/memory/memory.h>
 #include <ember/memory/memory_tracker.h>
-#include <ember/memory/pmr/arena_resource.h>
-#include <ember/memory/pmr/heap_resource.h>
+#include <ember/memory/pmr/heap.h>
 
 #include <gtest/gtest.h>
 
 #include <cstring>
 #include <limits>
-#include <memory_resource>
 
 namespace
 {
-	using ember::HeapResource;
+	using ember::Heap;
 	using ember::MemoryTag;
 
-	HeapResource& heap(MemoryTag tag = MemoryTag::Engine) { return ember::memory::heap(tag); }
+	Heap& heap(MemoryTag tag = MemoryTag::Engine) { return ember::memory::heap(tag); }
 }
 
 TEST(HeapResource, AllocateGivesWritableMemory)
@@ -68,10 +66,10 @@ TEST(HeapResource, ReallocatePreservesContents)
 
 TEST(HeapResource, UsableSizeCoversTheRequest)
 {
-	EXPECT_EQ(HeapResource::usable_size(nullptr), 0u);
+	EXPECT_EQ(Heap::usable_size(nullptr), 0u);
 
 	void* ptr = heap().allocate(100, 16);
-	EXPECT_GE(HeapResource::usable_size(ptr), 100u);
+	EXPECT_GE(Heap::usable_size(ptr), 100u);
 	heap().deallocate(ptr, 100, 16);
 }
 
@@ -97,15 +95,6 @@ TEST(HeapResource, CrossTagFreeIsValid)
 	heap(MemoryTag::Audio).deallocate(ptr, 128, 16); // same underlying heap
 }
 
-TEST(HeapResource, IsNotEqualToOtherResourceKinds)
-{
-	ember::ArenaResource arena;
-	ASSERT_TRUE(arena.init(64 * 1024, 4 * 1024));
-
-	EXPECT_FALSE(heap().is_equal(arena));
-	EXPECT_FALSE(arena.is_equal(heap()));
-}
-
 TEST(HeapResource, ServesPmrContainers)
 {
 	std::pmr::vector<ember::u64> values(&heap(MemoryTag::Gameplay));
@@ -124,7 +113,7 @@ TEST(HeapResourceTracking, AttributesAllocationsToTheirTag)
 	const tracker::TagStats before = tracker::stats(MemoryTag::Scripting);
 
 	void* ptr				= heap(MemoryTag::Scripting).allocate(1000, 16);
-	const size_t block_size = HeapResource::usable_size(ptr); // tracker accounts usable, not requested
+	const size_t block_size = Heap::usable_size(ptr); // tracker accounts usable, not requested
 
 	const tracker::TagStats during = tracker::stats(MemoryTag::Scripting);
 	EXPECT_EQ(during.current_bytes, before.current_bytes + block_size);

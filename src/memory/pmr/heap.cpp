@@ -3,7 +3,7 @@
 #include <ember/core/logger.h>
 #include <ember/memory/memory.h>
 #include <ember/memory/memory_tracker.h>
-#include <ember/memory/pmr/heap_resource.h>
+#include <ember/memory/pmr/heap.h>
 
 #include <array>
 #include <mutex>
@@ -128,12 +128,11 @@ namespace ember
 
 		// One heap view per tag, in MemoryTag declaration order. memory_resource's  destructor
 		// is not constexpr, so these are aggregate-initialized directly rather than through a factory.
-		constinit std::array<HeapResource, static_cast<size_t>(MemoryTag::Count)> s_heaps = {
-			HeapResource{MemoryTag::Unknown},  HeapResource{MemoryTag::Engine},	  HeapResource{MemoryTag::Graphics},
-			HeapResource{MemoryTag::Audio},	   HeapResource{MemoryTag::Physics},  HeapResource{MemoryTag::ECS},
-			HeapResource{MemoryTag::Gameplay}, HeapResource{MemoryTag::Assets},	  HeapResource{MemoryTag::Scripting},
-			HeapResource{MemoryTag::Network},  HeapResource{MemoryTag::Platform}, HeapResource{MemoryTag::Input},
-			HeapResource{MemoryTag::Tools},	   HeapResource{MemoryTag::Strings},
+		constinit std::array<Heap, static_cast<size_t>(MemoryTag::Count)> s_heaps = {
+			Heap{MemoryTag::Unknown},	Heap{MemoryTag::Engine},  Heap{MemoryTag::Graphics}, Heap{MemoryTag::Audio},
+			Heap{MemoryTag::Physics},	Heap{MemoryTag::ECS},	  Heap{MemoryTag::Gameplay}, Heap{MemoryTag::Assets},
+			Heap{MemoryTag::Scripting}, Heap{MemoryTag::Network}, Heap{MemoryTag::Platform}, Heap{MemoryTag::Input},
+			Heap{MemoryTag::Tools},		Heap{MemoryTag::Strings},
 		};
 
 		// Ensure we don't drift from MemoryTag
@@ -144,7 +143,7 @@ namespace ember
 	// Tracking accounts the usable (block) size rather than the requested size: it mirrors
 	// real heap consumption and lets unsized C-hook frees account correctly.
 
-	void* HeapResource::do_allocate(size_t bytes, size_t alignment) noexcept
+	void* Heap::do_allocate(size_t bytes, size_t alignment) noexcept
 	{
 		EMBER_ASSERT(is_power_of_two(alignment));
 		ensure_initialized();
@@ -157,24 +156,24 @@ namespace ember
 		return ptr;
 	}
 
-	void HeapResource::do_deallocate(void* ptr, size_t /*bytes*/, size_t /*alignment*/) noexcept
+	void Heap::do_deallocate(void* ptr, size_t /*bytes*/, size_t /*alignment*/) noexcept
 	{
 		// rpmalloc frees without size, so the sized and unsized paths are one path.
 		deallocate_unsized(ptr);
 	}
 
-	bool HeapResource::do_is_equal(const std::pmr::memory_resource& other) const noexcept
+	bool Heap::do_is_equal(const std::pmr::memory_resource& other) const noexcept
 	{
 		// Containers use equality to decide whether buffers may be adopted or move-assign
 		// and swap; any two tagged heaps qualify. Cold path, and the loop avoids RTTI.
-		for (const HeapResource& heap : s_heaps)
+		for (const Heap& heap : s_heaps)
 			if (&heap == &other)
 				return true;
 
 		return false;
 	}
 
-	void* HeapResource::allocate_zeroed(size_t size, size_t alignment) noexcept
+	void* Heap::allocate_zeroed(size_t size, size_t alignment) noexcept
 	{
 		EMBER_ASSERT(is_power_of_two(alignment));
 		ensure_initialized();
@@ -187,7 +186,7 @@ namespace ember
 		return ptr;
 	}
 
-	void* HeapResource::reallocate(void* ptr, size_t new_size) noexcept
+	void* Heap::reallocate(void* ptr, size_t new_size) noexcept
 	{
 		ensure_initialized();
 
@@ -202,7 +201,7 @@ namespace ember
 		return new_ptr;
 	}
 
-	void HeapResource::deallocate_unsized(void* ptr) noexcept
+	void Heap::deallocate_unsized(void* ptr) noexcept
 	{
 		if (ptr == nullptr)
 			return;
@@ -211,7 +210,7 @@ namespace ember
 		mem_free(ptr);
 	}
 
-	size_t HeapResource::usable_size(void* ptr) noexcept
+	size_t Heap::usable_size(void* ptr) noexcept
 	{
 		if (ptr == nullptr)
 			return 0;
@@ -234,7 +233,7 @@ namespace ember
 
 	namespace memory
 	{
-		HeapResource& heap(MemoryTag tag) noexcept
+		Heap& heap(MemoryTag tag) noexcept
 		{
 			const size_t index = static_cast<size_t>(tag);
 			EMBER_ASSERT(index < s_heaps.size());

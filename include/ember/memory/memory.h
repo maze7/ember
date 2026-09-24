@@ -4,7 +4,7 @@
 #include <ember/core/result.h>
 #include <ember/memory/common.h>
 #include <ember/memory/pmr/arena.h>
-#include <ember/memory/pmr/heap_resource.h>
+#include <ember/memory/pmr/heap.h>
 #include <ember/memory/tagged_heap.h>
 
 #include <cstddef>
@@ -96,7 +96,7 @@ namespace ember
 		 * Tags control attribution and budget reporting, not ownership. All tagged
 		 * views use the same underlying process heap and compare as equal PMR resources.
 		 */
-		[[nodiscard]] HeapResource& heap(MemoryTag tag = MemoryTag::Unknown) noexcept;
+		[[nodiscard]] Heap& heap(MemoryTag tag = MemoryTag::Unknown) noexcept;
 
 		/**
 		 * Allocates and constructs an object through a PMR resource.

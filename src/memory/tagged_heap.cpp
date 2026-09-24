@@ -47,8 +47,8 @@ namespace ember
 			return false;
 		}
 
-		const u32 words	   = static_cast<u32>((blocks + 63) / 64);
-		HeapResource& heap = memory::heap(TaggedHeap::MEMORY_TAG);
+		const u32 words = static_cast<u32>((blocks + 63) / 64);
+		Heap& heap		= memory::heap(TaggedHeap::MEMORY_TAG);
 
 		m_free = static_cast<u64*>(heap.allocate(words * sizeof(u64), alignof(u64)));
 		m_tags = static_cast<std::atomic<HeapTag>*>(
@@ -84,7 +84,7 @@ namespace ember
 		for (u32 block = 0; block < m_block_count; ++block)
 			std::destroy_at(&m_tags[block]);
 
-		HeapResource& heap = memory::heap(TaggedHeap::MEMORY_TAG);
+		Heap& heap = memory::heap(TaggedHeap::MEMORY_TAG);
 		heap.deallocate(m_tags, m_block_count * sizeof(std::atomic<HeapTag>), alignof(std::atomic<HeapTag>));
 		heap.deallocate(m_free, m_word_count * sizeof(u64), alignof(u64));
 

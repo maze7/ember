@@ -30,8 +30,7 @@ namespace ember
 
 namespace ember::memory
 {
-	template <typename T, typename... Args>
-	[[nodiscard]] Unique<T> make_unique(HeapResource& resource, Args&&... args) noexcept
+	template <typename T, typename... Args> [[nodiscard]] Unique<T> make_unique(Heap& resource, Args&&... args) noexcept
 	{
 		static_assert(!std::is_array_v<T>, "Use PMR container for dynamic arrays");
 		static_assert(std::is_nothrow_constructible_v<T, Args&&...>,

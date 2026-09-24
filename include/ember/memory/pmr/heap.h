@@ -13,13 +13,13 @@ namespace ember
 	 *
 	 * Thread-safe.
 	 */
-	class HeapResource final : public std::pmr::memory_resource
+	class Heap final : public std::pmr::memory_resource
 	{
 	public:
-		constexpr explicit HeapResource(MemoryTag tag) noexcept : m_tag(tag) {}
+		constexpr explicit Heap(MemoryTag tag) noexcept : m_tag(tag) {}
 
-		HeapResource(const HeapResource&)			 = delete;
-		HeapResource& operator=(const HeapResource&) = delete;
+		Heap(const Heap&)			 = delete;
+		Heap& operator=(const Heap&) = delete;
 
 		/**
 		 * Malloc-shaped extras for C libraries (third_party hooks). C callbacks usually
