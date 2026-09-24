@@ -9,6 +9,7 @@
 #include <ember/memory/unique.h>
 #include <ember/platform/platform.h>
 
+#include <atomic>
 #include <chrono>
 
 namespace ember
@@ -92,7 +93,10 @@ namespace ember
 		};
 
 		void request_quit(int exit_code) noexcept;
+		[[nodiscard]] bool quit_requested() const noexcept { return m_quit_requested.load(std::memory_order_acquire); }
+
 		void frame_loop(App& app) noexcept;
+		void render_frame(App& app, FrameParams& frame) noexcept;
 
 		Unique<Platform> m_platform;
 		Unique<gpu::Device> m_gpu;
@@ -121,7 +125,7 @@ namespace ember
 
 		f32 m_max_delta_seconds = 0.1f;
 		u64 m_frame_index		= 0;
-		int m_exit_code			= 0;
-		bool m_quit_requested	= false;
+		std::atomic<int> m_exit_code{0};
+		std::atomic<bool> m_quit_requested{false};
 	};
 }

@@ -28,9 +28,16 @@ namespace ember
 	/**
 	 * User-defined application.
 	 *
-	 * Runtime binds the application only after the complete derived object
-	 * has been constructed. Engine resources should therefore be created in
-	 * on_init(), not in the game constructor.
+	 * Runtime binds the application only after the complete derived object has been
+	 * constructed. Engine resources should therefore be created in init(), not in the game
+	 * constructor.
+	 *
+	 * Two stages run at once: frame N's update() is a job on any worker while the owner
+	 * thread, which holds the platform and the device, renders frame N - 1. The stages share
+	 * nothing but the frames, and a frame flows one way, from update() to render(), through
+	 * FrameParams: whatever render() needs from the game, and whatever the platform should do
+	 * next, is published into the frame and picked up there. Input reaches the screen one
+	 * frame later than it would serially; that is the price of the overlap.
 	 */
 	class App
 	{
@@ -84,9 +91,9 @@ namespace ember
 		 */
 		virtual bool init() noexcept { return true; }
 
-		virtual void update(const FrameParams&) noexcept {}
+		virtual void update(FrameParams&) noexcept {}
 
-		virtual void render(const FrameParams&) noexcept {}
+		virtual void render(FrameParams&) noexcept {}
 
 		virtual void shutdown() noexcept {}
 

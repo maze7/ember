@@ -1067,3 +1067,29 @@ TEST(JobSystemDeathTest, WaitingWithASpinLockHeldFails)
 	GTEST_SKIP() << "lock tracking is off in this build";
 #endif
 }
+
+TEST(JobSystem, IsMainTellsTheOwnerFiberFromJobs)
+{
+	jobs::initialize({.worker_count = 4});
+	EXPECT_TRUE(is_main()) << "the thread that initialized is main";
+
+	std::atomic<u32> jobs_on_main{0};
+	auto probe = [&jobs_on_main]() noexcept { jobs_on_main.fetch_add(is_main() ? 1u : 0u, std::memory_order_relaxed); };
+
+	JobDef decls[64];
+	for (JobDef& decl : decls)
+		decl = make_job(probe, "probe");
+
+	// Main parks in the wait, so some probes run on worker 0's own thread.
+	Counter done;
+	kick(decls, &done);
+	jobs::wait(done);
+
+	EXPECT_EQ(jobs_on_main.load(), 0u) << "a job is never main, not even on worker 0's thread";
+	EXPECT_TRUE(is_main()) << "main is main again after a wait";
+
+	std::thread outside([] { EXPECT_FALSE(is_main()) << "a thread outside the scheduler is not main"; });
+	outside.join();
+
+	jobs::shutdown();
+}

@@ -34,8 +34,15 @@ namespace ember
 		/** The input devices as they stood when the frame began. Copied. */
 		InputState input = {};
 
+		/// The window's drawable size when the frame began, zero while minimized. What update()
+		/// sizes its views by; render() gets the backbuffer's actual extent below.
+		Extent2D window_extent = {};
+
 		TextureHandle backbuffer   = {}; // null when the frame has no drawable and render() is skipped.
 		Extent2D backbuffer_extent = {};
+
+		/// update()'s hand-off to render(), set by publish() and read through payload().
+		const void* published = nullptr;
 
 		/**
 		 * The frame's GPU work once end_frame() has handed it over; zero until then and for
@@ -59,6 +66,24 @@ namespace ember
 		/// Milliseconds a stage took, zero while it runs or when it did not run.
 		[[nodiscard]] f32 update_ms() const noexcept { return stage_ms(update_begin_ns, update_end_ns); }
 		[[nodiscard]] f32 render_ms() const noexcept { return stage_ms(render_begin_ns, render_end_ns); }
+
+		/**
+		 * Builds the object render() reads as the result of this frame's update(), in sim_to_render
+		 * memory so it lives exactly as long as the frame needs it. Any type the app likes, as long
+		 * as it is trivially destructible: the tag frees it and nothing runs a destructor.
+		 * Publishing again replaces the earlier object.
+		 */
+		template <class T, class... Args> T& publish(Args&&... args) noexcept
+		{
+			static_assert(std::is_trivially_destructible_v<T>, "frame memory is freed by tag, never destroyed");
+
+			T* object = new (sim_to_render.allocate_fast(sizeof(T), alignof(T))) T{std::forward<Args>(args)...};
+			published = object;
+			return *object;
+		}
+
+		/// What update() published, as the type it published it as; null when it published nothing.
+		template <class T> [[nodiscard]] const T* payload() const noexcept { return static_cast<const T*>(published); }
 
 	private:
 		[[nodiscard]] static f32 stage_ms(u64 begin_ns, u64 end_ns) noexcept
@@ -110,6 +135,7 @@ namespace ember
 			frame.frame_slot		= 0;
 			frame.dt				= dt;
 			frame.input				= input;
+			frame.window_extent		= {};
 			frame.backbuffer		= {};
 			frame.backbuffer_extent = {};
 			frame.gpu				= {};

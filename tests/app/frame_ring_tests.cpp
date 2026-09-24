@@ -1,4 +1,5 @@
 #include <ember/app/frame.h>
+#include <ember/memory/memory.h>
 
 #include <gtest/gtest.h>
 
@@ -76,6 +77,8 @@ TEST_F(FrameRingTest, BeginResetsWhatTheLastTenantLeft)
 	first.backbuffer		= TextureHandle{.index = 7, .generation = 3};
 	first.backbuffer_extent = {1280, 720};
 	first.gpu				= {.value = 42};
+	first.window_extent		= {1280, 720};
+	first.published			= nullptr;
 	first.update_begin_ns	= 100;
 	first.update_end_ns		= 200;
 	first.render_begin_ns	= 300;
@@ -95,6 +98,8 @@ TEST_F(FrameRingTest, BeginResetsWhatTheLastTenantLeft)
 	EXPECT_EQ(again.render_begin_ns, 0u);
 	EXPECT_EQ(again.render_end_ns, 0u);
 	EXPECT_EQ(again.dt, 0.033f);
+	EXPECT_EQ(again.window_extent.width, 0u);
+	EXPECT_EQ(again.published, nullptr);
 }
 
 TEST_F(FrameRingTest, EveryFrameNamesTheSameThreeArenas)
@@ -159,3 +164,29 @@ TEST(FrameRingDeathTest, FramesMustBeginInOrder)
 	EXPECT_DEATH((void)ring.begin(3, 0.0f, input), "assert");
 }
 #endif
+
+TEST_F(FrameRingTest, PublishPlacesThePayloadInSimToRender)
+{
+	struct Payload
+	{
+		u64 frame = 0;
+		u32 value = 0;
+	};
+
+	TaggedHeap& heap = memory::tagged_heap();
+	sim_to_render.init(heap, "sim_to_render");
+	sim_to_render.begin(heap_tag(MemoryLifetime::SimToRender, 1));
+
+	FrameParams& frame = ring.begin(1, 0.016f, input);
+	EXPECT_EQ(frame.payload<Payload>(), nullptr) << "nothing published yet";
+
+	Payload& out = frame.publish<Payload>(1u, 42u);
+	EXPECT_EQ(frame.payload<Payload>(), &out);
+	EXPECT_EQ(out.frame, 1u);
+	EXPECT_EQ(out.value, 42u);
+	EXPECT_EQ(heap.tag_of(&out), heap_tag(MemoryLifetime::SimToRender, 1)) << "the payload lives in the frame's packet";
+
+	// The tag is freed by the frame loop, never by the ring.
+	EXPECT_EQ(heap.free(sim_to_render.end()), 1u);
+	sim_to_render.shutdown();
+}

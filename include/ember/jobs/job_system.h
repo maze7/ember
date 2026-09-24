@@ -178,6 +178,12 @@ namespace ember::jobs
 	/** Worker the caller runs on, NO_WORKER on other threads. Stale after a wait. */
 	[[nodiscard]] u32 worker_index() noexcept;
 
+	/**
+	 * True on the fiber that called initialize(): main, which owns the platform and the device.
+	 * False inside any job, worker 0's included, and on threads outside the scheduler.
+	 */
+	[[nodiscard]] bool is_main() noexcept;
+
 	[[nodiscard]] JobStats stats() noexcept;
 
 	/** Logs every fiber waiting on a counter, for a hang you are looking at. Any thread. */

@@ -49,10 +49,6 @@ namespace ember
 			m_sim_scratch.init(heap, "game_scratch");
 			m_sim_to_render.init(heap, "game_to_render");
 			m_render_scratch.init(heap, "render_scratch");
-
-			m_sim_scratch.begin(heap_tag(MemoryLifetime::SimScratch, 0));
-			m_sim_to_render.begin(heap_tag(MemoryLifetime::SimToRender, 0));
-			m_render_scratch.begin(heap_tag(MemoryLifetime::RenderScratch, 0));
 		}
 
 		jobs::initialize(config.jobs);
@@ -183,37 +179,31 @@ namespace ember
 			return;
 		}
 
-		while (!m_quit_requested)
+		// Two frames are in flight on the CPU. Frame N is updated by a job while this thread, the
+		// owner of the platform and the device, renders frame N - 1, and the join before the next
+		// iteration is the only synchronization between them. Each lifetime is begun under the
+		// frame's tag where its stage starts and freed once its last reader is known to be done:
+		//
+		//   sim_scratch(N)     begun before the kick, freed at the join
+		//   sim_to_render(N)   begun before the kick, closed at the join, freed after N's submit
+		//   render_scratch(N)  begun before render(N), freed after N's submit
+		TaggedHeap& heap = memory::tagged_heap();
+		jobs::Counter update_done;
+		FrameParams* pending = nullptr; // updated last iteration, rendered this one
+
+		while (!quit_requested())
 		{
-			// The frame's number is its identity: the ring entry it takes and the sequence half
-			// of its three lifetime tags. Boot was 0, so the first frame is 1.
+			// The frame's number is its identity: the ring slot it takes and the sequence half of
+			// its three lifetime tags. Boot was 0, so the first frame is 1.
 			const u64 index = m_frame_index + 1;
 
-			// Last frame's lifetimes die here, three bulk frees by tag, and this frame's are tagged
-			// with its number. The loop is serial: every job that allocated under the old tags has
-			// joined and every staged copy out of them has been recorded, so all three retire at
-			// one point. The overlapped loop moves the frees apart, sim scratch at the join and
-			// the other two after end_frame, without changing what the tags mean.
-			{
-				TaggedHeap& heap = memory::tagged_heap();
-
-				heap.free(m_sim_scratch.end());
-				heap.free(m_sim_to_render.end());
-				heap.free(m_render_scratch.end());
-
-				m_sim_scratch.begin(heap_tag(MemoryLifetime::SimScratch, index));
-				m_sim_to_render.begin(heap_tag(MemoryLifetime::SimToRender, index));
-				m_render_scratch.begin(heap_tag(MemoryLifetime::RenderScratch, index));
-			}
-
-			// Platform event pump
 			{
 				EMBER_PROFILE_SCOPE_C("pump events", PROFILE_COLOR_INPUT);
 				if (m_platform->pump_events(m_input).quit_requested)
 					request_quit(0);
 			}
 
-			if (m_quit_requested)
+			if (quit_requested())
 				break;
 
 			// A breakpoint or long hitch should not become an unbounded simulation step.
@@ -222,68 +212,101 @@ namespace ember
 
 			m_previous_frame = tick;
 
-			// The frame begins: its entry takes the number and a copy of the input the pump just
-			// published, and nothing the stages read from it changes from here on.
-			FrameParams& frame = m_frames.begin(index, dt, m_input.state());
-			m_frame_index	   = index;
+			// The frame begins: its slot takes the number, a copy of the input the pump just
+			// published and the window's size. From the kick to the join the frame is the job's,
+			// and this thread touches neither it nor anything update() may read.
+			FrameParams& frame	= m_frames.begin(index, dt, m_input.state());
+			frame.window_extent = m_platform->window_pixel_size(m_window);
+			m_frame_index		= index;
 
+			m_sim_scratch.begin(heap_tag(MemoryLifetime::SimScratch, index));
+			m_sim_to_render.begin(heap_tag(MemoryLifetime::SimToRender, index));
+
+			auto update = [&app, &frame]() noexcept
 			{
 				EMBER_PROFILE_SCOPE_C("update", PROFILE_COLOR_GAMEPLAY);
 				frame.update_begin_ns = now_ns();
 				app.update(frame);
 				frame.update_end_ns = now_ns();
-			}
+			};
 
-			if (m_quit_requested)
-				break;
+			jobs::kick(jobs::make_job(update, "update"), &update_done);
 
-			Extent2D pixels = m_platform->window_pixel_size(m_window);
-			if (pixels.width == 0 || pixels.height == 0)
-			{
-				// A minimized window has no drawable. Sleep to avoid a hot loop
-				// while continuing to poll for restore events.
-				std::this_thread::sleep_for(std::chrono::milliseconds(16));
+			if (pending != nullptr)
+				render_frame(app, *pending);
 
-				EMBER_PROFILE_FRAME();
-				continue;
-			}
+			// The join. update() has returned on every path: its scratch dies here, and its packet
+			// closes so the next update can open its own, but stays alive until render_frame has
+			// read it.
+			jobs::wait(update_done);
 
-			const gpu::FrameInfo info  = m_gpu->begin_frame();
-			const TextureHandle output = m_gpu->acquire(m_swapchain);
-
-			if (!output.is_null())
-			{
-				frame.frame_slot		= info.slot;
-				frame.backbuffer		= output;
-				frame.backbuffer_extent = m_gpu->swapchain_extent(m_swapchain);
-
-				// Stamped after begin_frame's wait for the GPU, so render time is work, not waiting.
-				EMBER_PROFILE_SCOPE_C("render", PROFILE_COLOR_RENDER);
-				frame.render_begin_ns = now_ns();
-				app.render(frame);
-				frame.render_end_ns = now_ns();
-			}
-
-			// No control-flow statement may bypass this after begin_frame(). What it submitted is
-			// the frame's GPU work, which has_frame_completed() asks after.
-			frame.gpu = m_gpu->end_frame();
-
-			if (m_gpu->device_lost())
-			{
-				EMBER_ERROR("GPU device lost");
-				request_quit(1);
-			}
+			heap.free(m_sim_scratch.end());
+			(void)m_sim_to_render.end();
+			pending = &frame;
 
 			EMBER_PROFILE_FRAME();
 		}
 
+		// A frame updated but never rendered still owns its packet.
+		if (pending != nullptr)
+			heap.free(heap_tag(MemoryLifetime::SimToRender, pending->frame_index));
+
 		app.shutdown();
+	}
+
+	void Runtime::render_frame(App& app, FrameParams& frame) noexcept
+	{
+		TaggedHeap& heap	 = memory::tagged_heap();
+		const HeapTag packet = heap_tag(MemoryLifetime::SimToRender, frame.frame_index);
+
+		const Extent2D pixels = m_platform->window_pixel_size(m_window);
+		if (pixels.width == 0 || pixels.height == 0)
+		{
+			// A minimized window has no drawable: the frame is dropped, packet and all. The sleep
+			// keeps the loop from spinning while there is nothing to show.
+			heap.free(packet);
+			std::this_thread::sleep_for(std::chrono::milliseconds(16));
+			return;
+		}
+
+		m_render_scratch.begin(heap_tag(MemoryLifetime::RenderScratch, frame.frame_index));
+
+		const gpu::FrameInfo info  = m_gpu->begin_frame();
+		const TextureHandle output = m_gpu->acquire(m_swapchain);
+
+		if (!output.is_null())
+		{
+			frame.frame_slot		= info.slot;
+			frame.backbuffer		= output;
+			frame.backbuffer_extent = m_gpu->swapchain_extent(m_swapchain);
+
+			// Stamped after begin_frame's wait for the GPU, so render time is work, not waiting.
+			EMBER_PROFILE_SCOPE_C("render", PROFILE_COLOR_RENDER);
+			frame.render_begin_ns = now_ns();
+			app.render(frame);
+			frame.render_end_ns = now_ns();
+		}
+
+		// No control-flow statement may bypass this after begin_frame(). What it submitted is the
+		// frame's GPU work, which is_frame_complete() asks after. Every copy out of the frame's
+		// memory has been recorded by now, so the render scratch and the packet both die here.
+		frame.gpu = m_gpu->end_frame();
+
+		heap.free(m_render_scratch.end());
+		heap.free(packet);
+
+		if (m_gpu->device_lost())
+		{
+			EMBER_ERROR("GPU device lost");
+			request_quit(1);
+		}
 	}
 
 	bool Runtime::is_frame_complete(u64 index) const noexcept
 	{
-		// The frame in progress has not submitted, and nothing after it exists yet.
-		if (index >= m_frames.current_index())
+		// The newest frame is being updated and the one before it may be mid render, its gpu
+		// field still to be written by the owner thread; neither has an answer yet.
+		if (index + 1 >= m_frames.current_index())
 			return false;
 
 		// Older than the ring: the device keeps at most frames_in_flight frames pending and the
@@ -295,9 +318,10 @@ namespace ember
 		// A frame that never reached the GPU carries a zero submission, which reads complete.
 		return m_gpu->is_complete(frame->gpu);
 	}
+
 	void Runtime::request_quit(int exit_code) noexcept
 	{
-		m_exit_code		 = exit_code;
-		m_quit_requested = true;
+		m_exit_code.store(exit_code, std::memory_order_relaxed);
+		m_quit_requested.store(true, std::memory_order_release);
 	}
 }
