@@ -110,3 +110,8 @@ namespace ember::io
 		u64 m_max_bytes = 0;
 	};
 }
+
+namespace ember
+{
+	EMBER_ENUM_NAMES(io::FileError, "None", "NotFound", "ReadFailed", "TooLarge", "QueueFull");
+}

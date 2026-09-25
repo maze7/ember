@@ -45,7 +45,7 @@ namespace ember
 	io::FileIo& App::io() noexcept
 	{
 		EMBER_ASSERT(m_runtime != nullptr);
-		return m_runtime->m_io;
+		return *m_runtime->m_io;
 	}
 
 	void App::quit(int exit_code) noexcept
@@ -58,6 +58,12 @@ namespace ember
 	{
 		EMBER_ASSERT(m_runtime != nullptr);
 		return m_runtime->m_frames.find(index);
+	}
+
+	AssetManager& App::assets() noexcept
+	{
+		EMBER_ASSERT(m_runtime != nullptr);
+		return *m_runtime->m_assets;
 	}
 
 	bool App::is_frame_complete(u64 index) const noexcept

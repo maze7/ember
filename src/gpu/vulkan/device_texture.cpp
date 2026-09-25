@@ -82,6 +82,92 @@ namespace ember::gpu
 				return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 			return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 		}
+
+		/**
+		 * The image and its sampled view for def, or nothing: the checks every texture needs
+		 * and the two objects every texture has. view_info comes back for the views only some need.
+		 */
+		[[nodiscard]] bool create_image(Backend& backend, const TextureDef& def, VkImage& image,
+										VmaAllocation& allocation, VkImageView& view,
+										VkImageViewCreateInfo& view_info) noexcept
+		{
+			const vk::FormatInfo& info = vk::format_info(def.format);
+
+			// Content validation the def validator can't do. A corrupted asset is an
+			// error and a reject, never an assert in release.
+			if (!def.initial_data.empty())
+			{
+				u64 expected = 0;
+				for (u32 mip = 0; mip < def.mip_count; ++mip)
+					expected += vk::subresource_bytes(info, def.extent, mip);
+				expected *= def.layers;
+
+				if (def.initial_data.size() != expected)
+				{
+					EMBER_ERROR("gpu: texture '{}' initial_data is {} bytes, the subresource chain needs {}", def.name,
+								def.initial_data.size(), expected);
+					return false;
+				}
+			}
+
+			// Optimal tiling support is per adapter, per format, per usage; the spec only
+			// guarantees a baseline. RGB32Float sampling is the canonical hole.
+			VkFormatProperties props{};
+			vkGetPhysicalDeviceFormatProperties(backend.context.adapter, info.vk, &props);
+
+			const VkFormatFeatureFlags needed = required_features(def.usage);
+			if ((props.optimalTilingFeatures & needed) != needed)
+			{
+				EMBER_ERROR("gpu: texture '{}' format unsupported for the requested usage on this adapter", def.name);
+				return false;
+			}
+
+			const VkImageCreateInfo image_info{
+				.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+				.flags = def.type == TextureType::TextureCube ? VkImageCreateFlags{VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT}
+															  : VkImageCreateFlags{},
+				.imageType	   = to_vk_type(def.type),
+				.format		   = info.vk,
+				.extent		   = {def.extent.width, def.extent.height, def.extent.depth},
+				.mipLevels	   = def.mip_count,
+				.arrayLayers   = def.layers,
+				.samples	   = static_cast<VkSampleCountFlagBits>(def.sample_count),
+				.tiling		   = VK_IMAGE_TILING_OPTIMAL,
+				.usage		   = to_vk_usage(def.usage),
+				.sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
+				.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			};
+
+			VmaAllocationCreateInfo alloc_info{};
+			alloc_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+
+			if (auto vr =
+					vmaCreateImage(backend.context.allocator, &image_info, &alloc_info, &image, &allocation, nullptr);
+				vr != VK_SUCCESS)
+			{
+				EMBER_ERROR("gpu: texture '{}' creation failed: {}", def.name, vk::result_name(vr));
+				return false;
+			}
+
+			view_info = {
+				.sType			  = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+				.image			  = image,
+				.viewType		  = to_vk_view_type(def.type),
+				.format			  = info.vk,
+				.subresourceRange = {info.aspect, 0, def.mip_count, 0, def.layers},
+			};
+
+			if (auto vr = vkCreateImageView(backend.context.device, &view_info, nullptr, &view); vr != VK_SUCCESS)
+			{
+				EMBER_ERROR("gpu: texture '{}' view creation failed: {}", def.name, vk::result_name(vr));
+				vmaDestroyImage(backend.context.allocator, image, allocation);
+				image	   = VK_NULL_HANDLE;
+				allocation = VK_NULL_HANDLE;
+				return false;
+			}
+
+			return true;
+		}
 	}
 
 	TextureHandle Device::create_texture(const TextureDef& def) noexcept
@@ -110,80 +196,13 @@ namespace ember::gpu
 			return {};
 		}
 
-		// Content validation the def validator can't do. A corrupted asset is an
-		// error and a reject, never an assert in release.
-		if (!def.initial_data.empty())
-		{
-			u64 expected = 0;
-			for (u32 mip = 0; mip < def.mip_count; ++mip)
-				expected += vk::subresource_bytes(info, def.extent, mip);
-			expected *= def.layers;
-
-			if (def.initial_data.size() != expected)
-			{
-				EMBER_ERROR("gpu: texture '{}' initial_data is {} bytes, the subresource chain needs {}", def.name,
-							def.initial_data.size(), expected);
-				return {};
-			}
-		}
-
-		// Optimal tiling support is per adapter, per format, per usage; the spec only
-		// guarantees a baseline. RGB32Float sampling is the canonical hole.
-		VkFormatProperties props{};
-		vkGetPhysicalDeviceFormatProperties(m_backend->context.adapter, info.vk, &props);
-
-		const VkFormatFeatureFlags needed = required_features(def.usage);
-		if ((props.optimalTilingFeatures & needed) != needed)
-		{
-			EMBER_ERROR("gpu: texture '{}' format unsupported for the requested usage on this adapter", def.name);
-			return {};
-		}
-
-		const VkImageCreateInfo image_info{
-			.sType	   = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-			.flags	   = def.type == TextureType::TextureCube ? VkImageCreateFlags{VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT}
-															  : VkImageCreateFlags{},
-			.imageType = to_vk_type(def.type),
-			.format	   = info.vk,
-			.extent	   = {def.extent.width, def.extent.height, def.extent.depth},
-			.mipLevels = def.mip_count,
-			.arrayLayers   = def.layers,
-			.samples	   = static_cast<VkSampleCountFlagBits>(def.sample_count),
-			.tiling		   = VK_IMAGE_TILING_OPTIMAL,
-			.usage		   = to_vk_usage(def.usage),
-			.sharingMode   = VK_SHARING_MODE_EXCLUSIVE,
-			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-		};
-
-		VmaAllocationCreateInfo alloc_info{};
-		alloc_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-
 		VkImage image			 = VK_NULL_HANDLE;
 		VmaAllocation allocation = VK_NULL_HANDLE;
+		VkImageView view		 = VK_NULL_HANDLE;
+		VkImageViewCreateInfo view_info{};
 
-		if (auto vr =
-				vmaCreateImage(m_backend->context.allocator, &image_info, &alloc_info, &image, &allocation, nullptr);
-			vr != VK_SUCCESS)
-		{
-			EMBER_ERROR("gpu: texture '{}' creation failed: {}", def.name, vk::result_name(vr));
+		if (!create_image(*m_backend, def, image, allocation, view, view_info))
 			return {};
-		}
-
-		const VkImageViewCreateInfo view_info{
-			.sType			  = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-			.image			  = image,
-			.viewType		  = to_vk_view_type(def.type),
-			.format			  = info.vk,
-			.subresourceRange = {info.aspect, 0, def.mip_count, 0, def.layers},
-		};
-
-		VkImageView view = VK_NULL_HANDLE;
-		if (auto vr = vkCreateImageView(m_backend->context.device, &view_info, nullptr, &view); vr != VK_SUCCESS)
-		{
-			EMBER_ERROR("gpu: texture '{}' view creation failed: {}", def.name, vk::result_name(vr));
-			vmaDestroyImage(m_backend->context.allocator, image, allocation);
-			return {};
-		}
 
 		// Storage access addresses one mip; mip 0 is the contract until per-mip
 		// views arrive. Cube storage views must be 2D arrays.
@@ -218,7 +237,7 @@ namespace ember::gpu
 				},
 				vk::TextureCold{
 					.allocation	 = allocation,
-					.extent		 = image_info.extent,
+					.extent		 = {def.extent.width, def.extent.height, def.extent.depth},
 					.format		 = info.vk,
 					.api_format	 = def.format,
 					.mip_count	 = def.mip_count,
@@ -398,6 +417,109 @@ namespace ember::gpu
 		vk::set_name(m_backend->context, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<u64>(image), def.name);
 
 		return handle;
+	}
+
+	bool Device::update_texture(TextureHandle handle, const TextureDef& def) noexcept
+	{
+		EMBER_GPU_GUARD(false);
+
+		// The whole texture, so the whole texture's data; and a plain sampled one, since a storage
+		// view, per mip entries or attachment slices would all have to follow the image.
+		if (!::ember::gpu::is_valid(def) || def.initial_data.empty() || def.usage != TextureUsage::Sampled)
+		{
+			EMBER_ERROR("gpu: update of texture '{}' needs a valid, sampled only def with pixels", def.name);
+			return false;
+		}
+
+		{
+			std::lock_guard lock(m_backend->resources_lock);
+
+			const vk::TextureHot* hot	= m_backend->resources.textures.get(handle);
+			const vk::TextureCold* cold = m_backend->resources.textures.get_cold(handle);
+
+			if (hot == nullptr)
+			{
+				EMBER_ERROR("gpu: update of texture '{}' on a stale handle", def.name);
+				return false;
+			}
+
+			if (!cold->owns_image || !cold->parent.is_null() || hot->storage_view != VK_NULL_HANDLE ||
+				!cold->attachment_views.empty() || cold->type != def.type)
+			{
+				EMBER_ERROR("gpu: texture '{}' is not a plain sampled texture of def's type", def.name);
+				return false;
+			}
+		}
+
+		// The new image, built like any other, outside the lock.
+		VkImage image			 = VK_NULL_HANDLE;
+		VmaAllocation allocation = VK_NULL_HANDLE;
+		VkImageView view		 = VK_NULL_HANDLE;
+		VkImageViewCreateInfo view_info{};
+
+		if (!create_image(*m_backend, def, image, allocation, view, view_info))
+			return false;
+
+		const VkImageLayout steady = steady_layout(def.usage);
+		const vk::FormatInfo& info = vk::format_info(def.format);
+
+		// Streamed whichever thread this is: no frame waits for a whole texture, and the swap
+		// happens once the pixels are in.
+		const u64 upload_value = vk::staging_upload_texture(*m_backend,
+															{
+																.image		 = image,
+																.format		 = def.format,
+																.extent		 = def.extent,
+																.mip_count	 = def.mip_count,
+																.layer_count = def.layers,
+																.steady		 = steady,
+															},
+															def.initial_data, true);
+
+		if (upload_value == 0)
+		{
+			// Nothing was recorded, so no batch has touched the image: it can go now.
+			EMBER_ERROR("gpu: update of texture '{}' failed to upload", def.name);
+			vkDestroyImageView(m_backend->context.device, view, nullptr);
+			vmaDestroyImage(m_backend->context.allocator, image, allocation);
+			return false;
+		}
+
+		{
+			std::lock_guard lock(m_backend->resources_lock);
+
+			// An earlier upload aimed at the handle must not publish over this one when it lands;
+			// promotion still waits for it before retiring the image it would have filled.
+			for (PendingResidency& pending : m_backend->pending_residency)
+				if (pending.texture == handle)
+					pending.superseded = true;
+
+			m_backend->pending_residency.push_back({
+				.texture	   = handle,
+				.view		   = view,
+				.layout		   = steady,
+				.type		   = def.type,
+				.ready_value   = upload_value,
+				.image		   = image,
+				.aspect		   = info.aspect,
+				.mip_count	   = def.mip_count,
+				.layer_count   = def.layers,
+				.needs_acquire = m_backend->staging.cross_family,
+				.replace	   = true,
+				.allocation	   = allocation,
+				.extent		   = {def.extent.width, def.extent.height, def.extent.depth},
+				.format		   = info.vk,
+				.api_format	   = def.format,
+			});
+
+			// Resident means the latest pixels are in. The handle may have died since the check
+			// above; promotion then lets the new image go unused, and there is nothing to mark.
+			if (vk::TextureCold* cold = m_backend->resources.textures.get_cold(handle))
+				cold->ready_value = upload_value;
+		}
+
+		vk::set_name(m_backend->context, VK_OBJECT_TYPE_IMAGE, reinterpret_cast<u64>(image), def.name);
+		return true;
 	}
 
 	void Device::destroy(TextureHandle handle) noexcept

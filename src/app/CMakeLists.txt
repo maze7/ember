@@ -1,7 +1,7 @@
 # Ember::App boots the stack and pumps frames. Ember::Main owns the platform
 # entry point; games link it, tools keep their own main.
-if (NOT EMBER_ENABLE_GRAPHICS OR NOT EMBER_ENABLE_IMGUI)
-	message(FATAL_ERROR "EMBER_ENABLE_APP requires EMBER_ENABLE_GRAPHICS and EMBER_ENABLE_IMGUI")
+if (NOT EMBER_ENABLE_GRAPHICS OR NOT EMBER_ENABLE_IMGUI OR NOT EMBER_ENABLE_ASSETS)
+	message(FATAL_ERROR "EMBER_ENABLE_APP requires EMBER_ENABLE_GRAPHICS, EMBER_ENABLE_IMGUI and EMBER_ENABLE_ASSETS")
 endif()
 
 ember_add_module(App

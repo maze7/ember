@@ -53,7 +53,8 @@ namespace ember
 		}
 
 		jobs::initialize(config.jobs);
-		m_io.init(config.io);
+		m_io = memory::make_unique<io::FileIo>(MemoryTag::Engine);
+		m_io->init(config.io);
 
 		m_platform = memory::make_unique<Platform>(MemoryTag::Engine);
 		if (!m_platform)
@@ -78,6 +79,9 @@ namespace ember
 		// Initialize the renderer after the GPU is available.
 		m_renderer = memory::make_unique<render::Renderer>(MemoryTag::Graphics);
 		m_renderer->init(*m_gpu, {});
+
+		m_assets = memory::make_unique<AssetManager>(MemoryTag::Assets);
+		m_assets->init(*m_io, *m_gpu, config.assets);
 		m_state = State::Ready;
 
 		return {};
@@ -85,6 +89,12 @@ namespace ember
 
 	void Runtime::shutdown() noexcept
 	{
+		if (m_assets)
+		{
+			m_assets->shutdown();
+			m_assets.reset();
+		}
+
 		// Submitted frames may still reference renderer-owned resources,
 		// so quiesce the GPU before tearing the renderer down.
 		if (m_gpu)
@@ -119,7 +129,11 @@ namespace ember
 		}
 
 		// The file thread signals job counters, so it stops while the scheduler still exists.
-		m_io.shutdown();
+		if (m_io)
+		{
+			m_io->shutdown();
+			m_io.reset();
+		}
 
 		// Worker teardown may still touch engine allocators, so stop the scheduler before
 		// releasing the memory system. The lifetimes go between the two: each arena frees
@@ -210,6 +224,10 @@ namespace ember
 
 			if (quit_requested())
 				break;
+
+			// Before the kick, with no stage running: assets nobody holds go, finished reloads fold
+			// into their payloads, and quiet file changes become reloads.
+			m_assets->pump(index);
 
 			// A breakpoint or long hitch should not become an unbounded simulation step.
 			auto tick = std::chrono::steady_clock::now();

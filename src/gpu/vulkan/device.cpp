@@ -224,6 +224,17 @@ namespace ember::gpu
 					backend.resources.swapchains.get(frame.pending_presents[i].swapchain)->needs_recreate = true;
 		}
 
+		/// An upload aimed at `texture` that is still in flight among the entries kept so far.
+		[[nodiscard]] bool has_earlier_upload(const Vector<PendingResidency>& pending, u32 count,
+											  TextureHandle texture) noexcept
+		{
+			for (u32 i = 0; i < count; ++i)
+				if (pending[i].texture == texture)
+					return true;
+
+			return false;
+		}
+
 		/**
 		 * Streamed textures whose pixels have landed take their real view in the heap, and the
 		 * graphics queue takes back ownership of the images the DMA family released. Anything
@@ -255,6 +266,27 @@ namespace ember::gpu
 					continue;
 				}
 
+				// Overtaken before it landed: nothing to publish. Natives of its own were never
+				// behind a handle and go the way of any destroyed image, now that the copy is done.
+				if (pending.superseded)
+				{
+					if (pending.replace)
+					{
+						backend.destroy_queue.destroy(pending.view);
+						backend.destroy_queue.destroy(pending.image, pending.allocation);
+					}
+
+					continue;
+				}
+
+				// A replacement waits for every earlier upload aimed at the same handle: the image
+				// it would retire may still be receiving one.
+				if (pending.replace && has_earlier_upload(backend.pending_residency, remaining, pending.texture))
+				{
+					backend.pending_residency[remaining++] = pending;
+					continue;
+				}
+
 				if (pending.needs_acquire && acquire_cmd == VK_NULL_HANDLE)
 				{
 					// Claimed before anything else this frame, so ownership is back before a pass
@@ -279,6 +311,44 @@ namespace ember::gpu
 											  pending.layer_count, pending.layout);
 
 					frame.acquire_value = std::max(frame.acquire_value, pending.ready_value);
+				}
+
+				if (pending.replace)
+				{
+					vk::TextureHot* hot = backend.resources.textures.get(pending.texture);
+
+					// The handle died while its new pixels were in flight: they go unused.
+					if (hot == nullptr)
+					{
+						backend.destroy_queue.destroy(pending.view);
+						backend.destroy_queue.destroy(pending.image, pending.allocation);
+						continue;
+					}
+
+					vk::TextureCold& cold = *backend.resources.textures.get_cold(pending.texture);
+
+					// The old image is released once every frame that could have sampled it has
+					// retired; the descriptor moves now, as it does for a first upload.
+					backend.destroy_queue.destroy(hot->sampled_view);
+					backend.destroy_queue.destroy(hot->image, cold.allocation);
+
+					hot->image		  = pending.image;
+					hot->sampled_view = pending.view;
+					cold.allocation	  = pending.allocation;
+					cold.extent		  = pending.extent;
+					cold.format		  = pending.format;
+					cold.api_format	  = pending.api_format;
+					cold.mip_count	  = pending.mip_count;
+					cold.layer_count  = pending.layer_count;
+					cold.layout		  = pending.layout;
+
+					// Resident again, unless a later replacement has already raised the bar.
+					if (cold.ready_value == pending.ready_value)
+						cold.ready_value = 0;
+
+					backend.descriptor_heap.write_sampled(backend.context, pending.texture.index, pending.view,
+														  pending.layout, pending.type);
+					continue;
 				}
 
 				// The handle can have died while its pixels were in flight; the slot then belongs

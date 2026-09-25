@@ -2,6 +2,7 @@
 
 #include <ember/app/app.h>
 #include <ember/app/frame.h>
+#include <ember/assets/asset.h>
 #include <ember/core/common.h>
 #include <ember/core/result.h>
 #include <ember/gpu/common.h>
@@ -102,11 +103,10 @@ namespace ember
 		Unique<Platform> m_platform;
 		Unique<gpu::Device> m_gpu;
 		Unique<render::Renderer> m_renderer;
+		Unique<io::FileIo> m_io;
+		Unique<AssetManager> m_assets;
 
 		Input m_input;
-
-		// The file thread, up for exactly as long as the scheduler its  reads signal into.
-		io::FileIo m_io;
 
 		/**
 		 * The frame lifetimes, one arena on the shared heap. The loop names them after  the

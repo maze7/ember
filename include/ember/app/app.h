@@ -2,6 +2,7 @@
 
 #include <ember/app/frame.h>
 #include <ember/app/main.h>
+#include <ember/assets/asset.h>
 #include <ember/core/common.h>
 #include <ember/gpu/common.h>
 #include <ember/gpu/device.h>
@@ -21,6 +22,7 @@ namespace ember
 		MemoryConfig memory			  = {};
 		jobs::JobSystemDef jobs		  = {};
 		io::FileIoDef io			  = {};
+		AssetManagerDef assets		  = {};
 		WindowDef window			  = {};
 		gpu::DeviceDef gpu			  = {};
 		gpu::PresentMode present_mode = gpu::PresentMode::VSync;
@@ -69,6 +71,7 @@ namespace ember
 		[[nodiscard]] WindowHandle window() const noexcept;
 		[[nodiscard]] SwapchainHandle swapchain() const noexcept;
 		[[nodiscard]] io::FileIo& io() noexcept;
+		[[nodiscard]] AssetManager& assets() noexcept;
 
 		/**
 		 * One of the last FrameRing::CAPACITY frames by number, the current one included: what an

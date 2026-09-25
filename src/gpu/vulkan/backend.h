@@ -149,6 +149,15 @@ namespace ember::gpu
 		u32 mip_count			  = 1;
 		u32 layer_count			  = 1;
 		bool needs_acquire		  = false;
+
+		/// Replacement only: the rest of what the pool needs to make these the texture's natives.
+		/// An entry a later replacement overtook is superseded and publishes nothing when it lands.
+		bool replace			 = false;
+		bool superseded			 = false;
+		VmaAllocation allocation = VK_NULL_HANDLE;
+		VkExtent3D extent{};
+		VkFormat format			 = VK_FORMAT_UNDEFINED;
+		TextureFormat api_format = TextureFormat::Undefined;
 	};
 
 	/// Swapchains acquired this frame; end_frame clears, submits and presents them as a batch.

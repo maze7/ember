@@ -302,6 +302,16 @@ namespace ember::gpu
 		 */
 		void update_texture(TextureHandle handle, u32 mip, u32 layer, Span<const u8> data) noexcept;
 
+		/**
+		 * Replaces the whole texture behind the handle: a new image with def's shape and pixels is
+		 * uploaded streamed and swapped in at the first begin_frame after its upload has landed;
+		 * the old image is released once every frame that could have sampled it has retired. The
+		 * handle and its bindless index never change, so nothing that stored them needs to know,
+		 * and is_resident() reads false until the new pixels are in. Any thread. The texture must
+		 * be a plain sampled one and def must keep its type; anything else refuses and changes nothing.
+		 */
+		[[nodiscard]] bool update_texture(TextureHandle handle, const TextureDef& def) noexcept;
+
 		FrameInfo begin_frame() noexcept;
 		FrameSubmission end_frame() noexcept;
 
