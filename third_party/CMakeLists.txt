@@ -160,3 +160,5 @@ if(EMBER_ENABLE_ASSETS)
 	target_compile_features(efsw PRIVATE cxx_std_11)
 	target_compile_definitions(efsw PRIVATE $<IF:$<CONFIG:Debug>,DEBUG,NDEBUG>)
 endif()
+
+add_subdirectory(yyjson)

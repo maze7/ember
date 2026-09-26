@@ -1,11 +1,11 @@
 #pragma once
 
-#include <ember/assets/asset_id.h>
 #include <ember/containers/mpmc_queue.h>
 #include <ember/containers/pool.h>
 #include <ember/containers/span.h>
 #include <ember/core/common.h>
 #include <ember/core/handle.h>
+#include <ember/core/hash.h>
 #include <ember/io/file.h>
 #include <ember/jobs/job_system.h>
 #include <ember/memory/memory.h>
@@ -24,6 +24,10 @@ namespace ember::gpu
 namespace ember
 {
 	class AssetManager;
+
+	using AssetId = u64;
+
+	[[nodiscard]] constexpr AssetId asset_id(StringView path) noexcept { return hash_text(path); }
 
 	enum class AssetState : u8
 	{

@@ -1,4 +1,4 @@
-#include <ember/assets/asset_id.h>
+#include <ember/assets/asset.h>
 
 #include <gtest/gtest.h>
 

@@ -4,6 +4,7 @@ ember_add_module(Core
 		fmt::fmt
 		tl::expected
 		glm::glm
+		yyjson
 		unordered_dense::unordered_dense
 		$<$<BOOL:${EMBER_USE_RPMALLOC}>:rpmalloc::rpmalloc>
 		$<$<BOOL:${EMBER_USE_TRACY}>:Tracy::TracyClient>

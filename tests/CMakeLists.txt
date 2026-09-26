@@ -16,6 +16,7 @@ function(ember_add_test_suite target label)
 	)
 endfunction()
 
+add_subdirectory(core)
 add_subdirectory(containers)
 add_subdirectory(memory)
 add_subdirectory(math)

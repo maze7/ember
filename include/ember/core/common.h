@@ -137,6 +137,12 @@ namespace ember
 	template <typename T> struct EnumNames;
 	template <typename T> constexpr auto enum_names() { return EnumNames<T>{}(); }
 
+	template <class E> [[nodiscard]] const char* enum_name(E value) noexcept
+	{
+		constexpr auto names = enum_names<E>();
+		return names[static_cast<size_t>(value)];
+	}
+
 	template <typename Type, size_t Count> constexpr void check_enum_count()
 	{
 		if constexpr (requires { Type::Count; })
