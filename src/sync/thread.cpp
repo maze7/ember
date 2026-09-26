@@ -1,5 +1,10 @@
 #include <ember/sync/thread.h>
+#include <ember/core/logger.h>
+#include <ember/core/profile.h>
+#include <ember/memory/memory.h>
+#include <ember/memory/pmr/arena.h>
 
+#include <cstdlib>
 #include <atomic>
 
 #if defined(EMBER_PLATFORM_WINDOWS)
@@ -85,4 +90,33 @@ namespace ember
 
 	u32 locks_held() noexcept { return t_locks_held; }
 #endif
+
+	namespace
+	{
+		constinit thread_local bool t_io_thread = false;
+	}
+
+	ThreadAttachment::ThreadAttachment(const char* name, ThreadKind kind) noexcept
+	{
+		memory::initialize_thread();
+
+		if (!Arena::register_thread()) [[unlikely]]
+		{
+			EMBER_ERROR("thread '{}' found every frame memory slot taken; raise Arena::MAX_THREADS", name);
+			std::abort();
+		}
+
+		set_thread_name(name);
+		EMBER_PROFILE_THREAD(name);
+		t_io_thread = kind == ThreadKind::Io;
+	}
+
+	ThreadAttachment::~ThreadAttachment() noexcept
+	{
+		t_io_thread = false;
+		Arena::unregister_thread();
+		memory::shutdown_thread();
+	}
+
+	bool is_io_thread() noexcept { return t_io_thread; }
 }

@@ -1,7 +1,7 @@
 #include <ember/assets/asset.h>
 #include <ember/assets/texture_asset.h>
+#include <ember/core/filesystem.h>
 #include <ember/gpu/device.h>
-#include <ember/io/file.h>
 #include <ember/jobs/job_system.h>
 #include <ember/memory/memory.h>
 
@@ -9,22 +9,35 @@
 
 #include <atomic>
 #include <chrono>
-#include <cstdio>
-#include <filesystem>
 #include <string>
 #include <thread>
 #include <vector>
 
+#if defined(EMBER_PLATFORM_WINDOWS)
+	#include <process.h>
+#else
+	#include <unistd.h>
+#endif
+
 namespace
 {
 	using namespace ember;
+
+	[[nodiscard]] int process_id() noexcept
+	{
+#if defined(EMBER_PLATFORM_WINDOWS)
+		return _getpid();
+#else
+		return getpid();
+#endif
+	}
 
 	/// The simplest payload: the file's own bytes, kept. An empty file is a failed load, which is
 	/// how the tests reach the failure paths without a broken decoder. No reload() of its own, so
 	/// a reload swaps it: the old bytes end up in the fresh payload and are unloaded from there.
 	struct BytesAsset
 	{
-		Span<u8> bytes = {};
+		fs::FileData bytes;
 
 		inline static std::atomic<u32> unloads{0};
 
@@ -37,17 +50,15 @@ namespace
 			return true;
 		}
 
-		static void unload(AssetServices& services, BytesAsset& asset) noexcept
-		{
-			services.heap.deallocate(asset.bytes.data(), asset.bytes.size(), io::FILE_ALIGNMENT);
-			unloads.fetch_add(1);
-		}
+		/// The bytes free themselves with the payload; only the count is left to do.
+		static void unload(AssetServices&, BytesAsset&) noexcept { unloads.fetch_add(1); }
 	};
 
 	static_assert(AssetType<BytesAsset>);
 
-	/// A manager over a scratch directory, with the file thread and a headless device under it.
-	/// The watcher is off here so the tests drive notify_changed() by hand and stay deterministic.
+	/// A manager over a scratch directory of this process's own, with the job system's IO thread
+	/// and a headless device under it. The watcher is off here so the tests drive notify_changed()
+	/// by hand and stay deterministic.
 	class AssetManagerTest : public testing::Test
 	{
 	protected:
@@ -58,14 +69,16 @@ namespace
 
 		void SetUp() override
 		{
-			m_dir = std::filesystem::temp_directory_path() / "ember_asset_tests";
-			std::filesystem::remove_all(m_dir);
-			std::filesystem::create_directories(m_dir / "sub");
-			m_root = m_dir.string();
+			String scratch(&memory::heap(MemoryTag::Engine));
+			ASSERT_TRUE(fs::temporary_directory(scratch).has_value());
+			ASSERT_TRUE(fs::join(scratch, scratch, "ember_asset_tests_" + std::to_string(process_id())).has_value());
+			m_root.assign(scratch.data(), scratch.size());
+
+			ASSERT_TRUE(fs::remove_tree(m_root).has_value());
+			ASSERT_TRUE(fs::create_directories(m_root + "/sub").has_value());
 
 			jobs::initialize({.worker_count = 4});
-			m_io.init();
-			m_assets.init(m_io, m_device, def());
+			m_assets.init(m_device, def());
 			m_assets.register_type<BytesAsset>("bytes");
 
 			BytesAsset::unloads = 0;
@@ -74,32 +87,23 @@ namespace
 		void TearDown() override
 		{
 			m_assets.shutdown();
-			m_io.shutdown();
 			jobs::shutdown();
-			std::filesystem::remove_all(m_dir);
+			(void)fs::remove_tree(m_root);
 		}
 
-		/// Writes `size` bytes of a pattern keyed by `seed`; the asset path is the name.
+		/// `size` bytes of a pattern keyed by `seed`; the asset path is the name.
 		void write(const char* name, size_t size, u8 seed)
 		{
-			std::FILE* file = std::fopen((m_dir / name).string().c_str(), "wb");
-			ASSERT_NE(file, nullptr);
-
+			std::vector<u8> bytes(size);
 			for (size_t i = 0; i < size; ++i)
-			{
-				const u8 byte = static_cast<u8>(seed + i);
-				std::fwrite(&byte, 1, 1, file);
-			}
+				bytes[i] = static_cast<u8>(seed + i);
 
-			std::fclose(file);
+			write_bytes(name, Span<const u8>(bytes));
 		}
 
 		void write_bytes(const char* name, Span<const u8> bytes)
 		{
-			std::FILE* file = std::fopen((m_dir / name).string().c_str(), "wb");
-			ASSERT_NE(file, nullptr);
-			std::fwrite(bytes.data(), 1, bytes.size(), file);
-			std::fclose(file);
+			ASSERT_TRUE(fs::write_file(m_root + "/" + name, bytes).has_value());
 		}
 
 		static bool matches(const AssetRef<BytesAsset>& ref, size_t size, u8 seed)
@@ -107,8 +111,10 @@ namespace
 			if (!ref || ref->bytes.size() != size)
 				return false;
 
+			const Span<const u8> bytes = ref->bytes.bytes();
+
 			for (size_t i = 0; i < size; ++i)
-				if (ref->bytes[i] != static_cast<u8>(seed + i))
+				if (bytes[i] != static_cast<u8>(seed + i))
 					return false;
 
 			return true;
@@ -126,12 +132,10 @@ namespace
 
 		void pump() { m_assets.pump(++m_frame); }
 
-		std::filesystem::path m_dir;
 		std::string m_root;
 		u64 m_frame = 0;
 
 		gpu::Device m_device{gpu::DeviceDef{.adapter = gpu::AdapterPreference::Any}};
-		io::FileIo m_io;
 		AssetManager m_assets;
 	};
 
@@ -308,6 +312,17 @@ namespace
 		m_assets.notify_changed(asset_id("nothing/here.bin"));
 		pump();
 		m_assets.wait_idle();
+
+		EXPECT_EQ(m_assets.stats().assets, 0u);
+	}
+
+	TEST_F(AssetManagerTest, APathThatLeavesTheRootIsRefused)
+	{
+		const AssetRef<BytesAsset> outside = m_assets.load<BytesAsset>("../escape.bin");
+		EXPECT_TRUE(outside.is_null());
+
+		const AssetRef<BytesAsset> absolute = m_assets.load<BytesAsset>("/etc/hostname");
+		EXPECT_TRUE(absolute.is_null());
 
 		EXPECT_EQ(m_assets.stats().assets, 0u);
 	}

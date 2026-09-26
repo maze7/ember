@@ -1,4 +1,3 @@
-#include "ember/core/common.h"
 #include <jobs/scheduler.h>
 
 #include <ember/core/logger.h>
@@ -36,21 +35,6 @@ namespace ember::jobs
 			EMBER_ERROR("(ember::jobs) {}", what);
 			EMBER_DEBUG_BREAK();
 			std::abort();
-		}
-
-		// A push fails because the queue is full or because a pop of the target cell is mid
-		// flight on another thread and has not released it yet. The hint tells the two apart,
-		// and the second clears as soon as the pop finishes.
-		template <class T> [[nodiscard]] bool push_or_full(MpmcQueue<T>& queue, const T& value) noexcept
-		{
-			for (u32 spins = 0;; detail::cpu_relax(spins++))
-			{
-				if (queue.try_push(value))
-					return true;
-
-				if (queue.size_hint() >= queue.capacity())
-					return false;
-			}
 		}
 
 		// Pools never fill: an object is pushed only by the holder that took it out.
@@ -269,8 +253,12 @@ namespace ember::jobs
 
 		worker_count =
 			def.worker_count != 0 ? def.worker_count : hardware - std::min(def.reserved_threads, hardware - 1);
-		worker_count   = std::min(worker_count, Sleepers::MAX_WORKERS);
-		sleepers.count = worker_count;
+
+		// Workers and IO threads share the arena's thread slots, which the sleeper mask matches in
+		// size, so the IO threads are taken out of the workers' allowance.
+		const u32 io_threads = std::min(def.io_threads, IoThreads::MAX_THREADS);
+		worker_count		 = std::min(worker_count, Sleepers::MAX_WORKERS - io_threads);
+		sleepers.count		 = worker_count;
 
 		// Every worker thread takes a fiber to run its loop on, and main's first wait needs one more.
 		fibers.init(std::max(def.fiber_count, worker_count + 1), def.stack_size, fiber_main);
@@ -301,6 +289,7 @@ namespace ember::jobs
 			worker.thread = std::thread([this, index] { worker_main(workers[index]); });
 		}
 
+		io.init(*this, io_threads, def.io_queue_capacity);
 		adopt_main();
 	}
 
@@ -310,6 +299,9 @@ namespace ember::jobs
 		// worker 0 would be pulling the scheduler out from under its own fiber.
 		EMBER_ASSERT(t_worker == &workers[0] && workers[0].current == &workers[0].thread_record &&
 					 "shutdown runs on the thread that initialized, outside any job");
+
+		// The IO threads first: once they are gone, no completion can arrive from outside the workers.
+		io.shutdown();
 
 		stopping.store(true, std::memory_order_release);
 		sleepers.wake_all();
@@ -411,19 +403,11 @@ namespace ember::jobs
 	// to leave the loop at shutdown; everything else runs on pool fibers.
 	void Scheduler::worker_main(Worker& worker) noexcept
 	{
-		memory::initialize_thread();
-		if (!Arena::register_thread()) [[unlikely]]
-		{
-			EMBER_ERROR("worker {} found every arena thread slot taken; raise Arena::MAX_THREADS", worker.index);
-			std::abort();
-		}
-
-		t_worker = &worker;
-
 		char name[16];
 		std::snprintf(name, sizeof(name), "ember.jobs.%u", worker.index);
-		set_thread_name(name);
-		EMBER_PROFILE_THREAD(name);
+		const ThreadAttachment attachment(name, ThreadKind::Worker);
+
+		t_worker = &worker;
 
 		if (def.pin_workers)
 			(void)set_thread_affinity(worker.index % std::max(1u, std::thread::hardware_concurrency()));
@@ -441,8 +425,6 @@ namespace ember::jobs
 		fiber_release_thread(worker.thread_record.fiber);
 		worker.thread_record.fiber = nullptr;
 		t_worker				   = nullptr;
-		Arena::unregister_thread();
-		memory::shutdown_thread();
 	}
 
 	bool Scheduler::has_work(const Worker& worker) const noexcept
@@ -575,8 +557,8 @@ namespace ember::jobs
 		trace_split(self);
 
 		{
-			EMBER_PROFILE_SCOPE("job");
-			EMBER_PROFILE_ZONE_NAME(self->job_name, std::strlen(self->job_name));
+			EMBER_PROFILE_FIBER_SCOPE("job");
+			EMBER_PROFILE_FIBER_ZONE_NAME(self->job_name, std::strlen(self->job_name));
 			job.fn(job.data);
 		}
 
@@ -628,6 +610,7 @@ namespace ember::jobs
 	void Scheduler::wait(Counter& counter) noexcept
 	{
 		EMBER_ASSERT(locks_held() == 0 && "wait with a spin lock held");
+		EMBER_ASSERT(!is_io_thread() && "an I/O thread may not wait on the scheduler: nothing would serve its queue");
 
 		Worker* worker = current_worker();
 
@@ -700,8 +683,9 @@ namespace ember::jobs
 	void Scheduler::dump(const char* reason) noexcept
 	{
 		const JobStats snapshot = stats();
-		EMBER_ERROR("(ember::jobs) {}: {} fibers free, {} parked, {} ready, {} jobs queued", reason,
-					snapshot.free_fibers, snapshot.parked_fibers, snapshot.ready_fibers, snapshot.queued_jobs);
+		EMBER_ERROR("(ember::jobs) {}: {} fibers free, {} parked, {} ready, {} jobs queued, {} io tasks queued", reason,
+					snapshot.free_fibers, snapshot.parked_fibers, snapshot.ready_fibers, snapshot.queued_jobs,
+					snapshot.queued_io_tasks);
 
 		const auto describe = [this](const FiberRecord& fiber)
 		{
@@ -736,11 +720,12 @@ namespace ember::jobs
 		const u32 main_waiting = main_ready.load(std::memory_order_relaxed) != nullptr ? 1u : 0u;
 
 		return {
-			.free_fibers   = fibers.free_count(),
-			.parked_fibers = parked.load(std::memory_order_relaxed),
-			.ready_fibers  = static_cast<u32>(ready.size_hint()) + main_waiting,
-			.queued_jobs   = static_cast<u32>(queued),
-			.stalls		   = stalls.load(std::memory_order_relaxed),
+			.free_fibers	 = fibers.free_count(),
+			.parked_fibers	 = parked.load(std::memory_order_relaxed),
+			.ready_fibers	 = static_cast<u32>(ready.size_hint()) + main_waiting,
+			.queued_jobs	 = static_cast<u32>(queued),
+			.queued_io_tasks = io.queued(),
+			.stalls			 = stalls.load(std::memory_order_relaxed),
 		};
 	}
 

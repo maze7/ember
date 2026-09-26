@@ -74,14 +74,23 @@ namespace ember
 	#define EMBER_PROFILE_ZONE_RENAME(zone, txt, size) TracyCZoneName(zone, txt, size)
 
 	/// Fibers. ENTER on every resume with the fiber's persistent name, LEAVE before switching
-	/// away; zones opened inside then belong to the fiber rather than the thread. Without
-	/// TRACY_FIBERS in the client build they compile to nothing and fibers show as threads.
+	/// away; zones opened inside then belong to the fiber rather than the thread, and a
+	/// FIBER_SCOPE, a zone a job may hold across a wait, stays whole on the fiber's lane. Without
+	/// TRACY_FIBERS in the client build all of these compile to nothing: fibers show as threads,
+	/// and a zone must end on the thread it began on, so the scheduler's per-thread segments show
+	/// a job's pieces instead.
 	#if defined(TRACY_FIBERS)
 		#define EMBER_PROFILE_FIBER_ENTER(name) TracyFiberEnter(name)
 		#define EMBER_PROFILE_FIBER_LEAVE() TracyFiberLeave
+		#define EMBER_PROFILE_FIBER_SCOPE(name) ZoneScopedN(name)
+		#define EMBER_PROFILE_FIBER_SCOPE_C(name, color) ZoneScopedNC(name, color)
+		#define EMBER_PROFILE_FIBER_ZONE_NAME(txt, size) ZoneName(txt, size)
 	#else
 		#define EMBER_PROFILE_FIBER_ENTER(name) ((void)0)
 		#define EMBER_PROFILE_FIBER_LEAVE() ((void)0)
+		#define EMBER_PROFILE_FIBER_SCOPE(name) ((void)0)
+		#define EMBER_PROFILE_FIBER_SCOPE_C(name, color) ((void)0)
+		#define EMBER_PROFILE_FIBER_ZONE_NAME(txt, size) ((void)0)
 	#endif
 
 	/// Plots: graphed counters (entity counts, draw calls, arena high-water marks...).
@@ -137,6 +146,9 @@ namespace ember
 	#define EMBER_PROFILE_THREAD(name) ((void)0)
 	#define EMBER_PROFILE_FIBER_ENTER(name) ((void)0)
 	#define EMBER_PROFILE_FIBER_LEAVE() ((void)0)
+	#define EMBER_PROFILE_FIBER_SCOPE(name) ((void)0)
+	#define EMBER_PROFILE_FIBER_SCOPE_C(name, color) ((void)0)
+	#define EMBER_PROFILE_FIBER_ZONE_NAME(txt, size) ((void)0)
 	#define EMBER_PROFILE_PLOT(name, value) ((void)0)
 	#define EMBER_PROFILE_PLOT_CONFIG_NUMBER(name) ((void)0)
 	#define EMBER_PROFILE_PLOT_CONFIG_MEMORY(name) ((void)0)

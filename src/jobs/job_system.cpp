@@ -37,6 +37,16 @@ namespace ember::jobs
 			scheduler().kick(jobs, counter);
 	}
 
+	Result<void, IoSubmitError> submit_io(const IoTask& task, Counter& completion) noexcept
+	{
+		EMBER_ASSERT(task.fn != nullptr);
+
+		if (s_scheduler == nullptr)
+			return fail(IoSubmitError::NotRunning);
+
+		return s_scheduler->io.submit(task, completion);
+	}
+
 	void wait(Counter& counter) noexcept { scheduler().wait(counter); }
 
 	void signal(Counter& counter) noexcept { scheduler().complete(counter); }

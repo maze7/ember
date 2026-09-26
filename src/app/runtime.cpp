@@ -2,7 +2,6 @@
 #include <ember/core/logger.h>
 #include <ember/core/profile.h>
 #include <ember/gpu/device.h>
-#include <ember/io/file.h>
 #include <ember/memory/memory.h>
 #include <ember/platform/platform.h>
 
@@ -53,8 +52,6 @@ namespace ember
 		}
 
 		jobs::initialize(config.jobs);
-		m_io = memory::make_unique<io::FileIo>(MemoryTag::Engine);
-		m_io->init(config.io);
 
 		m_platform = memory::make_unique<Platform>(MemoryTag::Engine);
 		if (!m_platform)
@@ -81,7 +78,7 @@ namespace ember
 		m_renderer->init(*m_gpu, {});
 
 		m_assets = memory::make_unique<AssetManager>(MemoryTag::Assets);
-		m_assets->init(*m_io, *m_gpu, config.assets);
+		m_assets->init(*m_gpu, config.assets);
 		m_state = State::Ready;
 
 		return {};
@@ -126,13 +123,6 @@ namespace ember
 
 			m_window = {};
 			m_platform.reset();
-		}
-
-		// The file thread signals job counters, so it stops while the scheduler still exists.
-		if (m_io)
-		{
-			m_io->shutdown();
-			m_io.reset();
 		}
 
 		// Worker teardown may still touch engine allocators, so stop the scheduler before
@@ -247,7 +237,7 @@ namespace ember
 
 			auto update = [&app, &frame]() noexcept
 			{
-				EMBER_PROFILE_SCOPE_C("update", PROFILE_COLOR_GAMEPLAY);
+				EMBER_PROFILE_FIBER_SCOPE_C("update", PROFILE_COLOR_GAMEPLAY);
 				frame.update_begin_ns = now_ns();
 				app.update(frame);
 				frame.update_end_ns = now_ns();

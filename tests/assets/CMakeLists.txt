@@ -7,4 +7,4 @@ ember_add_test_suite(ember_asset_tests assets
 	asset_manager_tests.cpp
 )
 
-target_link_libraries(ember_asset_tests PRIVATE Ember::Assets Ember::Jobs Ember::Io Ember::Gpu)
+target_link_libraries(ember_asset_tests PRIVATE Ember::Assets Ember::Jobs Ember::Gpu)

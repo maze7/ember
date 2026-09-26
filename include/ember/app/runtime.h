@@ -6,7 +6,6 @@
 #include <ember/core/common.h>
 #include <ember/core/result.h>
 #include <ember/gpu/common.h>
-#include <ember/io/file.h>
 #include <ember/jobs/job_system.h>
 #include <ember/memory/unique.h>
 #include <ember/platform/platform.h>
@@ -103,7 +102,6 @@ namespace ember
 		Unique<Platform> m_platform;
 		Unique<gpu::Device> m_gpu;
 		Unique<render::Renderer> m_renderer;
-		Unique<io::FileIo> m_io;
 		Unique<AssetManager> m_assets;
 
 		Input m_input;

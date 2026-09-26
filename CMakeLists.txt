@@ -12,6 +12,7 @@ option(EMBER_ENABLE_IMGUI	 "Build the Dear ImGui debug UI module" ON)
 option(EMBER_USE_RPMALLOC  "Rely on rpmalloc as the general heap" ON)
 option(EMBER_USE_SDL 		   "Rely on SDL3 for input, windowing, platform abstraction" ON)
 option(EMBER_USE_VULKAN 	 "Rely on Vulkan for the GPU backend" ON)
+option(EMBER_TRACE_FIBERS "Give every fiber its own lane in Tracy, so a job's zones stay whole across waits" OFF)
 option(EMBER_BUILD_TESTS 	 "Build Ember tests" OFF)
 
 set(CMAKE_CXX_STANDARD 20)

@@ -2,6 +2,7 @@
 
 #include <ember/containers/span.h>
 #include <ember/core/common.h>
+#include <ember/core/result.h>
 
 #include <atomic>
 #include <type_traits>
@@ -17,8 +18,12 @@
  *
  * Worker 0 is the thread that calls initialize(), and main's fiber always resumes there, so
  * platform and GPU calls made from main stay on the thread that owns them. Nothing else
- * has a home thread. Work that blocks belongs on a thread outside the scheduler, which
- * reports completion with signal().
+ * has a home thread. Work that blocks belongs on an I/O thread outside the scheduler, the
+ * way Naughty Dog's engine keeps its file, socket and system call threads: it does its wait
+ * there, reports back by kicking a job or completing a counter, and never waits itself. The
+ * job system owns one such thread, for file reads first of all; submit_io() runs a task on
+ * it. A module with a wait of its own kind, a network module on its socket, brings its own
+ * thread, attached with ThreadAttachment of kind Io, and reports the same two ways.
  *
  * Fibers and queues are fixed at initialize() so the scheduler never allocates while
  * jobs run. Filling a queue is fatal.
@@ -68,8 +73,8 @@ namespace ember::jobs
 	 * The counter is one atomic integer; the scheduler keeps the fibers waiting on it. It
 	 * must outlive every job counted on it and every wait on it. The usual shape is a local:
 	 * kick, wait, leave the scope. A counter constructed with a pending count is completed
-	 * by signal(), from any thread, for work that finishes outside the scheduler: a read on
-	 * the IO thread, a fence the GPU signals, a reply on a socket.
+	 * by signal(), from any thread, for work that finishes outside the scheduler on a thread
+	 * of its own: a fence the GPU signals, a reply on a socket.
 	 */
 	class alignas(EMBER_CACHE_LINE) Counter final
 	{
@@ -98,13 +103,15 @@ namespace ember::jobs
 
 	struct JobSystemDef
 	{
-		u32 worker_count	 = 0;	   // 0 derives it from the hardware thread count
-		u32 reserved_threads = 1;	   // hardware threads left to the OS and engine threads when derived
-		u32 fiber_count		 = 160;	   // jobs that may be running or parked at once
-		size_t stack_size	 = 256_kb; // per fiber; reserved address space, pages commit on first touch
-		u32 queue_capacity	 = 4096;   // jobs queued per priority
-		u32 stall_report_ms	 = 1000;   // a wait with no fiber and no progress for this long dumps and fails
-		bool pin_workers	 = false;  // lock each worker thread to a core
+		u32 worker_count	  = 0;		// 0 derives it from the hardware thread count
+		u32 reserved_threads  = 1;		// hardware threads left to the OS and engine threads when derived
+		u32 fiber_count		  = 160;	// jobs that may be running or parked at once
+		size_t stack_size	  = 256_kb; // per fiber; reserved address space, pages commit on first touch
+		u32 queue_capacity	  = 4096;	// jobs queued per priority
+		u32 stall_report_ms	  = 1000;	// a wait with no fiber and no progress for this long dumps and fails
+		bool pin_workers	  = false;	// lock each worker thread to a core
+		u32 io_threads		  = 1;		// threads that run submit_io() tasks; 0 disables, more lets reads overlap
+		u32 io_queue_capacity = 4096;	// io tasks queued at once, per priority
 	};
 
 	/** The half-open index range one job of a parallel_for covers, and that job's index in the split */
@@ -133,11 +140,12 @@ namespace ember::jobs
 	/** A snapshot for debug views. Every count is approximate while jobs run. */
 	struct JobStats
 	{
-		u32 free_fibers	  = 0;
-		u32 parked_fibers = 0; // waiting on a counter
-		u32 ready_fibers  = 0; // woken, not yet picked up by a worker
-		u32 queued_jobs	  = 0;
-		u64 stalls		  = 0; // waits that found no fiber
+		u32 free_fibers		= 0;
+		u32 parked_fibers	= 0; // waiting on a counter
+		u32 ready_fibers	= 0; // woken, not yet picked up by a worker
+		u32 queued_jobs		= 0;
+		u32 queued_io_tasks = 0; // waiting for an IO thread
+		u64 stalls			= 0; // waits that found no fiber
 	};
 
 	/**
@@ -147,7 +155,7 @@ namespace ember::jobs
 	 */
 	void initialize(const JobSystemDef& def = {}) noexcept;
 
-	/** Joins the workers and releases the fibers and queues. Every kicked job must be complete */
+	/** Joins the workers and the IO threads and releases the fibers and queues. Every job and task must be complete. */
 	void shutdown() noexcept;
 
 	/**
@@ -160,6 +168,40 @@ namespace ember::jobs
 	{
 		kick(Span<const JobDef>(&job, 1), counter);
 	}
+
+	enum class IoSubmitError : u8
+	{
+		NotRunning, // no job system, or one with io_threads = 0
+		Stopping,	// shutdown has begun; nothing more is accepted
+		QueueFull,	// more tasks in flight than the queue holds; back off and try again
+		Count
+	};
+
+	/** Entry point of an io task. data is borrowed and must outlive the task. */
+	using IoFn = void (*)(void* data) noexcept;
+
+	/**
+	 * Work for the IO thread: what blocks on the operating system, a file read first of all, a
+	 * socket, a shader compile, and would otherwise hold a worker for the duration. It runs on
+	 * the IO thread's own stack, High priority first the way the workers drain, and in submission
+	 * order within a priority when there is one IO thread. A task may kick jobs, signal counters
+	 * and submit more tasks, but never wait for anything: there is no fiber to park.
+	 */
+	struct IoTask
+	{
+		IoFn fn				 = nullptr;
+		void* data			 = nullptr;
+		const char* name	 = nullptr;
+		JobPriority priority = JobPriority::Normal;
+	};
+
+	/**
+	 * Queues the task for an IO thread. An accepted task is counted on `completion` before it
+	 * can be seen and completes it when it returns, exactly as kick() counts a job, so a fiber
+	 * parked on the counter wakes the moment the task is done. A rejected task leaves the
+	 * counter as it found it. Any thread.
+	 */
+	[[nodiscard]] Result<void, IoSubmitError> submit_io(const IoTask& task, Counter& completion) noexcept;
 
 	/**
 	 * Parks the calling job or main until the counter reaches zero. A thread outside the
@@ -244,4 +286,9 @@ namespace ember::jobs
 	private:
 		Counter m_counter;
 	};
+}
+
+namespace ember
+{
+	EMBER_ENUM_NAMES(jobs::IoSubmitError, "NotRunning", "Stopping", "QueueFull");
 }

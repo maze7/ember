@@ -4,9 +4,9 @@
 #include <ember/containers/pool.h>
 #include <ember/containers/span.h>
 #include <ember/core/common.h>
+#include <ember/core/filesystem.h>
 #include <ember/core/handle.h>
 #include <ember/core/hash.h>
-#include <ember/io/file.h>
 #include <ember/jobs/job_system.h>
 #include <ember/memory/memory.h>
 #include <ember/memory/pmr/heap.h>
@@ -154,8 +154,8 @@ namespace ember
 	class AssetLoad final
 	{
 	public:
-		AssetLoad(StringView path, Span<u8> bytes, const void* live, gpu::Device& gpu, Heap& heap) noexcept
-			: m_path(path), m_bytes(bytes), m_live(live), m_gpu(&gpu), m_heap(&heap)
+		AssetLoad(StringView path, fs::FileData&& data, const void* live, gpu::Device& gpu, Heap& heap) noexcept
+			: m_path(path), m_data(std::move(data)), m_live(live), m_gpu(&gpu), m_heap(&heap)
 		{
 		}
 
@@ -169,30 +169,23 @@ namespace ember
 
 		/** Relative to the asset root, null terminated: fine as a debug name. */
 		[[nodiscard]] StringView path() const noexcept { return m_path; }
-		[[nodiscard]] Span<const u8> bytes() const noexcept { return {m_bytes.data(), m_bytes.size()}; }
+		[[nodiscard]] Span<const u8> bytes() const noexcept { return m_data.bytes(); }
 		[[nodiscard]] gpu::Device& gpu() const noexcept { return *m_gpu; }
 		[[nodiscard]] Heap& heap() const noexcept { return *m_heap; }
 
 		/**
 		 * Hands the file's bytes to the payload instead of copying them: a cooked asset is its
-		 * file. They are io::FILE_ALIGNMENT aligned; unload returns them with
-		 * heap.deallocate(data, size, io::FILE_ALIGNMENT).
+		 * file. They free themselves with the FileData, so a payload that keeps one has nothing
+		 * to do at unload. Bytes left here die with the load.
 		 */
-		[[nodiscard]] Span<u8> take_bytes() noexcept
-		{
-			m_taken = true;
-			return std::exchange(m_bytes, {});
-		}
-
-		[[nodiscard]] bool taken() const noexcept { return m_taken; }
+		[[nodiscard]] fs::FileData take_bytes() noexcept { return std::move(m_data); }
 
 	private:
 		StringView m_path;
-		Span<u8> m_bytes;
+		fs::FileData m_data;
 		const void* m_live = nullptr;
 		gpu::Device* m_gpu;
 		Heap* m_heap;
-		bool m_taken = false;
 	};
 
 	/** What unload and reload may use. Both run on the owner thread between frames. */
@@ -242,7 +235,7 @@ namespace ember
 
 	struct AssetManagerDef
 	{
-		const char* root = "assets"; // joined in front of every path
+		const char* root = "assets"; // resolved against the working directory once, at init
 		u32 max_assets	 = 4096;	 // slots; a handle's index is 16 bit
 		u32 max_changes	 = 1024;	 // file changes waiting for a pump; more than that in one frame drop
 
@@ -299,7 +292,7 @@ namespace ember
 		 * Once per object, after the file thread and the device are up. Registers the engine's
 		 * own types. The game registers its own before its first load.
 		 */
-		void init(io::FileIo& io, gpu::Device& gpu, const AssetManagerDef& def = {}) noexcept;
+		void init(gpu::Device& gpu, const AssetManagerDef& def = {}) noexcept;
 
 		/**
 		 * Finishes every load in flight and unloads every asset. Every AssetRef must be gone by
@@ -462,7 +455,6 @@ namespace ember
 		void retire(void* payload, u16 type) noexcept; // under the lock
 		void release(const Retired& retired) noexcept;
 
-		io::FileIo* m_io   = nullptr;
 		gpu::Device* m_gpu = nullptr;
 		Heap* m_heap	   = nullptr;
 		String m_root;

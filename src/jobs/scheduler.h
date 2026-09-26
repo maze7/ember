@@ -1,14 +1,16 @@
 #pragma once
 
-#include "ember/core/common.h"
 #include <ember/jobs/job_system.h>
 
 #include <ember/containers/mpmc_queue.h>
+#include <ember/core/common.h>
 #include <ember/core/profile.h>
+#include <ember/sync/spin_mutex.h>
 #include <jobs/fiber.h>
 
 #include <atomic>
 #include <chrono>
+#include <semaphore>
 #include <thread>
 
 /**
@@ -30,6 +32,23 @@ namespace ember::jobs
 		const char* name = nullptr;
 		Counter* counter = nullptr;
 	};
+
+	/**
+	 * A push fails because the queue is full or because a pop of the target cell is mid flight
+	 * on another thread and has not released it yet. The hint tells the two apart, and the
+	 * second clears as soon as the pop finishes.
+	 */
+	template <class T> [[nodiscard]] bool push_or_full(MpmcQueue<T>& queue, const T& value) noexcept
+	{
+		for (u32 spins = 0;; detail::cpu_relax(spins++))
+		{
+			if (queue.try_push(value))
+				return true;
+
+			if (queue.size_hint() >= queue.capacity())
+				return false;
+		}
+	}
 
 	/**
 	 * Scheduler side of a fiber. The seam's Fiber owns the stack and registers; this holds
@@ -138,6 +157,43 @@ namespace ember::jobs
 	};
 
 	/**
+	 * The IO threads: where submit_io() tasks run, outside the scheduler. A task here may block as
+	 * long as it likes and no worker notices. It completes its counter the way every job does, so
+	 * a fiber parked on a read wakes the moment the bytes are in, on whichever worker is free.
+	 *
+	 * One queue per priority, drained High first. The semaphore holds one token per queued task:
+	 * a thread sleeps on it until a submit releases one, and shutdown releases one per thread to
+	 * let them out.
+	 */
+	struct IoThreads
+	{
+		static constexpr u32 MAX_THREADS	= 8; // past this the device is the limit, not the queue
+		static constexpr u32 PRIORITY_COUNT = static_cast<u32>(JobPriority::Count);
+
+		Scheduler* scheduler = nullptr;
+		std::counting_semaphore<> tokens{0};
+		std::atomic<bool> stopping{false};
+		Vector<std::thread> threads{&memory::heap(MemoryTag::Engine)};
+
+		MpmcQueue<Job> queues[PRIORITY_COUNT] = {
+			MpmcQueue<Job>(MemoryTag::Engine),
+			MpmcQueue<Job>(MemoryTag::Engine),
+			MpmcQueue<Job>(MemoryTag::Engine),
+		};
+
+		void init(Scheduler& owner, u32 count, u32 queue_capacity) noexcept;
+
+		// Joins the threads. Every submitted task must be complete.
+		void shutdown() noexcept;
+
+		[[nodiscard]] Result<void, IoSubmitError> submit(const IoTask& task, Counter& completion) noexcept;
+		[[nodiscard]] u32 queued() const noexcept;
+
+		void run(u32 index) noexcept;
+		[[nodiscard]] bool take(Job& job) noexcept;
+	};
+
+	/**
 	 * One worker thread. Worker 0 is the thread that initialized the job system.
 	 * The others are created with the system and live until it is shut down.
 	 */
@@ -169,6 +225,7 @@ namespace ember::jobs
 		Worker* workers	 = nullptr;
 		u32 worker_count = 0;
 		Sleepers sleepers;
+		IoThreads io;
 
 		MpmcQueue<Job> jobs[PRIORITY_COUNT] = {
 			MpmcQueue<Job>(MemoryTag::Engine),

@@ -7,7 +7,6 @@
 #include <ember/gpu/common.h>
 #include <ember/gpu/device.h>
 #include <ember/input/input.h>
-#include <ember/io/file.h>
 #include <ember/jobs/job_system.h>
 #include <ember/memory/memory.h>
 #include <ember/platform/window.h>
@@ -21,7 +20,6 @@ namespace ember
 	{
 		MemoryConfig memory			  = {};
 		jobs::JobSystemDef jobs		  = {};
-		io::FileIoDef io			  = {};
 		AssetManagerDef assets		  = {};
 		WindowDef window			  = {};
 		gpu::DeviceDef gpu			  = {};
@@ -70,7 +68,6 @@ namespace ember
 		[[nodiscard]] render::Renderer& renderer() noexcept;
 		[[nodiscard]] WindowHandle window() const noexcept;
 		[[nodiscard]] SwapchainHandle swapchain() const noexcept;
-		[[nodiscard]] io::FileIo& io() noexcept;
 		[[nodiscard]] AssetManager& assets() noexcept;
 
 		/**

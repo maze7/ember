@@ -3,6 +3,7 @@ ember_add_module(Jobs
 	SOURCES
 		job_system.cpp
 		scheduler.cpp
+		io_thread.cpp
 	PUBLIC_DEPS
 		Ember::Core
 )

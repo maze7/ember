@@ -12,7 +12,6 @@ ember_add_module(Assets
 	PUBLIC_DEPS
 		Ember::Core
 		Ember::Jobs
-		Ember::Io
 		Ember::Gpu
 	PRIVATE_DEPS
 		Stb::Stb

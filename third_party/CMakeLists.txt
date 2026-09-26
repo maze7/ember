@@ -2,7 +2,7 @@
 if(EMBER_USE_TRACY)
 	# Tracy's own CMake option must also be enabled.
 	set(TRACY_ENABLE ON)
-	set(TRACY_FIBERS ON)
+	set(TRACY_FIBERS ${EMBER_TRACE_FIBERS})
 	add_subdirectory(tracy EXCLUDE_FROM_ALL)
 
 	# Tracy stamps the thread handle inside the client, so the call has to survive optimisation.

@@ -4,22 +4,15 @@
 #include <ember/memory/memory.h>
 
 #include <cstring>
-#include <filesystem>
 
 namespace ember::detail
 {
 	FileWatcher::FileWatcher(AssetManager& sink, StringView root) noexcept
-		: m_sink(sink), m_root(&memory::heap(MemoryTag::Assets))
+		: m_sink(sink), m_root(root, &memory::heap(MemoryTag::Assets))
 	{
-		// efsw reports directories the way it was given the root, so the root goes in absolute
-		// and normalised, and every reported path is then the root plus a relative tail.
-		std::error_code error;
-		const std::filesystem::path absolute = std::filesystem::absolute(root, error).lexically_normal();
-
-		m_root = absolute.generic_string().c_str();
-
-		if (!m_root.empty() && m_root.back() != '/')
-			m_root += '/';
+		// The manager resolved the root: absolute, normalised, ending in a separator. Every
+		// directory efsw reports begins with it, spelt the platform's way.
+		EMBER_ASSERT(!m_root.empty() && m_root.back() == '/');
 	}
 
 	FileWatcher::~FileWatcher() noexcept = default; // efsw joins its thread here
@@ -47,11 +40,18 @@ namespace ember::detail
 		if (action == efsw::Actions::Delete)
 			return;
 
-		// The relative path is dir minus the root, then the name; joined in place because this is
-		// efsw's thread, which the engine heap has never met.
-		if (dir.size() < m_root.size() || std::memcmp(dir.data(), m_root.data(), m_root.size()) != 0)
+		// The root is spelt with '/', the directory the platform's way: the separators fold as
+		// the prefix is compared.
+		if (dir.size() < m_root.size())
 			return;
 
+		for (size_t i = 0; i < m_root.size(); ++i)
+			if ((dir[i] == '\\' ? '/' : dir[i]) != m_root[i])
+				return;
+
+		// The relative path is the directory's tail, then the name, spelt with '/' so it hashes as
+		// the game loaded it; joined in place because this is efsw's thread, which the engine heap
+		// has never met.
 		char relative[512];
 		const size_t dir_tail = dir.size() - m_root.size();
 
@@ -61,11 +61,14 @@ namespace ember::detail
 			return;
 		}
 
-		std::memcpy(relative, dir.data() + m_root.size(), dir_tail);
+		for (size_t i = 0; i < dir_tail; ++i)
+		{
+			const char c = dir[m_root.size() + i];
+			relative[i]	 = c == '\\' ? '/' : c;
+		}
+
 		std::memcpy(relative + dir_tail, filename.data(), filename.size());
 
-		// asset_id folds the separators, so a path efsw spells with backslashes names the same
-		// asset the game loaded with forward slashes.
 		m_sink.notify_changed(asset_id(StringView(relative, dir_tail + filename.size())));
 	}
 }

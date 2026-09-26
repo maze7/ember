@@ -1,8 +1,10 @@
 #include <ember/assets/asset.h>
 #include <ember/assets/texture_asset.h>
 #include <ember/core/bits.h>
+#include <ember/core/filesystem.h>
 #include <ember/core/logger.h>
 #include <ember/gpu/device.h>
+#include <ember/jobs/file_io.h>
 
 #include <assets/file_watcher.h>
 
@@ -40,19 +42,30 @@ namespace ember
 
 	AssetManager::~AssetManager() noexcept { shutdown(); }
 
-	void AssetManager::init(io::FileIo& io, gpu::Device& gpu, const AssetManagerDef& def) noexcept
+	void AssetManager::init(gpu::Device& gpu, const AssetManagerDef& def) noexcept
 	{
-		EMBER_ASSERT(m_io == nullptr && "init runs once");
+		EMBER_ASSERT(m_gpu == nullptr && "init runs once");
 		EMBER_ASSERT(def.max_assets != 0 && def.max_assets <= SlotPool::MAX_CAPACITY);
 		EMBER_ASSERT(def.max_changes >= 2);
 
-		m_io			  = &io;
 		m_gpu			  = &gpu;
 		m_heap			  = &memory::heap(MemoryTag::Assets);
-		m_root			  = def.root;
-		m_relative		  = m_root.empty() ? 0 : static_cast<u32>(m_root.size() + 1);
 		m_reload_delay_ns = u64{def.reload_delay_ms} * 1'000'000;
 		m_loader_count	  = def.loaders != 0 ? def.loaders : std::max(1u, jobs::worker_count() / 2);
+
+		// The root is resolved once, here, and kept with its separator: every load joins onto it
+		// and every change the watcher reports begins with it, so the two name a file the same
+		// way whatever the working directory does later.
+		if (!fs::absolute(def.root[0] != '\0' ? def.root : ".", m_root))
+		{
+			EMBER_WARN("asset root '{}' could not be resolved; loads will use it as given", def.root);
+			m_root = def.root;
+		}
+
+		if (m_root.empty() || m_root.back() != '/')
+			m_root += '/';
+
+		m_relative = static_cast<u32>(m_root.size());
 
 		// A slot is queued once at a time and unreferenced once at a time, so a cell per slot means
 		// neither queue can ever be full.
@@ -79,7 +92,7 @@ namespace ember
 
 	void AssetManager::shutdown() noexcept
 	{
-		if (m_io == nullptr)
+		if (m_gpu == nullptr)
 			return;
 
 		// First, so no event lands on a registry that is being emptied.
@@ -117,7 +130,6 @@ namespace ember
 		m_fresh.clear();
 		m_pending.clear();
 		m_types.clear();
-		m_io   = nullptr;
 		m_gpu  = nullptr;
 		m_heap = nullptr;
 	}
@@ -134,9 +146,20 @@ namespace ember
 	AssetManager::Slot* AssetManager::request(u16 type, StringView path) noexcept
 	{
 		EMBER_ASSERT(type != NO_TYPE && "register the type before loading it");
-		EMBER_ASSERT(m_io != nullptr && "load before init");
+		EMBER_ASSERT(m_gpu != nullptr && "load before init");
 
-		const AssetId id = asset_id(path);
+		// The full path first, outside the lock. The join normalises, so two spellings of one file
+		// meet at one id, and a name that climbs out of the root is refused rather than resolved.
+		String full(m_heap);
+
+		if (!fs::join(full, m_root, path) || full.size() <= m_relative ||
+			!StringView(full).starts_with(StringView(m_root)))
+		{
+			EMBER_ERROR("asset '{}': not a path inside the asset root", path);
+			return nullptr;
+		}
+
+		const AssetId id = asset_id(StringView(full).substr(m_relative));
 
 		std::lock_guard lock(m_lock);
 
@@ -150,13 +173,6 @@ namespace ember
 			slot->refs.fetch_add(1, std::memory_order_relaxed);
 			return slot;
 		}
-
-		String full(m_heap);
-		full.reserve(m_root.size() + 1 + path.size());
-		full += m_root;
-		if (!m_root.empty())
-			full += '/';
-		full += path;
 
 		const SlotHandle handle = m_slots.emplace(type, id, std::move(full));
 
@@ -460,33 +476,38 @@ namespace ember
 			{
 				// The read: submitted to the IO thread, waited for on this fiber. The worker
 				// underneath runs other jobs meanwhile and this code resumes wherever one is free.
-				io::FileRead read{.path = slot.path.c_str(), .memory = m_heap};
-				jobs::Counter done{1};
+				jobs::FileRead read{.path = slot.path, .memory = m_heap};
+				jobs::Counter done;
 
-				m_io->read(read, done);
-				jobs::wait(done);
-
-				if (read.error != io::FileError::None)
+				if (const auto submitted = jobs::read_file(read, done); !submitted)
 				{
-					EMBER_ERROR("asset '{}': read failed ({})", relative,
-								enum_names<io::FileError>()[static_cast<u32>(read.error)]);
+					EMBER_ERROR("asset '{}': read refused ({})", relative, enum_name(submitted.error()));
 				}
 				else
 				{
-					payload = m_heap->allocate(type.size, type.align);
+					jobs::wait(done);
 
-					AssetLoad load(relative, read.bytes, slot.payload.load(std::memory_order_acquire), *m_gpu, *m_heap);
-
-					if (!type.load(load, payload))
+					if (!read.result)
 					{
-						EMBER_ERROR("asset '{}': {} load failed", relative, type.name);
-						m_heap->deallocate(payload, type.size, type.align);
-						payload = nullptr;
+						const fs::FileError& error = read.result.error();
+						EMBER_ERROR("asset '{}': read failed ({} in {}, native {})", relative, enum_name(error.code),
+									enum_name(error.op), error.native_code);
 					}
+					else
+					{
+						payload = m_heap->allocate(type.size, type.align);
 
-					// The file's bytes die with the decode unless the loader took them.
-					if (!load.taken())
-						read.release();
+						// The load owns the bytes from here: they die with it unless the loader takes them.
+						AssetLoad load(relative, std::move(read.result.value()),
+									   slot.payload.load(std::memory_order_acquire), *m_gpu, *m_heap);
+
+						if (!type.load(load, payload))
+						{
+							EMBER_ERROR("asset '{}': {} load failed", relative, type.name);
+							m_heap->deallocate(payload, type.size, type.align);
+							payload = nullptr;
+						}
+					}
 				}
 			}
 
