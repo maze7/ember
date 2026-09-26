@@ -14,12 +14,17 @@ namespace ember::shader
 {
 	struct ShaderCompilerDef
 	{
+		/// The engine's shaders directory, searched first: the preludes and entry files live
+		/// there. Null uses the directory this build was configured with.
+		const char* engine_dir = nullptr;
+
 		// Searched for #include after the engine's own shaders directory: the asset root,
 		// so a material can include "shaders/common.slang" from there. Copied at init.
 		Span<const char* const> include_dirs = {};
 
-		// Where compiled programs are kept betweens runs, keyed by the hash of everything
-		// that went into them. Null compiles every time. Created when missing.
+		// Where compiled programs are kept between runs, keyed by the hash of everything that
+		// went into them. Null compiles every time. Created when missing; a directory that
+		// cannot be created is skipped and compiles proceed uncached.
 		const char* cache_dir = nullptr;
 	};
 
@@ -27,19 +32,22 @@ namespace ember::shader
 	 * Compiles shader files in process through libslang and reflects what it compiled: the
 	 * SPIR-V, the entry points, and for a material the record layout its values encode into
 	 * and the pipeline state its struct declared. The same code cooks ahead of time as ember_cook,
-	 * so a cooked pair on disk is exactly what a dev build would have compiled. Built without
-	 * EMBER_SHADER_COMPILER, init() returns false and cooked pairs are the only source.
+	 * so a cooked pair on disk is exactly what a dev build would have compiled from the file.
+	 * Built without EMBER_SHADER_COMPILER, initialize() returns false and cooked pairs are the
+	 * only source.
 	 *
 	 * The disk cache makes a second run cost file reads: a compile is looked up by the hash
 	 * of its source, every file it included and the compiler's version, so a prelude edit
 	 * misses exactly the programs it touches.
+	 *
+	 * compile() is any thread; compiles run one at a time behind the lock.
 	 */
 	class ShaderCompiler
 	{
 	public:
 		struct Stats
 		{
-			u32 compiled = 0; // programs Slang build
+			u32 compiled = 0; // programs Slang built
 			u32 cached	 = 0; // programs the cache served
 		};
 
@@ -82,7 +90,7 @@ namespace ember::shader
 	};
 
 	// Which domain a file belongs to: the prelude it includes, Plain when it includes none.
-	Domain detect_domain(StringView source) noexcept;
+	[[nodiscard]] Domain detect_domain(StringView source) noexcept;
 
 	// The engine file appended behind a material of the domain; null for Plain.
 	[[nodiscard]] const char* entry_file(Domain domain) noexcept;

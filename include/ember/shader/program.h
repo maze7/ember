@@ -1,6 +1,6 @@
+// include/ember/shader/program.h
 #pragma once
 
-#include <ember/containers/span.h>
 #include <ember/core/common.h>
 #include <ember/gpu/pipeline.h>
 #include <ember/gpu/sampler.h>
@@ -17,7 +17,7 @@ namespace ember::shader
 	enum class Domain : u8
 	{
 		Plain,
-		Surface, // material.slang: scene geometry, struct Material: IMaterial
+		Surface, // material.slang: scene geometry, struct Material : IMaterial
 		Screen,	 // screen.slang: fullscreen effects, struct Material : IScreenMaterial
 		Count,
 	};
@@ -101,7 +101,8 @@ namespace ember::shader
 		f32 range_max  = 0.0f;
 		bool has_range = false;
 		bool color	   = false; // [Color]: a colour picker instead of four sliders
-		bool srgb	   = true;	// textures: [Srgb(false)] marks data, not colour
+		bool srgb	   = true;	// textures: [Srgb(false)] says the parameter expects linear data (a normal
+								// map); the encoder warns when an sRGB texture is bound to it
 
 		gpu::Filter filter	  = gpu::Filter::Linear;	  // textures: [Filter] and [Wrap] are the
 		gpu::AddressMode wrap = gpu::AddressMode::Repeat; // sampler a material file can override
@@ -148,29 +149,13 @@ namespace ember::shader
 	[[nodiscard]] const MaterialParam* find_param(const MaterialLayout& layout, StringView name) noexcept;
 	[[nodiscard]] const EntryPoint* find_entry(const Program& program, StringView name) noexcept;
 
-	// Matches text against an enum's EMBER_ENUM_NAMES table.
-	template <class E> [[nodiscard]] bool parse_enum(StringView text, E& out) noexcept
-	{
-		constexpr auto names = enum_names<E>();
-
-		for (size_t i = 0; i < names.size(); ++i)
-		{
-			if (text == names[i])
-			{
-				out = static_cast<E>(i);
-				return true;
-			}
-		}
-
-		return false;
-	}
-
 	/**
-	 * The .layout sidecar: everything but the SPIR-V, as settings text, so a cooked program reads
-	 * with the same parser as a .material file and a new key never invalidates an old cook.
-	 * Parameters are `param.<name>` tables; record order is offset order whatever the file's.
+	 * The .layout sidecar: everything but the SPIR-V, as JSON, so a cooked program reads with the
+	 * same parser as a .material file and a new key never invalidates an old cook. Parameters are
+	 * the members of `param`, written in record order; the reader sorts by offset whatever the
+	 * file's order. False only when the text cannot be written (a non-finite range).
 	 */
-	void write_program_layout(const Program& program, String& out) noexcept;
+	[[nodiscard]] bool write_program_layout(const Program& program, String& out) noexcept;
 
 	/// Reads a sidecar into every field of `out` but the SPIR-V. Unknown keys are ignored; a
 	/// parameter without a kind, one past the stride, or an unknown enum is an error, in `error`.
