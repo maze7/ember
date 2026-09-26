@@ -5,6 +5,8 @@
 #include <ember/imgui/embedded_shader.h>
 #include <ember/input/input.h>
 #include <ember/platform/platform.h>
+#include <ember/core/filesystem.h>
+#include <ember/memory/memory.h>
 
 #include <algorithm>
 #include <cfloat>
@@ -292,6 +294,40 @@ namespace ember::imgui
 				texture->SetStatus(ImTextureStatus_Destroyed);
 			}
 		}
+
+		/// Where the layout is kept: the user's cache, never the working directory. False on a
+		/// platform that cannot say where that is.
+		[[nodiscard]] bool layout_path(String& path) noexcept
+		{
+			return fs::user_cache_directory(path, "ember").has_value() && fs::join(path, path, "imgui.ini").has_value();
+		}
+
+		void load_layout() noexcept
+		{
+			String path(&memory::heap(MemoryTag::Engine));
+			if (!layout_path(path))
+				return;
+
+			// A missing file is the first run; anything else is not worth a line either.
+			if (const auto data = fs::read_file(path, memory::heap(MemoryTag::Engine)))
+				ImGui::LoadIniSettingsFromMemory(data->text().data(), data->size());
+		}
+
+		void save_layout() noexcept
+		{
+			String path(&memory::heap(MemoryTag::Engine));
+			if (!layout_path(path))
+				return;
+
+			// The directory may not be there on a first run, and a layout is a cache: atomic, not durable.
+			(void)fs::create_directories(fs::parent(path));
+
+			size_t size		 = 0;
+			const char* text = ImGui::SaveIniSettingsToMemory(&size);
+			(void)fs::write_file_atomic(path, {reinterpret_cast<const u8*>(text), size}, fs::WriteDurability::None);
+
+			ImGui::GetIO().WantSaveIniSettings = false;
+		}
 	}
 
 	bool init(gpu::Device& device, Platform& platform, const BackendDef& def) noexcept
@@ -315,6 +351,8 @@ namespace ember::imgui
 		io.BackendFlags |= ImGuiBackendFlags_HasMouseCursors | ImGuiBackendFlags_RendererHasVtxOffset |
 						   ImGuiBackendFlags_RendererHasTextures;
 		io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
+		io.IniFilename = nullptr;
+		load_layout();
 
 		ImGuiPlatformIO& platform_io			= ImGui::GetPlatformIO();
 		platform_io.Platform_GetClipboardTextFn = get_clipboard;
@@ -385,6 +423,7 @@ namespace ember::imgui
 			}
 		}
 
+		save_layout();
 		ImGui::DestroyContext();
 		s_state = {};
 	}
