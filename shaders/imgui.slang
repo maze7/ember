@@ -1,4 +1,4 @@
-#include "ember.slang"
+import ember;
 
 // ImDrawVert is 20 packed bytes. A StructuredBuffer of {float2, float2, uint}
 // strides at 24 under std430, so the vertex loads manually from the byte buffer.
@@ -43,9 +43,9 @@ VertexOutput vs_main(uint vertex_id : SV_VertexID)
 	// ring element base arrives through the push block.
 	const uint offset = (vertex_id + g_push.first_vertex) * VERTEX_STRIDE;
 
-	const float2 position = asfloat(EMBER_BUFFER(g_push.vertex_buffer).Load2(offset + 0));
-	const float2 uv       = asfloat(EMBER_BUFFER(g_push.vertex_buffer).Load2(offset + 8));
-	const uint   color    = EMBER_BUFFER(g_push.vertex_buffer).Load(offset + 16);
+	const float2 position = asfloat(byte_buffer(g_push.vertex_buffer).Load2(offset + 0));
+	const float2 uv       = asfloat(byte_buffer(g_push.vertex_buffer).Load2(offset + 8));
+	const uint   color    = byte_buffer(g_push.vertex_buffer).Load(offset + 16);
 
 	VertexOutput output;
 	output.position = float4(position * g_push.scale + g_push.translate, 0.0, 1.0);
@@ -57,5 +57,5 @@ VertexOutput vs_main(uint vertex_id : SV_VertexID)
 [shader("fragment")]
 float4 fs_main(VertexOutput input) : SV_Target
 {
-	return input.color * EMBER_TEX2D(g_push.texture).Sample(EMBER_SAMPLER(g_push.sampler), input.uv);
+	return input.color * texture_2d(g_push.texture).Sample(sampler(g_push.sampler), input.uv);
 }

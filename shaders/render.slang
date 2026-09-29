@@ -1,49 +1,57 @@
-#include "ember.slang"
+#language slang 2026
 
-// The render module's GPU contract: mirrors of render/scene.h and
-// render/geometry.h, the table aliases, and the attribute decode helpers,
-// shared by the engine cull kernel and every shader family that draws from the
-// scene. One mirror, so a layout change breaks one file instead of every
-// consumer.
+// The scene as the GPU sees it: mirrors of render/scene.h and render/geometry.h, byte for byte, and
+// the typed views of the tables every scene pass indexes. One mirror, so a layout change breaks one
+// file instead of every consumer. StructuredBuffer elements stride at std430 rules, which is why
+// every struct here keeps its size a multiple of 16 bytes on both sides.
+module render;
 
-// Mirror of render::ObjectFlags. The cull kernel routes AlphaTest objects into
-// the cutout draw stream so the sprite family draws them after the opaque world.
-static const uint OBJECT_FLAG_CUTOUT = 4u;
+import ember;
 
-struct ObjectData
+/// Bytes of per-object data a material type may declare as `struct Instance`. Mirror of
+/// render::INSTANCE_STRIDE: the instance table holds one such record per scene slot.
+public static const uint INSTANCE_STRIDE = 32;
+
+/// Mirror of render::ObjectFlags.
+public static const uint OBJECT_FLAG_CASTS_SHADOW = 1u << 0;
+public static const uint OBJECT_FLAG_BILLBOARD    = 1u << 1;
+public static const uint OBJECT_FLAG_CUTOUT       = 1u << 2;
+
+public struct ObjectData
 {
-	float4 sphere; // world space center and radius
-	uint   geometry;
-	uint   material;
-	uint   flags;
-	uint   layers; // zero marks a dead slot
+	float4 sphere;   // world space centre and radius
+	uint   geometry; // slot in the geometry table
+	uint   material; // the material handle's index
+	uint   flags;    // OBJECT_FLAG_*
+	uint   layers;   // layer mask; zero marks a dead slot
 };
 
-struct TransformData
+/// The world matrix's upper 3x4, row major, so a position transforms with three dot products.
+public struct TransformData
 {
-	float4 rows[3]; // world 3x4, row major
+	float4 rows[3];
 };
 
-struct GeometryData
+public struct GeometryData
 {
 	uint   first_index;
 	uint   index_count; // zero marks a destroyed geometry
 	uint   first_vertex;
 	uint   vertex_count;
-	float4 sphere;
+	float4 sphere;      // authoring space centre and radius
 };
 
-// Per-vertex attribute stream beside the float4 positions.
-struct AttributeData
+/// The per-vertex stream beside the float4 positions.
+public struct AttributeData
 {
-	uint   normal; // octahedral snorm16 pair
+	uint   normal; // octahedral, two snorm16
 	uint   color;  // rgba8
 	float2 uv;
 };
 
-// Bit identical to gpu::DrawIndexedIndirectArgs; scalars pack tight in std430,
-// so the stride is the API's 20 bytes.
-struct DrawArgs
+/// Bit identical to gpu::DrawIndexedIndirectArgs. Scalars pack tight in std430, so the stride is
+/// the API's 20 bytes.
+public struct DrawArgs
 {
 	uint index_count;
 	uint instance_count;
@@ -52,16 +60,22 @@ struct DrawArgs
 	uint first_instance;
 };
 
-EMBER_BUFFER_ALIAS(float4, ember_position_buffers)
-EMBER_BUFFER_ALIAS(AttributeData, ember_attribute_buffers)
-EMBER_BUFFER_ALIAS(ObjectData, ember_object_buffers)
-EMBER_BUFFER_ALIAS(TransformData, ember_transform_buffers)
-EMBER_BUFFER_ALIAS(GeometryData, ember_geometry_buffers)
-EMBER_BUFFER_RW_ALIAS(DrawArgs, ember_draw_buffers)
-EMBER_BUFFER_RW_ALIAS(uint, ember_count_buffers)
+// Typed views of the storage buffer heap. The index into each array is a table's bindless slot,
+// always uniform (it comes from constants), so these are indexed directly.
+public [[vk::binding(BINDING_STORAGE_BUFFERS, SET_HEAP)]] StructuredBuffer<float4>        g_positions[];
+public [[vk::binding(BINDING_STORAGE_BUFFERS, SET_HEAP)]] StructuredBuffer<AttributeData> g_attributes[];
+public [[vk::binding(BINDING_STORAGE_BUFFERS, SET_HEAP)]] StructuredBuffer<ObjectData>    g_objects[];
+public [[vk::binding(BINDING_STORAGE_BUFFERS, SET_HEAP)]] StructuredBuffer<TransformData> g_transforms[];
+public [[vk::binding(BINDING_STORAGE_BUFFERS, SET_HEAP)]] StructuredBuffer<GeometryData>  g_geometries[];
+public [[vk::binding(BINDING_STORAGE_BUFFERS, SET_HEAP)]] StructuredBuffer<uint>          g_uints[];
 
-// Matches math/packing.h: low snorm16 is x, high is y.
-float3 decode_octahedral(uint packed)
+// Writable views for compute producers (the cull kernel's draw streams). Vulkan binds read-only and
+// writable storage buffers through the same descriptor type, so the slot contract is unchanged.
+public [[vk::binding(BINDING_STORAGE_BUFFERS, SET_HEAP)]] RWStructuredBuffer<DrawArgs> g_draw_args[];
+public [[vk::binding(BINDING_STORAGE_BUFFERS, SET_HEAP)]] RWStructuredBuffer<uint>     g_counts[];
+
+/// Matches math/packing.h: the low snorm16 is x, the high one y.
+public float3 decode_octahedral(uint packed)
 {
 	const float2 e = float2(
 		(float)(int)(packed << 16) / 2147483648.0,
@@ -75,7 +89,7 @@ float3 decode_octahedral(uint packed)
 	return normalize(n);
 }
 
-float4 unpack_rgba8(uint packed)
+public float4 unpack_rgba8(uint packed)
 {
 	return float4(
 		(packed >> 0) & 0xFF,
@@ -84,8 +98,7 @@ float4 unpack_rgba8(uint packed)
 		(packed >> 24) & 0xFF) / 255.0;
 }
 
-/// World position through a row major 3x4.
-float3 transform_point(TransformData transform, float3 position)
+public float3 transform_point(TransformData transform, float3 position)
 {
 	const float4 point = float4(position, 1.0);
 
@@ -95,12 +108,18 @@ float3 transform_point(TransformData transform, float3 position)
 		dot(transform.rows[2], point));
 }
 
-/// Directions rotate through the upper 3x3. Non-uniform scale would need the
-/// inverse transpose; families that allow it own that cost.
-float3 transform_direction(TransformData transform, float3 direction)
+/// Directions rotate through the upper 3x3, which is exact for rotation and uniform scale. A
+/// non-uniformly scaled object would need the inverse transpose, a cost only such objects should pay.
+public float3 transform_direction(TransformData transform, float3 direction)
 {
 	return float3(
 		dot(transform.rows[0].xyz, direction),
 		dot(transform.rows[1].xyz, direction),
 		dot(transform.rows[2].xyz, direction));
+}
+
+/// The object's origin in world space: the translation column.
+public float3 transform_origin(TransformData transform)
+{
+	return float3(transform.rows[0].w, transform.rows[1].w, transform.rows[2].w);
 }

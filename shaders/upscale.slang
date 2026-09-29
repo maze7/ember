@@ -1,4 +1,4 @@
-#include "ember.slang"
+import ember;
 
 struct UpscaleConstants
 {
@@ -8,7 +8,7 @@ struct UpscaleConstants
 	float2 pad;
 };
 
-EMBER_CONSTANTS(1, UpscaleConstants, g_upscale)
+[[vk::binding(CONSTANTS_PASS, SET_CONSTANTS)]] ConstantBuffer<UpscaleConstants> g_upscale;
 
 struct PushConstants
 {
@@ -56,5 +56,5 @@ float4 fs_main(VertexOutput input) : SV_Target
 
 	const float2 uv = (base + sharp) / g_upscale.scene_size;
 
-	return EMBER_TEX2D(g_push.scene_color).SampleLevel(EMBER_SAMPLER(g_push.scene_sampler), uv, 0.0);
+	return texture_2d(g_push.scene_color).SampleLevel(sampler(g_push.scene_sampler), uv, 0.0);
 }

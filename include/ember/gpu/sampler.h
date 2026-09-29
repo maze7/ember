@@ -51,7 +51,7 @@ namespace ember::gpu
 	};
 
 	/// Mirrors VK_LOD_CLAMP_NONE: "no upper clamp" without dragging float limits in.
-	inline constexpr f32  LOD_NONE = 1000.0f;
+	inline constexpr f32 LOD_NONE = 1000.0f;
 
 	struct SamplerDef
 	{
@@ -66,18 +66,18 @@ namespace ember::gpu
 		AddressMode address_w = AddressMode::Repeat;
 
 		f32 mip_lod_bias = 0.0f;
-		f32 min_lod = 0.0f;
-		f32 max_lod = LOD_NONE;
+		f32 min_lod		 = 0.0f;
+		f32 max_lod		 = LOD_NONE;
 
 		/// 0/1 = off. Clamped to caps.max_anisotropy at creation.
 		u8 max_anisotropy = 0;
 
 		/// PCF shadow samplers. Mutually exclusive with reduction.
 		bool compare_enable = false;
-		CompareOp compare = CompareOp::Less;
+		CompareOp compare	= CompareOp::Less;
 
 		ReductionMode reduction = ReductionMode::WeightedAverage;
-		BorderColor border = BorderColor::OpaqueBlack;
+		BorderColor border		= BorderColor::OpaqueBlack;
 	};
 
 	/// Validates a given SamplerDef and ensures it is usable
@@ -92,4 +92,11 @@ namespace ember::gpu
 
 		return true;
 	}
+}
+
+namespace ember
+{
+	// How data files spell these: [Filter] and [Wrap] on material parameters, sampler overrides.
+	EMBER_ENUM_NAMES(gpu::Filter, "point", "linear");
+	EMBER_ENUM_NAMES(gpu::AddressMode, "repeat", "mirror", "clamp", "border");
 }

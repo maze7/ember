@@ -1,4 +1,5 @@
-#include "render.slang"
+import ember;
+import render;
 
 struct CullConstants
 {
@@ -9,7 +10,7 @@ struct CullConstants
 	uint layers;
 };
 
-EMBER_CONSTANTS(1, CullConstants, g_cull)
+[[vk::binding(CONSTANTS_PASS, SET_CONSTANTS)]] ConstantBuffer<CullConstants> g_cull;
 
 struct PushConstants
 {
@@ -29,7 +30,7 @@ void cs_main(uint3 thread : SV_DispatchThreadID)
 	if (slot >= g_cull.object_count)
 		return;
 
-	const ObjectData object = ember_object_buffers[g_cull.objects][slot];
+	const ObjectData object = g_objects[g_cull.objects][slot];
 
 	// Dead slots carry layer mask zero, so one test retires them and applies
 	// the view's layer selection together.
@@ -46,7 +47,7 @@ void cs_main(uint3 thread : SV_DispatchThreadID)
 			return;
 	}
 
-	const GeometryData geometry = ember_geometry_buffers[g_cull.geometries][object.geometry];
+	const GeometryData geometry = g_geometries[g_cull.geometries][object.geometry];
 	if (geometry.index_count == 0)
 		return;
 
@@ -60,12 +61,12 @@ void cs_main(uint3 thread : SV_DispatchThreadID)
 	uint draw_index;
 	if ((object.flags & OBJECT_FLAG_CUTOUT) != 0)
 	{
-		InterlockedAdd(ember_count_buffers[g_push.count_cutout][0], 1, draw_index);
-		ember_draw_buffers[g_push.args_cutout][draw_index] = args;
+		InterlockedAdd(g_counts[g_push.count_cutout][0], 1, draw_index);
+		g_draw_args[g_push.args_cutout][draw_index] = args;
 	}
 	else
 	{
-		InterlockedAdd(ember_count_buffers[g_push.count_opaque][0], 1, draw_index);
-		ember_draw_buffers[g_push.args_opaque][draw_index] = args;
+		InterlockedAdd(g_counts[g_push.count_opaque][0], 1, draw_index);
+		g_draw_args[g_push.args_opaque][draw_index] = args;
 	}
 }

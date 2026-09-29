@@ -1,4 +1,5 @@
-#include "render.slang"
+import ember;
+import render;
 
 // Mirror of render/features/mesh.h.
 struct MeshMaterial
@@ -10,14 +11,14 @@ struct MeshMaterial
 	float4 tint;
 };
 
-EMBER_BUFFER_ALIAS(MeshMaterial, ember_mesh_materials)
+[[vk::binding(BINDING_STORAGE_BUFFERS, SET_HEAP)]] StructuredBuffer<MeshMaterial> g_mesh_materials[];
 
 struct MeshConstants
 {
 	float4x4 view_proj;
 };
 
-EMBER_CONSTANTS(0, MeshConstants, g_frame)
+[[vk::binding(CONSTANTS_FRAME, SET_CONSTANTS)]] ConstantBuffer<MeshConstants> g_mesh;
 
 struct PushConstants
 {
@@ -51,26 +52,25 @@ VertexOutput vs_main(
 	// there, one instance per draw.
 	const uint slot = base_instance + instance_id;
 
-	const TransformData transform = ember_transform_buffers[g_push.transforms][slot];
-	const float3 local			  = ember_position_buffers[g_push.positions][vertex_id].xyz;
-	const AttributeData attribute = ember_attribute_buffers[g_push.attributes][vertex_id];
+	const TransformData transform = g_transforms[g_push.transforms][slot];
+	const float3 local = g_positions[g_push.positions][vertex_id].xyz;
+	const AttributeData attribute = g_attributes[g_push.attributes][vertex_id];
 
 	VertexOutput output;
-	output.position = mul(g_frame.view_proj, float4(transform_point(transform, local), 1.0));
+	output.position = mul(g_mesh.view_proj, float4(transform_point(transform, local), 1.0));
 	output.normal   = normalize(transform_direction(transform, decode_octahedral(attribute.normal)));
 	output.color    = unpack_rgba8(attribute.color).rgb;
 	output.uv       = attribute.uv;
-	output.material = ember_object_buffers[g_push.objects][slot].material;
+	output.material = g_objects[g_push.objects][slot].material;
 	return output;
 }
 
 [shader("fragment")]
 float4 fs_main(VertexOutput input) : SV_Target
 {
-	const MeshMaterial material = ember_mesh_materials[g_push.materials][input.material];
+	const MeshMaterial material = g_mesh_materials[g_push.materials][input.material];
 
-	float4 texel = EMBER_TEX2D_NU(material.albedo)
-					   .SampleLevel(EMBER_SAMPLER_NU(material.albedo_sampler), input.uv, (float)material.mip);
+	float4 texel = texture_2d_nu(material.albedo).SampleLevel(sampler_nu(material.albedo_sampler), input.uv, (float)material.mip);
 
 	// Cutout: tile and sprite art carries meaning in alpha. Opaque textures
 	// sample a = 1 everywhere and never take this branch. Lives here until the

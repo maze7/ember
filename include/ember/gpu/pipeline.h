@@ -133,6 +133,7 @@ namespace ember::gpu
 
 namespace ember
 {
-	EMBER_ENUM_NAMES(gpu::CullMode, "Point", "Linear");
-	EMBER_ENUM_NAMES(gpu::AddressMode, "Repeat", "Mirror", "Clamp", "Border");
+	// How data files spell these: material attributes, .material overrides, cooked layouts.
+	EMBER_ENUM_NAMES(gpu::CullMode, "none", "back", "front");
+	EMBER_ENUM_NAMES(gpu::BlendPreset, "opaque", "alpha", "additive", "premultiplied");
 }

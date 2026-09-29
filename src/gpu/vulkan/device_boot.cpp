@@ -167,6 +167,9 @@ namespace ember::gpu
 				EMBER_FEATURE(Features13, dynamicRendering),
 				EMBER_FEATURE(Features13, synchronization2),
 				EMBER_FEATURE(Features13, maintenance4),
+				// Shaders lower discard to demote, which keeps a discarded lane alive as a helper so
+				// its quad neighbours' derivatives stay defined along cutout edges.
+				EMBER_FEATURE(Features13, shaderDemoteToHelperInvocation),
 			};
 
 			/// VK_EXT_mesh_shader. Optional; a missing extension clears caps.mesh_shaders
