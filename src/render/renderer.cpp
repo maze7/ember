@@ -23,7 +23,6 @@ namespace ember::render
 							  .cull_shader		= def.cull_shader.empty() ? embedded::cull_shader() : def.cull_shader,
 							  .command_capacity = def.command_capacity,
 						  });
-		m_readback.init(device);
 
 		const u8 white[4] = {255, 255, 255, 255};
 		m_white			  = device.create_texture({
@@ -56,7 +55,6 @@ namespace ember::render
 		}
 		m_features.clear();
 
-		m_readback.shutdown(device);
 		m_visibility.shutdown(device);
 		m_gpu_scene.shutdown(device);
 		m_geometry.shutdown(device);
@@ -104,11 +102,6 @@ namespace ember::render
 
 		for (const FeatureEntry& entry : m_features)
 			entry.feature->add_passes(frame);
-
-		// After the consumers: the copies land behind the draws and each count
-		// walks write, indirect read, copy source without a round trip.
-		for (u32 view = 0; view < frame.view_count; ++view)
-			m_readback.capture(m_graph, frame.visibility[view].opaque.count, frame_slot, view);
 
 		m_graph.execute(*m_device);
 	}

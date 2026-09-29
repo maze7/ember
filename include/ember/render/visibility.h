@@ -61,8 +61,8 @@ namespace ember::render
 
 		if (stream.use_count)
 		{
-			cmd.draw_indexed_indirect_count(
-				ctx.buffer(stream.args), 0, ctx.buffer(stream.count), 0, stream.max_draw_count);
+			cmd.draw_indexed_indirect_count(ctx.buffer(stream.args), 0, ctx.buffer(stream.count), 0,
+											stream.max_draw_count);
 		}
 		else
 		{
@@ -111,8 +111,8 @@ namespace ember::render
 
 		/// Adds the clear and cull passes for one view and returns the streams
 		/// its raster consumers read.
-		[[nodiscard]] ViewVisibility
-		cull(RenderGraph& graph, const GpuScene& gpu_scene, const GeometryPool& geometry, const View& view) noexcept;
+		[[nodiscard]] ViewVisibility cull(RenderGraph& graph, const GpuScene& gpu_scene, const GeometryPool& geometry,
+										  const View& view) noexcept;
 
 	private:
 		ComputePipelineHandle m_cull = {};
@@ -124,36 +124,4 @@ namespace ember::render
 
 	/// Query slots let several streams (main view, cascades) capture per frame.
 	inline constexpr u32 VISIBILITY_QUERY_SLOTS = 8;
-
-	/**
-	 * Debug counter readback: copies a stream's count into a per frame slot
-	 * ring the CPU reads frames_in_flight later. A statistic, never a rendering
-	 * input. Call capture() after the stream's consumers; passes execute in
-	 * declaration order, so the copy lands behind the draw.
-	 */
-	class VisibilityReadback
-	{
-	public:
-		VisibilityReadback() = default;
-
-		VisibilityReadback(const VisibilityReadback&)			 = delete;
-		VisibilityReadback& operator=(const VisibilityReadback&) = delete;
-
-		void init(gpu::Device& device) noexcept;
-		void shutdown(gpu::Device& device) noexcept;
-
-		void capture(RenderGraph& graph, GraphBuffer count, u32 frame_slot, u32 query_slot = 0) noexcept;
-
-		/// The value captured in this slot pair frames_in_flight ago; zero
-		/// until the first capture retires.
-		[[nodiscard]] u32 value(u32 frame_slot, u32 query_slot = 0) const noexcept
-		{
-			EMBER_ASSERT(frame_slot < MAX_FRAMES_IN_FLIGHT && query_slot < VISIBILITY_QUERY_SLOTS);
-			return m_values != nullptr ? m_values[frame_slot * VISIBILITY_QUERY_SLOTS + query_slot] : 0;
-		}
-
-	private:
-		BufferHandle m_buffer = {};
-		const u32* m_values	  = nullptr;
-	};
 }

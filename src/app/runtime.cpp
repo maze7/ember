@@ -54,7 +54,7 @@ namespace ember
 		jobs::initialize(config.jobs);
 
 		m_platform = memory::make_unique<Platform>(MemoryTag::Engine);
-		if (!m_platform)
+		if (!*m_platform)
 			return rollback(RuntimeError::PlatformInitFailed);
 
 		m_window = m_platform->create_window(config.window);
@@ -62,7 +62,7 @@ namespace ember
 			return rollback(RuntimeError::WindowInitFailed);
 
 		m_gpu = memory::make_unique<gpu::Device>(MemoryTag::Graphics, *m_platform, config.gpu);
-		if (!m_gpu)
+		if (!*m_gpu)
 			return rollback(RuntimeError::DeviceInitFailed);
 
 		m_swapchain = m_gpu->create_swapchain({

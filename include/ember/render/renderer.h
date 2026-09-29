@@ -215,11 +215,6 @@ namespace ember::render
 
 		/// Stats surfaces for debug UI.
 		[[nodiscard]] const GpuScene& gpu_scene() const noexcept { return m_gpu_scene; }
-		[[nodiscard]] u32 visible_count(u32 frame_slot, u32 view = 0) const noexcept
-		{
-			return m_readback.value(frame_slot, view);
-		}
-
 		[[nodiscard]] gpu::Device& gpu() noexcept
 		{
 			EMBER_ASSERT(m_device != nullptr);
@@ -249,7 +244,6 @@ namespace ember::render
 		GeometryPool m_geometry;
 		GpuScene m_gpu_scene;
 		Visibility m_visibility;
-		VisibilityReadback m_readback;
 		RenderGraph m_graph;
 
 		TextureHandle m_white		   = {};

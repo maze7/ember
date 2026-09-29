@@ -143,6 +143,7 @@ namespace ember
 			frame.update_end_ns		= 0;
 			frame.render_begin_ns	= 0;
 			frame.render_end_ns		= 0;
+			frame.published			= nullptr;
 
 			return frame;
 		}
