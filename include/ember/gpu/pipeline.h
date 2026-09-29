@@ -88,7 +88,7 @@ namespace ember::gpu
 
 	struct ComputePipelineDef
 	{
-		const char* name = "compute";
+		const char* name	  = "compute";
 		ShaderStageDef shader = {};
 	};
 
@@ -129,4 +129,10 @@ namespace ember::gpu
 	{
 		return def.name != nullptr && is_valid(def.shader);
 	}
+}
+
+namespace ember
+{
+	EMBER_ENUM_NAMES(gpu::CullMode, "Point", "Linear");
+	EMBER_ENUM_NAMES(gpu::AddressMode, "Repeat", "Mirror", "Clamp", "Border");
 }
