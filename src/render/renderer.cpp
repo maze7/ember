@@ -18,35 +18,16 @@ namespace ember::render
 		m_scene.init(def.object_capacity);
 		m_geometry.init(device, def.geometry);
 		m_gpu_scene.init(device, {.object_capacity = def.object_capacity});
+		m_materials.init(device, def.materials);
 		m_visibility.init(device,
 						  {
 							  .cull_shader		= def.cull_shader.empty() ? embedded::cull_shader() : def.cull_shader,
 							  .command_capacity = def.command_capacity,
 						  });
-
-		const u8 white[4] = {255, 255, 255, 255};
-		m_white			  = device.create_texture({
-			.name		  = "renderer.white",
-			.extent		  = {1, 1, 1},
-			.format		  = gpu::TextureFormat::RGBA8Unorm,
-			.mip_count	  = 1,
-			.usage		  = gpu::TextureUsage::Sampled,
-			.initial_data = {white, sizeof(white)},
-		});
-
-		m_point_sampler = device.create_sampler({
-			.name		= "renderer.point",
-			.min_filter = gpu::Filter::Nearest,
-			.mag_filter = gpu::Filter::Nearest,
-		});
 	}
 
 	void Renderer::shutdown(gpu::Device& device) noexcept
 	{
-		device.destroy(m_white);
-		device.destroy(m_point_sampler);
-		device.destroy(m_linear_sampler);
-
 		for (u32 i = static_cast<u32>(m_features.size()); i > 0; --i)
 		{
 			FeatureEntry& entry = m_features[i - 1];
@@ -56,6 +37,7 @@ namespace ember::render
 		m_features.clear();
 
 		m_visibility.shutdown(device);
+		m_materials.shutdown(device);
 		m_gpu_scene.shutdown(device);
 		m_geometry.shutdown(device);
 		m_graph.shutdown(device);
@@ -68,6 +50,7 @@ namespace ember::render
 		EMBER_ASSERT(m_device != nullptr && "render before init");
 
 		m_gpu_scene.sync(*m_device, m_scene, scratch);
+		m_materials.sync(*m_device, scratch);
 
 		m_graph.begin(scratch);
 
@@ -76,6 +59,7 @@ namespace ember::render
 			.scene		= m_scene,
 			.gpu_scene	= m_gpu_scene,
 			.geometry	= m_geometry,
+			.materials	= m_materials,
 			.graph		= m_graph,
 			.scratch	= scratch,
 			.frame_slot = frame_slot,

@@ -8,11 +8,13 @@ ember_add_module(Render
 		visibility.cpp
 		material.cpp
 		renderer.cpp
+		material_registry.cpp
 		features/mesh.cpp
 		features/upscale.cpp
 		features/sprite.cpp
 	PUBLIC_DEPS
 		Ember::Gpu
+		Ember::Material
 )
 
 ember_embed_shaders(ember_render

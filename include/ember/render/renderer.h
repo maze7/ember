@@ -7,6 +7,7 @@
 #include <ember/render/geometry.h>
 #include <ember/render/gpu_scene.h>
 #include <ember/render/graph.h>
+#include <ember/render/material_registry.h>
 #include <ember/render/scene.h>
 #include <ember/render/view.h>
 #include <ember/render/visibility.h>
@@ -58,6 +59,7 @@ namespace ember::render
 		RenderScene& scene;
 		GpuScene& gpu_scene;
 		GeometryPool& geometry;
+		MaterialRegistry& materials;
 		RenderGraph& graph;
 		Arena& scratch;
 
@@ -120,9 +122,10 @@ namespace ember::render
 
 	struct RendererDef
 	{
-		u32 object_capacity		 = 1u << 17;
-		u32 command_capacity	 = 1u << 17;
-		GeometryPoolDef geometry = {};
+		u32 object_capacity			  = 1u << 17;
+		u32 command_capacity		  = 1u << 17;
+		GeometryPoolDef geometry	  = {};
+		MaterialRegistryDef materials = {};
 
 		/// Cooked cull kernel override; empty uses the engine's embedded shaders/cull.slang.
 		Span<const u8> cull_shader = {};
@@ -130,7 +133,8 @@ namespace ember::render
 
 	[[nodiscard]] constexpr bool is_valid(const RendererDef& def) noexcept
 	{
-		return def.object_capacity != 0 && def.command_capacity != 0 && is_valid(def.geometry);
+		return def.object_capacity != 0 && def.command_capacity != 0 && is_valid(def.geometry) &&
+			   is_valid(def.materials);
 	}
 
 	struct RenderOutput
@@ -213,6 +217,10 @@ namespace ember::render
 		[[nodiscard]] GeometryPool& geometry() noexcept { return m_geometry; }
 		[[nodiscard]] const GeometryPool& geometry() const noexcept { return m_geometry; }
 
+		/// Every material type and material; games create, edit and destroy through it.
+		[[nodiscard]] MaterialRegistry& materials() noexcept { return m_materials; }
+		[[nodiscard]] const MaterialRegistry& materials() const noexcept { return m_materials; }
+
 		/// Stats surfaces for debug UI.
 		[[nodiscard]] const GpuScene& gpu_scene() const noexcept { return m_gpu_scene; }
 		[[nodiscard]] gpu::Device& gpu() noexcept
@@ -221,11 +229,22 @@ namespace ember::render
 			return *m_device;
 		}
 
-		/// Builtin conveniences beside the heap's slot 0 error fallback: the
-		/// art every game asks for by name instead of loading.
-		[[nodiscard]] TextureHandle white_texture() const noexcept { return m_white; }
-		[[nodiscard]] SamplerHandle point_sampler() const noexcept { return m_point_sampler; }
-		[[nodiscard]] SamplerHandle linear_sampler() const noexcept { return m_linear_sampler; }
+		/// The registry's builtins under the names the pre-registry features use; they go when those
+		/// features do.
+		[[nodiscard]] TextureHandle white_texture() const noexcept
+		{
+			return m_materials.builtin(material::BuiltinTexture::White);
+		}
+
+		[[nodiscard]] SamplerHandle point_sampler() const noexcept
+		{
+			return m_materials.sampler(gpu::Filter::Nearest, gpu::AddressMode::Repeat);
+		}
+
+		[[nodiscard]] SamplerHandle linear_sampler() const noexcept
+		{
+			return m_materials.sampler(gpu::Filter::Linear, gpu::AddressMode::Repeat);
+		}
 
 	private:
 		struct FeatureEntry
@@ -243,12 +262,9 @@ namespace ember::render
 		RenderScene m_scene;
 		GeometryPool m_geometry;
 		GpuScene m_gpu_scene;
+		MaterialRegistry m_materials;
 		Visibility m_visibility;
 		RenderGraph m_graph;
-
-		TextureHandle m_white		   = {};
-		SamplerHandle m_point_sampler  = {};
-		SamplerHandle m_linear_sampler = {};
 
 		Vector<FeatureEntry> m_features;
 		const View* m_cull_override = nullptr;

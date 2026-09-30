@@ -20,10 +20,12 @@ namespace ember::render
 	struct RenderObject;
 	struct Geometry;
 	struct Material;
+	struct MaterialType;
 
 	using RenderObjectHandle = Handle<RenderObject, u32>;
 	using GeometryHandle	 = Handle<Geometry, u16>;
 	using MaterialHandle	 = Handle<Material, u16>;
+	using MaterialTypeHandle = Handle<MaterialType, u16>;
 
 	/**
 	 * Bit i marks membership of layer i. Views select layers, objects belong to them;
