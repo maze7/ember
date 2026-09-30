@@ -75,6 +75,22 @@ namespace ember::render
 
 			std::memcpy(record + param.offset, ref, sizeof(ref));
 		}
+
+		/// A type cooked into this library: its .type file and its SPIR-V.
+		struct CookedType
+		{
+			Span<const u8> (*type_file)() noexcept;
+			Span<const u8> (*spirv)() noexcept;
+		};
+
+		/// The error type first, which gives it index 0, then the stock types in StockType's order.
+		constexpr CookedType COOKED_TYPES[] = {
+			{embedded::error_material_type, embedded::error_material_spirv},
+			{embedded::unlit_material_type, embedded::unlit_material_spirv},
+			{embedded::sprite_material_type, embedded::sprite_material_spirv},
+		};
+
+		static_assert(std::size(COOKED_TYPES) == 1 + static_cast<size_t>(StockType::Count));
 	}
 
 	MaterialRegistry::MaterialRegistry() noexcept
@@ -111,23 +127,31 @@ namespace ember::render
 
 		create_builtins(device);
 
-		// The error type is cooked into this library and loads the way a ship build loads every
-		// type, so that path runs on every boot.
-		const Span<const u8> type_file = embedded::error_material_type();
+		// The cooked types load the way a ship build loads every type, so that path runs on every
+		// boot. This build cooked them, so a failure here is a broken build.
+		MaterialTypeHandle cooked[std::size(COOKED_TYPES)] = {};
 
-		material::Type error;
-		String problem(&graphics());
-
-		if (!material::read_cooked({reinterpret_cast<const char*>(type_file.data()), type_file.size()},
-								   embedded::error_material_spirv(), error, problem))
+		for (u32 i = 0; i < std::size(COOKED_TYPES); ++i)
 		{
-			EMBER_ASSERT(false && "this build cooked the error type");
-			EMBER_ERROR("the embedded error material type does not load: {}", problem);
-			return;
+			const Span<const u8> type_file = COOKED_TYPES[i].type_file();
+
+			material::Type type;
+			String problem(&graphics());
+
+			if (!material::read_cooked({reinterpret_cast<const char*>(type_file.data()), type_file.size()},
+									   COOKED_TYPES[i].spirv(), type, problem))
+			{
+				EMBER_ASSERT(false && "this build cooked the engine's types");
+				EMBER_ERROR("an embedded material type does not load: {}", problem);
+				continue;
+			}
+
+			cooked[i] = add_type(std::move(type));
 		}
 
-		m_error_type = add_type(std::move(error));
+		m_error_type = cooked[0];
 		m_error		 = create(m_error_type);
+		std::copy(std::begin(cooked) + 1, std::end(cooked), std::begin(m_stock));
 
 		// A fresh pool hands out index 0 first: that, and slot 0, is what makes the error key zero.
 		EMBER_ASSERT(m_error_type.index == 0 && m_error.index == 0 && key(m_error) == ERROR_MATERIAL_KEY);
@@ -165,6 +189,8 @@ namespace ember::render
 		m_key_table	 = {};
 		m_error_type = {};
 		m_error		 = {};
+
+		std::fill(std::begin(m_stock), std::end(m_stock), MaterialTypeHandle{});
 	}
 
 	MaterialTypeHandle MaterialRegistry::add_type(material::Type type) noexcept
@@ -528,6 +554,32 @@ namespace ember::render
 		const TypeEntry* entry = m_types.get(handle);
 		return entry != nullptr ? Span<const u8>{entry->instance_defaults.data(), entry->instance_defaults.size()}
 								: Span<const u8>{};
+	}
+
+	u32 MaterialRegistry::layout_buckets(Span<const u32> users, Span<BucketRange> out) const noexcept
+	{
+		EMBER_ASSERT(out.size() == bucket_count());
+
+		for (BucketRange& range : out)
+			range = {};
+
+		// Every object counts toward the bucket its material's row names, dead rows included: they
+		// name the error bucket, which is where those objects draw.
+		const size_t rows = std::min(users.size(), m_keys.size());
+
+		for (size_t i = 0; i < rows; ++i)
+			if (users[i] != 0)
+				out[key_bucket(m_keys[i])].capacity += users[i];
+
+		u32 first = 0;
+
+		for (BucketRange& range : out)
+		{
+			range.first = first;
+			first += range.capacity;
+		}
+
+		return first;
 	}
 
 	u32 MaterialRegistry::key(MaterialHandle handle) const noexcept

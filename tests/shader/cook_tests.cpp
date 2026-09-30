@@ -44,28 +44,43 @@ namespace
 	};
 }
 
-TEST_F(Cooked, TheEmbeddedProgramsAreWhatTheCompilerBuilds)
+TEST_F(Cooked, TheEmbeddedTypesAreWhatTheCompilerBuilds)
 {
 	const struct
 	{
 		const char* file;
-		Span<const u8> (*embedded)() noexcept;
-	} programs[] = {
-		{"cull.slang", render::embedded::cull_shader},
-		{"mesh.slang", render::embedded::mesh_shader},
-		{"sprite.slang", render::embedded::sprite_shader},
-		{"upscale.slang", render::embedded::upscale_shader},
+		const char* name;
+		Span<const u8> (*type_file)() noexcept;
+		Span<const u8> (*spirv)() noexcept;
+	} types[] = {
+		{"materials/error.slang", "Error", render::embedded::error_material_type,
+		 render::embedded::error_material_spirv},
+		{"materials/unlit.slang", "Unlit", render::embedded::unlit_material_type,
+		 render::embedded::unlit_material_spirv},
+		{"materials/sprite.slang", "Sprite", render::embedded::sprite_material_type,
+		 render::embedded::sprite_material_spirv},
 	};
 
-	for (const auto& program : programs)
+	for (const auto& type : types)
 	{
-		const String path = engine_file(program.file);
+		const Span<const u8> type_file = type.type_file();
 
-		shader::Program compiled;
+		material::Type cooked;
+		String error;
+		ASSERT_TRUE(material::read_cooked({reinterpret_cast<const char*>(type_file.data()), type_file.size()},
+										  type.spirv(), cooked, error))
+			<< type.file << ": " << error;
+
+		const String path = engine_file(type.file);
+
+		material::Type compiled;
 		String diagnostics;
-		ASSERT_TRUE(m_compiler.compile_program(path, read(path), compiled, diagnostics)) << diagnostics;
+		ASSERT_TRUE(m_compiler.compile_material(path, read(path), compiled, diagnostics)) << diagnostics;
 
-		EXPECT_TRUE(same_bytes(program.embedded(), compiled.bytecode())) << program.file;
+		// The hash covers the bytecode, the record, the per-object data and the state.
+		EXPECT_EQ(cooked.hash, compiled.hash) << type.file;
+		EXPECT_TRUE(same_bytes(cooked.bytecode(), compiled.bytecode())) << type.file;
+		EXPECT_EQ(cooked.name, type.name);
 	}
 }
 

@@ -4,6 +4,7 @@
 #include <ember/containers/pool.h>
 #include <ember/containers/span.h>
 #include <ember/core/common.h>
+#include <ember/material/type.h>
 #include <ember/render/common.h>
 
 #include <glm/geometric.hpp>
@@ -14,8 +15,10 @@
 
 namespace ember::render
 {
+	class MaterialRegistry;
+
 	/**
-	 * GPU mirrors of scene state, mirrored again in shaders/render/scene.slang.
+	 * GPU mirrors of scene state, mirrored again in shaders/render.slang.
 	 * StructuredBuffer elements stride at std430 rules, so every struct here keeps
 	 * its size at a multiple of 16 bytes.
 	 */
@@ -26,7 +29,7 @@ namespace ember::render
 	{
 		glm::vec4 sphere = {}; // xyz center, w radius
 		u32 geometry	 = 0;  // slot in  the geometry table
-		u32 material	 = 0;  // slot in the material table
+		u32 material	 = 0;  // the material handle's index: its row of the key table
 		u32 flags		 = 0;  // ObjectFlags
 		u32 layers		 = 0;  // LayerMask; zero marks a dead slot
 	};
@@ -42,28 +45,39 @@ namespace ember::render
 		};
 	};
 
+	/**
+	 * An object's per-object material data: the bytes its type's `struct Instance` reads, fields
+	 * packed in declaration order with no padding, colours linear. What instance<T>() in a material
+	 * loads, from the instance table's row for the object's slot.
+	 */
+	struct InstanceData
+	{
+		u8 bytes[material::INSTANCE_BYTES] = {};
+	};
+
 	static_assert(sizeof(ObjectData) == 32 && std::is_trivially_copyable_v<ObjectData>);
 	static_assert(sizeof(TransformData) == 48 && std::is_trivially_copyable_v<TransformData>);
+	static_assert(sizeof(InstanceData) == 32 && std::is_trivially_copyable_v<InstanceData>);
 
-	/// CPU-only companion to ObjectData: what the setters need to rebuild the
-	/// world sphere and what sync needs for the transform table.
+	/// CPU-only companion to ObjectData: what the setters need to rebuild the world sphere, and
+	/// what sync uploads to the transform and instance tables.
 	struct ObjectCold
 	{
 		TransformData transform = {};
 		glm::vec4 local_sphere	= {}; // authoring space center and radius
+		InstanceData instance	= {};
 	};
 
-	static_assert(sizeof(ObjectCold) == 64);
+	static_assert(sizeof(ObjectCold) == 96);
 
 	[[nodiscard]] inline TransformData pack_transform(const glm::mat4& world) noexcept
 	{
 		// glm stores column major; rows[i] gathers row i across the four columns.
-		return {
-			.rows = {
-				{world[0][0], world[1][0], world[2][0], world[3][0]},
-				{world[0][1], world[1][1], world[2][1], world[3][1]},
-				{world[0][2], world[1][2], world[2][2], world[3][2]},
-			}};
+		return {.rows = {
+					{world[0][0], world[1][0], world[2][0], world[3][0]},
+					{world[0][1], world[1][1], world[2][1], world[3][1]},
+					{world[0][2], world[1][2], world[2][2], world[3][2]},
+				}};
 	}
 
 	/// Sphere through an affine transform. The radius scales by the longest basis axis,
@@ -98,6 +112,10 @@ namespace ember::render
 		glm::vec4 sphere		= {0.0f, 0.0f, 0.0f, 1.0f}; // local space center and radius
 		LayerMask layers		= LAYER_DEFAULT;
 		ObjectFlags flags		= ObjectFlags::CastsShadow;
+
+		/// Per-object data to start with, at most material::INSTANCE_BYTES. Empty takes the
+		/// material's Instance [Default]s.
+		Span<const u8> instance = {};
 	};
 
 	/**
@@ -105,14 +123,18 @@ namespace ember::render
 	 * into objects here and the renderer never sees game entities.
 	 *
 	 * Storage is one generational Pool. Hot values are the exact GPU object records, cold
-	 * values are the transform and local bounds, so GPU sync is a straight copy of pool
-	 * storage. A handle's index is the object's slot in every GPU table.
+	 * values are the transform, local bounds and per-object data, so GPU sync is a straight
+	 * copy of pool storage. A handle's index is the object's slot in every GPU table.
 	 *
 	 * Mutations set one dirty bit per slot and append the slot once to a dense list.
-	 * GpuScene::sync() drains the list with dirty_slots()/object()/transform() and calls
-	 * clear_dirty(). One stream covers both tables: transform changes rewrite the world
-	 * sphere in the object record anyway, so split streams would save only the rare
-	 * material-only edit.
+	 * GpuScene::sync() drains the list with dirty_slots()/object()/transform()/instance() and
+	 * calls clear_dirty(). One stream covers every table: transform changes rewrite the world
+	 * sphere in the object record anyway, and a slot's three rows are 112 bytes, so split
+	 * streams would save little until per-frame instance writes dominate a profile.
+	 *
+	 * The scene counts the live objects naming each material index. The renderer turns those
+	 * counts into each draw bucket's share of an argument buffer, which is how the cull can
+	 * sort any number of objects into any number of buckets with one pass and no overflow.
 	 *
 	 * destroy_object() scrubs the record to all-zero dead state before the slot dies,
 	 * and the scrub rides the dirty list. Slot storage outlives the handle, so sync uploads
@@ -123,10 +145,11 @@ namespace ember::render
 	 * Setters assert on stale handles in debug and ignore them in release; a set on a destroyed
 	 * proxy is a game lifetime bug.
 	 *
-	 * Threading: set_transform and set_material run on any frame thread at once, provided no two
-	 * calls name the same object; each one writes its own slot and marks a dirty bit. Creating and
-	 * destroying move bookkeeping every reader depends on, so they stay in the owner phase, and
-	 * dirty_slots()/clear_dirty() belong to the sync phase after the writers are joined.
+	 * Threading: set_transform, set_material and set_instance run on any frame thread at once,
+	 * provided no two calls name the same object; each one writes its own slot and marks a dirty
+	 * bit, and set_material moves its counts atomically. Creating and destroying move bookkeeping
+	 * every reader depends on, so they stay in the owner phase, and dirty_slots()/clear_dirty()
+	 * and material_users() belong to the sync phase after the writers are joined.
 	 */
 	class RenderScene
 	{
@@ -137,9 +160,13 @@ namespace ember::render
 		RenderScene(const RenderScene&)			   = delete;
 		RenderScene& operator=(const RenderScene&) = delete;
 
-		/// Sizes the pool and dirty tracking once. Capacity is fixed because slot indices
-		/// are baked into GPU tables and handles.
-		void init(u32 object_capacity) noexcept;
+		/**
+		 * Sizes the pool and dirty tracking once. Capacity is fixed because slot indices are baked
+		 * into GPU tables and handles. With a registry, new objects start with their material's
+		 * Instance defaults, and material indices stay within its key table; without one, which
+		 * only tests want, per-object data starts zeroed and any u16 index is accepted.
+		 */
+		void init(u32 object_capacity, const MaterialRegistry* materials = nullptr) noexcept;
 
 		/// Null handle when the scene is full; the failure is logged.
 		[[nodiscard]] RenderObjectHandle create_object(const RenderObjectDef& def) noexcept;
@@ -150,8 +177,25 @@ namespace ember::render
 		/// Parallel safe on distinct handles.
 		void set_transform(RenderObjectHandle handle, const glm::mat4& world) noexcept;
 
-		/// Parallel safe on distinct handles.
+		/// Leaves the per-object data as it is: it belongs to the object, not the material. Parallel
+		/// safe on distinct handles.
 		void set_material(RenderObjectHandle handle, MaterialHandle material) noexcept;
+
+		/**
+		 * Replaces the object's per-object data: the bytes of its type's `struct Instance`, packed in
+		 * declaration order, colours linear, at most material::INSTANCE_BYTES; the rest is zeroed.
+		 * This is what animation and hit flashes write every frame instead of creating materials.
+		 * Parallel safe on distinct handles.
+		 */
+		void set_instance(RenderObjectHandle handle, Span<const u8> data) noexcept;
+
+		/// The typed form: T mirrors the Instance struct field for field.
+		template <class T> void set_instance(RenderObjectHandle handle, const T& data) noexcept
+		{
+			static_assert(std::is_trivially_copyable_v<T> && sizeof(T) <= material::INSTANCE_BYTES,
+						  "per-object data is at most material::INSTANCE_BYTES of plain bytes");
+			set_instance(handle, {reinterpret_cast<const u8*>(&data), sizeof(T)});
+		}
 
 		[[nodiscard]] bool is_valid(RenderObjectHandle handle) const noexcept;
 
@@ -173,11 +217,21 @@ namespace ember::render
 		/// Slot reads ignore liveness so a destroyed slot serves its scrub record.
 		[[nodiscard]] const ObjectData& object(u32 slot) const noexcept;
 		[[nodiscard]] const TransformData& transform(u32 slot) const noexcept;
+		[[nodiscard]] const InstanceData& instance(u32 slot) const noexcept;
+
+		/// Live objects naming each material index, one count per index the scene accepts.
+		[[nodiscard]] Span<const u32> material_users() const noexcept;
 
 	private:
+		/// The index an object stores: a material's, or the error material's for one past the key
+		/// table, which could only come from a fabricated handle.
+		[[nodiscard]] u32 material_index(MaterialHandle material) const noexcept;
+
 		Pool<RenderObject, ObjectData, ObjectCold, u32> m_objects;
 		DirtySet m_dirty;
+		Vector<u32> m_material_users; // indexed by material index
 
-		u32 m_slot_count = 0;
+		const MaterialRegistry* m_materials = nullptr;
+		u32 m_slot_count					= 0;
 	};
 }

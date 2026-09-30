@@ -466,8 +466,8 @@ struct Mismatch : IMaterial
 
 TEST_F(Compiling, RecompilingAFileSeesItsNewSource)
 {
-	const char* first = "import material;\nstruct Evolving : IMaterial { float a; void surface(SurfaceInput s, inout "
-						"Surface out) {} };\n";
+	const char* first  = "import material;\nstruct Evolving : IMaterial { float a; void surface(SurfaceInput s, inout "
+						 "Surface out) {} };\n";
 	const char* second = "import material;\nstruct Evolving : IMaterial { float a; float b; void surface(SurfaceInput "
 						 "s, inout Surface out) {} };\n";
 
@@ -534,9 +534,20 @@ TEST_F(Compiling, ListsEveryFileTheCompileRead)
 	EXPECT_TRUE(read("/tone.slang"));
 }
 
+TEST_F(Compiling, ATypeMayShareItsNameWithAShadingModel)
+{
+	// Each link-time export is written in a module of its own, so neither sees the other's Lit.
+	ASSERT_TRUE(compile("lit.slang", "import material;\nstruct Lit : IMaterial { void surface(SurfaceInput s, "
+									 "inout Surface out) {} };\n"))
+		<< m_diagnostics;
+
+	EXPECT_EQ(m_type.name, "Lit");
+	EXPECT_EQ(m_type.state.shading, "Lit");
+}
+
 TEST_F(Compiling, CompilesTheEnginesPlainPrograms)
 {
-	for (const char* name : {"cull.slang", "upscale.slang", "imgui.slang", "mesh.slang", "sprite.slang"})
+	for (const char* name : {"cull.slang", "upscale.slang", "imgui.slang"})
 	{
 		String path;
 		ASSERT_TRUE(fs::join(path, s_compiler->engine_dir(), name));

@@ -4,6 +4,7 @@
 #include <ember/core/common.h>
 #include <ember/gpu/common.h>
 #include <ember/memory/memory.h>
+#include <ember/render/frame_constants.h>
 #include <ember/render/geometry.h>
 #include <ember/render/gpu_scene.h>
 #include <ember/render/graph.h>
@@ -11,6 +12,8 @@
 #include <ember/render/scene.h>
 #include <ember/render/view.h>
 #include <ember/render/visibility.h>
+
+#include <glm/vec3.hpp>
 
 #include <type_traits>
 
@@ -23,9 +26,8 @@ namespace ember::render
 {
 	class Renderer;
 
-	/// Views per frame; matched to the readback query slots so every view's
-	/// count is capturable.
-	inline constexpr u32 MAX_FRAME_VIEWS = VISIBILITY_QUERY_SLOTS;
+	/// Views per frame: the main view and the ones features add, shadow cascades and reflections.
+	inline constexpr u32 MAX_FRAME_VIEWS = 8;
 
 	/**
 	 * Semantic frame resources. Producers assign, consumers read; a null handle
@@ -46,12 +48,19 @@ namespace ember::render
 		/// by. Defaults to the output extent; an upscale feature overrides it
 		/// when the scene renders through an internal target.
 		Extent2D scene_extent = {};
+
+		/// The lights every surface reads: a lighting feature's table and count, and the ambient
+		/// term, set in prepare(). Without one, surfaces see a white ambient alone, under which the
+		/// Lit model shades like Unlit.
+		u32 lights		  = 0;
+		u32 light_count	  = 0;
+		glm::vec3 ambient = {1.0f, 1.0f, 1.0f};
 	};
 
 	/**
 	 * One frame as features see it. Built views are culled between build_views
-	 * and add_passes, so visibility[i] answers for views[i] by the time passes
-	 * are declared. View 0 is always the main view.
+	 * and add_passes, so visibility[i] and view_constants[i] answer for views[i]
+	 * by the time passes are declared. View 0 is always the main view.
 	 */
 	struct RenderFrame
 	{
@@ -67,15 +76,21 @@ namespace ember::render
 
 		FrameResources resources = {};
 
-		View views[MAX_FRAME_VIEWS]				   = {};
-		ViewVisibility visibility[MAX_FRAME_VIEWS] = {};
-		u32 view_count							   = 0;
-		bool views_locked						   = false;
+		/// Bound at CONSTANTS_FRAME by every scene pass: time and the scene's tables.
+		FrameConstants constants = {};
 
-		/// build_views phase only. Returns the view's id, which is also its
-		/// visibility and readback query slot. A full frame returns id 0 in
-		/// release so a runaway feature aliases the main view instead of
-		/// indexing garbage.
+		/// Where each bucket's draws go in every view's argument buffer.
+		DrawBuckets buckets = {};
+
+		View views[MAX_FRAME_VIEWS]					  = {};
+		ViewConstants view_constants[MAX_FRAME_VIEWS] = {}; // bound at CONSTANTS_PASS when drawing a view
+		ViewVisibility visibility[MAX_FRAME_VIEWS]	  = {};
+		u32 view_count								  = 0;
+		bool views_locked							  = false;
+
+		/// build_views phase only. Returns the view's id, its index in views,
+		/// view_constants and visibility. A full frame returns id 0 in release so
+		/// a runaway feature aliases the main view instead of indexing garbage.
 		u32 add_view(const View& view) noexcept
 		{
 			EMBER_ASSERT(!views_locked && "views are fixed once culling starts");
@@ -90,8 +105,8 @@ namespace ember::render
 	};
 
 	/**
-	 * One composable unit of rendering policy, usually one shader family with
-	 * its passes and material storage. Features declare passes onto the graph
+	 * One composable unit of rendering policy: the world's surfaces, an upscale,
+	 * an overlay, each with its passes. Features declare passes onto the graph
 	 * and communicate through FrameResources or their own construction time
 	 * wiring; registration order is pass order, and that ordering is the
 	 * contract games control in one place.
@@ -131,11 +146,19 @@ namespace ember::render
 		Span<const u8> cull_shader = {};
 	};
 
+	/// Every object can be visible at once, so a view's argument buffer holds a draw for each.
 	[[nodiscard]] constexpr bool is_valid(const RendererDef& def) noexcept
 	{
-		return def.object_capacity != 0 && def.command_capacity != 0 && is_valid(def.geometry) &&
+		return def.object_capacity != 0 && def.command_capacity >= def.object_capacity && is_valid(def.geometry) &&
 			   is_valid(def.materials);
 	}
+
+	/// The app's frame, as render() needs it.
+	struct FrameTiming
+	{
+		u32 slot	   = 0;	   // the device's frame in flight, which per frame GPU resources index by
+		f32 delta_time = 0.0f; // seconds since the last frame
+	};
 
 	struct RenderOutput
 	{
@@ -153,11 +176,10 @@ namespace ember::render
 	 * order, capture counts, execute.
 	 *
 	 * Renderer policy is which features a game registers and how it configures
-	 * them; the mechanisms are never optional. Features own their shader
-	 * family state, material pools included. The game supplies per frame
-	 * inputs (view, output) and reaches owned state through accessors; hand
-	 * sim code the RenderScene& at wiring time so gameplay includes stay at
-	 * scene.h.
+	 * them; the mechanisms are never optional. Materials live in the registry,
+	 * which every feature draws from. The game supplies per frame inputs (view,
+	 * output, timing) and reaches owned state through accessors; hand sim code
+	 * the RenderScene& at wiring time so gameplay includes stay at scene.h.
 	 */
 	class Renderer
 	{
@@ -197,11 +219,13 @@ namespace ember::render
 		}
 
 		/**
-		 * Renders one frame: syncs the GPU mirrors, runs the feature phases and
-		 * executes the graph. scratch is the frame's render scratch; everything
-		 * the renderer allocates for the frame comes from it.
+		 * Renders one frame: syncs the GPU mirrors, lays out the draw buckets,
+		 * runs the feature phases and executes the graph. scratch is the frame's
+		 * render scratch; everything the renderer allocates for the frame comes
+		 * from it.
 		 */
-		void render(const View& main_view, const RenderOutput& output, u32 frame_slot, Arena& scratch) noexcept;
+		void render(const View& main_view, const RenderOutput& output, const FrameTiming& timing,
+					Arena& scratch) noexcept;
 
 		/// Debug: view 0 culls with this view while it is set, and features keep
 		/// rasterizing the main view. The freeze harness. The pointee outlives
@@ -229,23 +253,6 @@ namespace ember::render
 			return *m_device;
 		}
 
-		/// The registry's builtins under the names the pre-registry features use; they go when those
-		/// features do.
-		[[nodiscard]] TextureHandle white_texture() const noexcept
-		{
-			return m_materials.builtin(material::BuiltinTexture::White);
-		}
-
-		[[nodiscard]] SamplerHandle point_sampler() const noexcept
-		{
-			return m_materials.sampler(gpu::Filter::Nearest, gpu::AddressMode::Repeat);
-		}
-
-		[[nodiscard]] SamplerHandle linear_sampler() const noexcept
-		{
-			return m_materials.sampler(gpu::Filter::Linear, gpu::AddressMode::Repeat);
-		}
-
 	private:
 		struct FeatureEntry
 		{
@@ -256,6 +263,9 @@ namespace ember::render
 			// stay honest.
 			void (*destroy)(RenderFeature*) = nullptr;
 		};
+
+		[[nodiscard]] FrameConstants frame_constants(f32 delta_time) noexcept;
+		[[nodiscard]] DrawBuckets layout_buckets(Arena& scratch) noexcept;
 
 		gpu::Device* m_device = nullptr;
 
@@ -268,5 +278,8 @@ namespace ember::render
 
 		Vector<FeatureEntry> m_features;
 		const View* m_cull_override = nullptr;
+
+		f64 m_time		  = 0.0; // FrameConstants.time before it wraps
+		u32 m_frame_index = 0;
 	};
 }

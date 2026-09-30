@@ -6,12 +6,10 @@ ember_add_module(Render
 		geometry.cpp
 		gpu_scene.cpp
 		visibility.cpp
-		material.cpp
-		renderer.cpp
 		material_registry.cpp
-		features/mesh.cpp
+		renderer.cpp
+		features/surface.cpp
 		features/upscale.cpp
-		features/sprite.cpp
 	PUBLIC_DEPS
 		Ember::Gpu
 		Ember::Material
@@ -22,9 +20,9 @@ ember_embed_shaders(ember_render
 	HEADER ember/render/embedded_shaders.h
 	SHADERS
 		cull.slang
-		mesh.slang
-		sprite.slang
 		upscale.slang
 	MATERIALS
 		materials/error.slang
+		materials/unlit.slang
+		materials/sprite.slang
 )

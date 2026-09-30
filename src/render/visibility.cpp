@@ -8,31 +8,24 @@ namespace ember::render
 {
 	namespace
 	{
-		/// Slot 1 block for the cull dispatch, mirrored in cull.slang. std140
-		/// packs the trailing scalars tight after the vec4 array, so the C++
-		/// layout matches byte for byte.
+		/// The cull dispatch's view, mirrored in cull.slang. std140 packs the trailing scalars tight
+		/// after the vec4 array, so the C++ layout matches byte for byte.
 		struct CullConstants
 		{
-			glm::vec4 planes[6];
-			u32 objects;
-			u32 geometries;
-			u32 slot_count;
-			u32 layers;
+			glm::vec4 planes[6] = {};
+			u32 slot_count		= 0;
+			u32 layers			= 0;
+			u32 buckets			= 0;
+			u32 first_bucket	= 0;
 		};
+
 		static_assert(sizeof(CullConstants) == 112);
 
 		struct CullPush
 		{
-			u32 args_opaque;
-			u32 count_opaque;
-			u32 args_cutout;
-			u32 count_cutout;
+			u32 args;
+			u32 counts;
 		};
-
-		[[nodiscard]] constexpr u64 slot_count_bytes(u32 draws) noexcept
-		{
-			return u64{draws} * sizeof(gpu::DrawIndexedIndirectArgs);
-		}
 	}
 
 	void Visibility::init(gpu::Device& device, const VisibilityDef& def) noexcept
@@ -41,6 +34,7 @@ namespace ember::render
 		EMBER_ASSERT(is_valid(def));
 
 		m_command_capacity	 = def.command_capacity;
+		m_bucket_capacity	 = def.bucket_capacity;
 		m_max_indirect_draws = device.caps().max_indirect_draw_count;
 		m_use_count			 = device.caps().indirect_count;
 
@@ -61,94 +55,70 @@ namespace ember::render
 		m_cull = {};
 	}
 
-	ViewVisibility Visibility::cull(RenderGraph& graph, const GpuScene& gpu_scene, const GeometryPool& geometry,
-									const View& view) noexcept
+	ViewVisibility Visibility::cull(RenderGraph& graph, const FrameConstants& constants, const DrawBuckets& buckets,
+									u32 slot_count, const View& view) noexcept
 	{
 		EMBER_ASSERT(!m_cull.is_null() && "cull before init");
-
-		const u32 slot_count = gpu_scene.slot_count();
-
-		EMBER_ASSERT(slot_count <= m_command_capacity && "args capacity must cover every slot");
+		EMBER_ASSERT(buckets.draws <= m_command_capacity && "args capacity must cover every object");
+		EMBER_ASSERT(buckets.ranges.size() <= m_bucket_capacity && "counts capacity must cover every bucket");
 		EMBER_ASSERT(slot_count <= m_max_indirect_draws && "adapter cannot consume this many indirect draws");
 
-		// Two buckets keyed off the object cutout flag: solid geometry and
-		// alpha-tested sprites. Each sizes its args at capacity so the graph pool
-		// recycles buffers as the scene high water grows, and bounds its submit at
-		// the shared slot count.
-		const auto make_stream = [&](const char* args_name, const char* count_name) -> DrawStream
-		{
-			DrawStream stream;
-			stream.args			  = graph.create({
-				.name  = args_name,
+		// Both buffers keep one size whatever the scene holds, so the graph's pool hands the same
+		// ones back frame after frame instead of reallocating as objects come and go.
+		const ViewVisibility visibility{
+			.args	   = graph.create({
+				.name  = "cull.args",
 				.size  = u64{m_command_capacity} * sizeof(gpu::DrawIndexedIndirectArgs),
-				.usage = m_use_count
-							 ? gpu::BufferUsage::Storage | gpu::BufferUsage::Indirect
-							 : gpu::BufferUsage::Storage | gpu::BufferUsage::Indirect | gpu::BufferUsage::CopyDst,
-			});
-			stream.count		  = graph.create({
-				.name  = count_name,
-				.size  = sizeof(u32),
+				.usage = gpu::BufferUsage::Storage | gpu::BufferUsage::Indirect | gpu::BufferUsage::CopyDst,
+			}),
+			.counts	   = graph.create({
+				.name  = "cull.counts",
+				.size  = u64{m_bucket_capacity} * sizeof(u32),
 				.usage = gpu::BufferUsage::Storage | gpu::BufferUsage::Indirect | gpu::BufferUsage::CopySrc |
 						 gpu::BufferUsage::CopyDst,
-			});
-			stream.max_draw_count = slot_count;
-			stream.use_count	  = m_use_count;
-			return stream;
+			}),
+			.use_count = m_use_count,
 		};
 
-		ViewVisibility visibility;
-		visibility.opaque = make_stream("cull.opaque.args", "cull.opaque.count");
-		visibility.cutout = make_stream("cull.cutout.args", "cull.cutout.count");
-
-		const DrawStream opaque = visibility.opaque;
-		const DrawStream cutout = visibility.cutout;
+		const u32 bucket_bytes = static_cast<u32>(buckets.ranges.size() * sizeof(u32));
+		const u64 draw_bytes   = u64{buckets.draws} * sizeof(gpu::DrawIndexedIndirectArgs);
 
 		RenderGraph::Pass& clear = graph.pass("cull_clear");
-		clear.write(opaque.count, gpu::BufferState::CopyDst);
-		clear.write(cutout.count, gpu::BufferState::CopyDst);
+		clear.write(visibility.counts, gpu::BufferState::CopyDst);
 		if (!m_use_count)
-		{
-			clear.write(opaque.args, gpu::BufferState::CopyDst);
-			clear.write(cutout.args, gpu::BufferState::CopyDst);
-		}
+			clear.write(visibility.args, gpu::BufferState::CopyDst);
 
 		clear.record(
-			[opaque, cutout](gpu::CommandList& cmd, const PassContext& ctx)
+			[visibility, bucket_bytes, draw_bytes](gpu::CommandList& cmd, const PassContext& ctx)
 			{
-				cmd.fill_buffer(ctx.buffer(opaque.count), 0, sizeof(u32), 0);
-				cmd.fill_buffer(ctx.buffer(cutout.count), 0, sizeof(u32), 0);
+				if (bucket_bytes != 0)
+					cmd.fill_buffer(ctx.buffer(visibility.counts), 0, bucket_bytes, 0);
 
-				// Without indirect_count the drawn range must read as empty draws
-				// before compaction writes the head, in both buckets.
-				if (!opaque.use_count && slot_count_bytes(opaque.max_draw_count) > 0)
-				{
-					const u64 bytes = slot_count_bytes(opaque.max_draw_count);
-					cmd.fill_buffer(ctx.buffer(opaque.args), 0, bytes, 0);
-					cmd.fill_buffer(ctx.buffer(cutout.args), 0, bytes, 0);
-				}
+				// Without indirect_count every range is drawn to its capacity, so the entries the
+				// cull leaves unwritten must read as empty draws.
+				if (!visibility.use_count && draw_bytes != 0)
+					cmd.fill_buffer(ctx.buffer(visibility.args), 0, draw_bytes, 0);
 			});
 
-		CullConstants constants{
-			.objects	= gpu_scene.objects_index(),
-			.geometries = geometry.table_index(),
-			.slot_count = slot_count,
-			.layers		= view.layers,
+		CullConstants cull{
+			.slot_count	  = slot_count,
+			.layers		  = view.layers,
+			.buckets	  = buckets.table,
+			.first_bucket = buckets.first,
 		};
-		std::memcpy(constants.planes, view.frustum.planes, sizeof(constants.planes));
+		std::memcpy(cull.planes, view.frustum.planes, sizeof(cull.planes));
 
 		graph.pass("cull")
-			.write(opaque.args)
-			.write(opaque.count)
-			.write(cutout.args)
-			.write(cutout.count)
+			.write(visibility.args)
+			.write(visibility.counts)
 			.record(
-				[this, opaque, cutout, constants, slot_count](gpu::CommandList& cmd, const PassContext& ctx)
+				[this, visibility, constants, cull](gpu::CommandList& cmd, const PassContext& ctx)
 				{
 					cmd.set_pipeline(m_cull);
-					cmd.set_constants(1, constants);
-					cmd.set_push_constants(CullPush{ctx.bindless(opaque.args), ctx.bindless(opaque.count),
-													ctx.bindless(cutout.args), ctx.bindless(cutout.count)});
-					cmd.dispatch((slot_count + 63) / 64);
+					cmd.set_constants(CONSTANTS_FRAME, constants);
+					cmd.set_constants(CONSTANTS_PASS, cull);
+					cmd.set_push_constants(CullPush{ctx.bindless(visibility.args), ctx.bindless(visibility.counts)});
+					cmd.dispatch((cull.slot_count + 63) / 64);
 				});
 
 		return visibility;

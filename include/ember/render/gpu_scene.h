@@ -50,10 +50,10 @@ namespace ember::render
 	}
 
 	/**
-	 * Persistent GPU tables mirroring RenderScene: one ObjectData and one
-	 * TransformData slot per scene slot, addressed by the index the object's
-	 * handle carries. Culling and shading read only these tables, which is what
-	 * makes the scene GPU driven.
+	 * Persistent GPU tables mirroring RenderScene: one ObjectData, one
+	 * TransformData, and one InstanceData row per scene slot, addressed by the
+	 * index the object's handle carries. Culling and shading read only these
+	 * tables, which is what makes the scene GPU driven.
 	 *
 	 * sync() drains the scene's dirty list, sorts it, and stages one copy per
 	 * consecutive slot run and table. Uploads ride the staging ring inside the
@@ -74,7 +74,7 @@ namespace ember::render
 		{
 			u32 dirty_slots	  = 0;
 			u32 slot_runs	  = 0;
-			u32 copy_commands = 0; // two staged copies per run, one per table
+			u32 copy_commands = 0; // three staged copies per run, one per table
 			u64 bytes		  = 0;
 		};
 
@@ -100,6 +100,7 @@ namespace ember::render
 		/// Bindless slots for shaders; slot i of each table is scene slot i.
 		[[nodiscard]] u32 objects_index() const noexcept { return bindless_index(m_objects); }
 		[[nodiscard]] u32 transforms_index() const noexcept { return bindless_index(m_transforms); }
+		[[nodiscard]] u32 instances_index() const noexcept { return bindless_index(m_instances); }
 
 		/**
 		 * High water of the mirror as of the last sync: GPU passes iterate
@@ -113,6 +114,7 @@ namespace ember::render
 	private:
 		BufferHandle m_objects	  = {};
 		BufferHandle m_transforms = {};
+		BufferHandle m_instances  = {};
 
 		u32 m_capacity		  = 0;
 		u32 m_slot_count	  = 0;

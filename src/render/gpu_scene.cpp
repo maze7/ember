@@ -27,6 +27,12 @@ namespace ember::render
 			.usage = gpu::BufferUsage::Storage,
 		});
 
+		m_instances = device.create_buffer({
+			.name  = "gpu_scene.instances",
+			.size  = u64{def.object_capacity} * sizeof(InstanceData),
+			.usage = gpu::BufferUsage::Storage,
+		});
+
 		if (m_objects.is_null() || m_transforms.is_null())
 		{
 			EMBER_ERROR("gpu scene table creation failed");
@@ -36,10 +42,9 @@ namespace ember::render
 
 	void GpuScene::shutdown(gpu::Device& device) noexcept
 	{
-		if (!m_objects.is_null())
-			device.destroy(m_objects);
-		if (!m_transforms.is_null())
-			device.destroy(m_transforms);
+		device.destroy(m_objects);
+		device.destroy(m_transforms);
+		device.destroy(m_instances);
 
 		m_objects	 = {};
 		m_transforms = {};
@@ -67,14 +72,19 @@ namespace ember::render
 		std::memcpy(slots, dirty.data(), count * sizeof(u32));
 		std::sort(slots, slots + count);
 
-		// Transforms sit inside the scene's cold stride, so they gather into a
-		// packed copy once, in sorted order. Object records upload straight from
-		// pool storage because a slot run is contiguous there.
+		// Transforms and per-object data sit inside the scene's cold stride, so
+		// they gather into packed copies once, in sorted order. Object records
+		// upload straight from pool storage because a slot run is contiguous there.
 		auto* transforms =
 			static_cast<TransformData*>(scratch.allocate_fast(count * sizeof(TransformData), alignof(TransformData)));
+		auto* instances =
+			static_cast<InstanceData*>(scratch.allocate_fast(count * sizeof(InstanceData), alignof(InstanceData)));
 
 		for (u32 i = 0; i < count; ++i)
+		{
 			transforms[i] = scene.transform(slots[i]);
+			instances[i]  = scene.instance(slots[i]);
+		}
 
 		u32 cursor = 0;
 
@@ -88,10 +98,13 @@ namespace ember::render
 				device.update_buffer(m_transforms, u64{first} * sizeof(TransformData),
 									 {reinterpret_cast<const u8*>(transforms + cursor), run * sizeof(TransformData)});
 
+				device.update_buffer(m_instances, u64{first} * sizeof(InstanceData),
+									 {reinterpret_cast<const u8*>(instances + cursor), run * sizeof(InstanceData)});
+
 				cursor += run;
 				m_last_sync.slot_runs += 1;
-				m_last_sync.copy_commands += 2;
-				m_last_sync.bytes += run * (sizeof(ObjectData) + sizeof(TransformData));
+				m_last_sync.copy_commands += 3;
+				m_last_sync.bytes += run * (sizeof(ObjectData) + sizeof(TransformData) + sizeof(InstanceData));
 			});
 
 		m_last_sync.dirty_slots = count;

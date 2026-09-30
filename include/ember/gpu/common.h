@@ -55,6 +55,11 @@ namespace ember
 	inline constexpr u32 ALL_MIPS			   = ~0u;
 	inline constexpr u32 ALL_LAYERS			   = ~0u;
 
+	/// Set 1's constant blocks, by how often they change: shaders/ember.slang's CONSTANTS_*.
+	inline constexpr u32 CONSTANTS_FRAME = 0;
+	inline constexpr u32 CONSTANTS_PASS	 = 1;
+	inline constexpr u32 CONSTANTS_DRAW	 = 2;
+
 	/// Command lists one frame may open. Each owns a command pool and a slice of the timestamp
 	/// pool, so recording jobs never share either.
 	inline constexpr u32 MAX_COMMAND_LISTS = 32;

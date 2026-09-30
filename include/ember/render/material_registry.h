@@ -59,6 +59,27 @@ namespace ember::render
 	/// table, so the error key is zero, and a zeroed row is the error.
 	inline constexpr u32 ERROR_MATERIAL_KEY = 0;
 
+	/// The material types that ship with the engine, cooked into Ember::Render and registered at
+	/// init, so a game draws without writing a type and ship builds need no files for them.
+	enum class StockType : u8
+	{
+		Unlit,	// shaders/materials/unlit.slang: texture, tint and vertex colour, no lighting
+		Sprite, // shaders/materials/sprite.slang: alpha-tested cards with a per-object atlas frame
+		Count,
+	};
+
+	/**
+	 * Where one bucket's draws go in a view's argument buffer: its first entry, and how many it can
+	 * hold, which is how many objects use a material of its type. Mirrored in shaders/cull.slang.
+	 */
+	struct BucketRange
+	{
+		u32 first	 = 0;
+		u32 capacity = 0;
+	};
+
+	static_assert(sizeof(BucketRange) == 8);
+
 	/**
 	 * Walks maximal runs of consecutive slots in one bucket through an ascending list of material
 	 * keys, calling fn(bucket, first_slot, count) per run: each is one copy into one type's table.
@@ -169,8 +190,8 @@ namespace ember::render
 		MaterialRegistry(const MaterialRegistry&)			 = delete;
 		MaterialRegistry& operator=(const MaterialRegistry&) = delete;
 
-		/// Creates the key table, the builtin textures and samplers, and the error type and material
-		/// from the copy cooked into Ember::Render. Runs once.
+		/// Creates the key table and the builtin textures and samplers, and registers the types cooked
+		/// into Ember::Render: the error type and material first, then the stock types. Runs once.
 		void init(gpu::Device& device, const MaterialRegistryDef& def) noexcept;
 
 		/// Destroys every GPU object the registry made and drops the remaining types. Destroy
@@ -243,6 +264,29 @@ namespace ember::render
 		/// Per-object data a new object of the type starts with: its Instance layout's [Default]s.
 		[[nodiscard]] Span<const u8> instance_defaults(MaterialTypeHandle handle) const noexcept;
 
+		/// The same, for an object of this material. Empty for a dead material, whose objects draw the
+		/// error type, which has no per-object data.
+		[[nodiscard]] Span<const u8> instance_defaults(MaterialHandle material) const noexcept
+		{
+			return instance_defaults(type_of(material));
+		}
+
+		/**
+		 * Lays this frame's buckets out end to end in one argument buffer: each bucket's capacity is
+		 * the number of objects using a material of its type, `users` counting objects per material
+		 * index. Writes a range for every bucket into `out`, bucket_count() of them, and returns the
+		 * draws they hold together. An object whose material is gone counts where its row now points,
+		 * toward the error type.
+		 */
+		u32 layout_buckets(Span<const u32> users, Span<BucketRange> out) const noexcept;
+
+		/// Calls fn(handle, type, generation) for every live type, in bucket order.
+		template <class Fn> void for_each_type(Fn&& fn) const noexcept
+		{
+			for (auto it = m_types.begin(); it != m_types.end(); ++it)
+				fn(it.handle(), it->type, it->generation);
+		}
+
 		/// The key table's row for the handle's index, as the next sync uploads it.
 		[[nodiscard]] u32 key(MaterialHandle material) const noexcept;
 
@@ -255,6 +299,17 @@ namespace ember::render
 
 		[[nodiscard]] MaterialTypeHandle error_type() const noexcept { return m_error_type; }
 		[[nodiscard]] MaterialHandle error_material() const noexcept { return m_error; }
+
+		[[nodiscard]] MaterialTypeHandle stock_type(StockType type) const noexcept
+		{
+			return m_stock[static_cast<size_t>(type)];
+		}
+
+		/// One per type slot, live or not: a key's bucket always has a range.
+		[[nodiscard]] u32 bucket_count() const noexcept { return m_types.capacity(); }
+
+		/// Material indices a handle can carry: the key table's rows.
+		[[nodiscard]] u32 material_capacity() const noexcept { return m_materials.capacity(); }
 
 		[[nodiscard]] u32 type_count() const noexcept { return m_types.size(); }
 		[[nodiscard]] u32 material_count() const noexcept { return m_materials.size(); }
@@ -333,8 +388,9 @@ namespace ember::render
 		TextureHandle m_builtins[static_cast<size_t>(material::BuiltinTexture::Count)] = {};
 		SamplerHandle m_samplers[FILTERS][WRAPS]									   = {};
 
-		MaterialTypeHandle m_error_type = {};
-		MaterialHandle m_error			= {};
-		u32 m_initial_records			= 16;
+		MaterialTypeHandle m_error_type									  = {};
+		MaterialHandle m_error											  = {};
+		MaterialTypeHandle m_stock[static_cast<size_t>(StockType::Count)] = {};
+		u32 m_initial_records											  = 16;
 	};
 }

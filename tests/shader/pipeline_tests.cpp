@@ -163,9 +163,6 @@ TEST_F(Pipelines, ThePlainProgramsCompileToValidPipelinesToo)
 	for (const char* name : {"upscale.slang", "imgui.slang"})
 		expect_graphics(name, compile_program(name).bytecode(), "fs_main", true, false);
 
-	for (const char* name : {"mesh.slang", "sprite.slang"})
-		expect_graphics(name, compile_program(name).bytecode(), "fs_main", true, true);
-
 	m_device.wait_idle();
 	EXPECT_EQ(gpu::Device::validation_error_count() - m_errors, 0u);
 }

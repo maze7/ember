@@ -1,8 +1,10 @@
 #include <ember/render/scene.h>
 
+#include <glm/gtc/matrix_transform.hpp>
 #include <gtest/gtest.h>
 
-#include <glm/gtc/matrix_transform.hpp>
+#include <algorithm>
+#include <cstring>
 
 namespace
 {
@@ -254,4 +256,58 @@ namespace
 			"assert");
 	}
 #endif
+}
+
+TEST(RenderScene, CountsTheObjectsNamingEachMaterial)
+{
+	RenderScene scene;
+	scene.init(8);
+
+	const auto a = scene.create_object({.material = {1, 1}});
+	const auto b = scene.create_object({.material = {1, 1}});
+	(void)scene.create_object({.material = {2, 1}});
+
+	EXPECT_EQ(scene.material_users()[1], 2u);
+	EXPECT_EQ(scene.material_users()[2], 1u);
+
+	scene.set_material(b, {2, 1});
+	scene.destroy_object(a);
+
+	EXPECT_EQ(scene.material_users()[1], 0u);
+	EXPECT_EQ(scene.material_users()[2], 2u);
+}
+
+TEST(RenderScene, PerObjectDataBelongsToTheObject)
+{
+	struct Frame
+	{
+		glm::vec4 rect;
+		float flash;
+	};
+
+	RenderScene scene;
+	scene.init(4);
+
+	const Frame first{{0.25f, 0.0f, 0.5f, 1.0f}, 0.0f};
+	const auto object = scene.create_object({
+		.material = {1, 1},
+		.instance = {reinterpret_cast<const ember::u8*>(&first), sizeof(first)},
+	});
+
+	EXPECT_EQ(std::memcmp(scene.instance(object.index).bytes, &first, sizeof(first)), 0);
+	scene.clear_dirty();
+
+	// A write replaces the row and rides the dirty stream; a shorter one zeroes what it leaves.
+	scene.set_instance(object, Frame{{0.0f, 0.0f, 1.0f, 1.0f}, 1.0f});
+	EXPECT_EQ(dirty_vector(scene), (std::vector<u32>{object.index}));
+
+	scene.set_instance(object, u32{7});
+
+	const InstanceData& row = scene.instance(object.index);
+	EXPECT_EQ(row.bytes[0], 7u);
+	EXPECT_TRUE(std::all_of(row.bytes + 4, std::end(row.bytes), [](ember::u8 b) { return b == 0; }));
+
+	// Another material leaves the object's data as it was.
+	scene.set_material(object, {2, 1});
+	EXPECT_EQ(scene.instance(object.index).bytes[0], 7u);
 }

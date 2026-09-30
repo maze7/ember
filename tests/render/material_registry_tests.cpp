@@ -431,3 +431,45 @@ TEST_F(Materials, OnlyLiveSurfaceTypesKeyToTheirOwnBucket)
 	EXPECT_FALSE(m_registry.set(orphan, "id", 1u));
 	sync(); // retires the removed type's table
 }
+
+TEST_F(Materials, TheStockTypesShipWithTheEngine)
+{
+	const material::Type* unlit	 = m_registry.type(m_registry.stock_type(StockType::Unlit));
+	const material::Type* sprite = m_registry.type(m_registry.stock_type(StockType::Sprite));
+
+	ASSERT_NE(unlit, nullptr);
+	ASSERT_NE(sprite, nullptr);
+	EXPECT_EQ(unlit->name, "Unlit");
+	EXPECT_EQ(sprite->name, "Sprite");
+	EXPECT_EQ(sprite->state.queue, material::Queue::Cutout);
+
+	// A sprite shows its whole texture until the game picks a frame.
+	const MaterialHandle card = make(m_registry.stock_type(StockType::Sprite));
+	EXPECT_EQ(read<glm::vec4>(m_registry.instance_defaults(card), 0), glm::vec4(0.0f, 0.0f, 1.0f, 1.0f));
+}
+
+TEST_F(Materials, BucketsLieEndToEndSizedByTheirObjects)
+{
+	const MaterialTypeHandle type = m_registry.add_type(make_type("Counted", {number("id", ParamKind::Uint, 1, 0)}, 4));
+	const MaterialTypeHandle sprite = m_registry.stock_type(StockType::Sprite);
+
+	const MaterialHandle a	  = make(type);
+	const MaterialHandle b	  = make(type);
+	const MaterialHandle card = make(sprite);
+
+	std::vector<u32> users(m_registry.material_capacity(), 0);
+	users[a.index]	  = 2;
+	users[b.index]	  = 3;
+	users[card.index] = 4;
+	users[40]		  = 1; // an index no material holds: its row names the error type
+
+	std::vector<BucketRange> ranges(m_registry.bucket_count());
+	EXPECT_EQ(m_registry.layout_buckets({users.data(), users.size()}, {ranges.data(), ranges.size()}), 10u);
+
+	EXPECT_EQ(ranges[m_registry.error_type().index].capacity, 1u);
+	EXPECT_EQ(ranges[type.index].capacity, 5u);
+	EXPECT_EQ(ranges[sprite.index].capacity, 4u);
+
+	for (size_t i = 1; i < ranges.size(); ++i)
+		EXPECT_EQ(ranges[i].first, ranges[i - 1].first + ranges[i - 1].capacity) << i;
+}

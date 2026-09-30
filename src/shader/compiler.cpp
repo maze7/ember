@@ -457,35 +457,53 @@ namespace ember::shader
 			if (report.failed())
 				return false;
 
-			// The one module the compiler writes: exports that give the entry module's link-time
-			// types their definitions. It imports the author's module by its session name, so no
-			// file an author writes ever names it.
-			String glue(&tools());
-			fmt::format_to(std::back_inserter(glue),
+			// The modules the compiler writes: one export each, giving the entry module's link-time
+			// types their definitions. Each imports only what its export names, so a type may share
+			// its name with a shading model (a type called Unlit is natural) without making either
+			// export ambiguous. The material glue imports the author's module by its session name, so
+			// no file an author writes ever names it.
+			String material_glue(&tools());
+			fmt::format_to(std::back_inserter(material_glue),
 						   "import material;\nimport {};\nexport struct Material : {} = {};\n", module->getName(),
 						   DOMAIN_INTERFACES[static_cast<size_t>(out.domain)], out.name);
 
-			if (out.domain == material::Domain::Surface)
-				fmt::format_to(std::back_inserter(glue),
-							   "import shading;\nexport struct Shading : IShadingModel = {};\n", out.state.shading);
-
 			String glue_path(file, &tools());
-			glue_path += "#link";
+			glue_path += "#material";
 
-			slang::IModule* link_module = load("link", glue_path, glue, report);
+			slang::IModule* material_link = load("link", glue_path, material_glue, report);
 
-			if (link_module == nullptr)
+			if (material_link == nullptr)
 			{
 				report.error(file,
-							 "'{}' must be visible to the engine: leave out any `module` line, or declare it "
-							 "`public`",
+							 "'{}' cannot be linked: it must be visible to the engine (leave out any `module` "
+							 "line, or declare it `public`) and not share a name with the authoring API",
 							 out.name);
 				return false;
 			}
 
-			slang::IComponentType* parts[]			   = {entry, module, link_module};
-			const ComPtr<slang::IComponentType> linked = link(entry, parts, file, out.spirv, report);
+			slang::IComponentType* parts[4] = {entry, module, material_link};
+			u32 part_count					= 3;
 
+			if (out.domain == material::Domain::Surface)
+			{
+				String shading_glue(&tools());
+				fmt::format_to(std::back_inserter(shading_glue),
+							   "import shading;\nexport struct Shading : IShadingModel = {};\n", out.state.shading);
+
+				glue_path = file;
+				glue_path += "#shading";
+
+				// resolve_shading() found this model among the engine's, so only a broken engine
+				// module fails here, and Slang has said why.
+				slang::IModule* shading_link = load("link", glue_path, shading_glue, report);
+
+				if (shading_link == nullptr)
+					return false;
+
+				parts[part_count++] = shading_link;
+			}
+
+			const ComPtr<slang::IComponentType> linked = link(entry, {parts, part_count}, file, out.spirv, report);
 			if (!linked)
 				return false;
 

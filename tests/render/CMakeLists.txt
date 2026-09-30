@@ -6,5 +6,9 @@ ember_add_test_suite(ember_render_tests render
 	view_tests.cpp
 )
 
-# Scene storage builds into Ember::Render; the suite defaults only link Core.
-target_link_libraries(ember_render_tests PRIVATE Ember::Render Ember::Jobs)
+target_link_libraries(ember_render_tests
+	PRIVATE
+		Ember::Render
+		Ember::Jobs
+		Ember::ShaderCompiler
+)

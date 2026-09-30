@@ -15,7 +15,6 @@ public static const uint INSTANCE_STRIDE = 32;
 /// Mirror of render::ObjectFlags.
 public static const uint OBJECT_FLAG_CASTS_SHADOW = 1u << 0;
 public static const uint OBJECT_FLAG_BILLBOARD    = 1u << 1;
-public static const uint OBJECT_FLAG_CUTOUT       = 1u << 2;
 
 public struct ObjectData
 {

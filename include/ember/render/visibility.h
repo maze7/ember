@@ -5,9 +5,9 @@
 #include <ember/gpu/buffer.h>
 #include <ember/gpu/command_list.h>
 #include <ember/gpu/common.h>
-#include <ember/render/geometry.h>
-#include <ember/render/gpu_scene.h>
+#include <ember/render/frame_constants.h>
 #include <ember/render/graph.h>
+#include <ember/render/material_registry.h>
 #include <ember/render/view.h>
 
 namespace ember::gpu
@@ -18,82 +18,89 @@ namespace ember::gpu
 namespace ember::render
 {
 	/**
-	 * One view's worth of GPU-produced draws: compacted indirect arguments and
-	 * the count the cull accumulated. Raster passes consume a stream without
-	 * knowing how it was produced.
+	 * The frame's draw buckets: each bucket's range in every view's argument buffer, on the CPU for
+	 * the passes that draw them and in the frame's slice of the transient ring for the cull.
 	 */
-	struct DrawStream
+	struct DrawBuckets
 	{
-		GraphBuffer args  = {}; // DrawIndexedIndirectArgs[capacity], compacted from the front
-		GraphBuffer count = {}; // one u32
-
-		/// The tightest bound the producer can emit this frame (the gpu scene's
-		/// slot count), and what the draw submits. The args buffer's capacity is
-		/// a producer detail.
-		u32 max_draw_count = 0;
-
-		bool use_count = false; // caps.indirect_count; without it the zeroed head draws empty
+		Span<const BucketRange> ranges = {}; // one per bucket, in the frame's scratch
+		u32 table					   = 0;	 // bindless index of the transient buffer holding the same ranges
+		u32 first					   = 0;	 // the element of bucket 0's range in it
+		u32 draws					   = 0;	 // every range together
 	};
 
+	/**
+	 * One view's GPU-produced draws: the cull wrote each visible object into its bucket's range of
+	 * the argument buffer and counted it. Raster passes consume them without knowing how they were
+	 * produced.
+	 */
 	struct ViewVisibility
 	{
-		DrawStream opaque = {}; // solid scene geometry
-		DrawStream cutout = {}; // alpha-tested sprites, drawn after opaque against its depth
+		GraphBuffer args   = {};	// DrawIndexedIndirectArgs, each bucket's from its range's first entry
+		GraphBuffer counts = {};	// one u32 per bucket
+		bool use_count	   = false; // caps.indirect_count; without it every range was cleared to empty draws
 	};
 
-	/// Declares a pass's consumption of a stream. The fallback draw never reads
-	/// the count buffer, so it is only an indirect argument when consumed.
-	inline void read(RenderGraph::Pass& pass, const DrawStream& stream) noexcept
+	/// Declares a pass's consumption of a view's draws. The fallback draw never reads the counts, so
+	/// they are only an indirect argument when consumed.
+	inline void read(RenderGraph::Pass& pass, const ViewVisibility& visibility) noexcept
 	{
-		pass.read(stream.args, gpu::BufferState::IndirectArgument);
+		pass.read(visibility.args, gpu::BufferState::IndirectArgument);
 
-		if (stream.use_count)
-			pass.read(stream.count, gpu::BufferState::IndirectArgument);
+		if (visibility.use_count)
+			pass.read(visibility.counts, gpu::BufferState::IndirectArgument);
 	}
 
-	/// Issues a stream's draws. The caller binds pipeline, constants and the
-	/// shared index buffer first; record callbacks take the (cmd, ctx) form so
-	/// the stream's graph buffers resolve.
-	inline void draw_indexed_stream(gpu::CommandList& cmd, const PassContext& ctx, const DrawStream& stream) noexcept
+	/// Issues one bucket's draws: one indirect multi-draw over its range. The caller binds the
+	/// bucket's pipeline, the constants and the shared index buffer first.
+	inline void draw_bucket(gpu::CommandList& cmd, const PassContext& ctx, const ViewVisibility& visibility, u32 bucket,
+							BucketRange range) noexcept
 	{
-		if (stream.max_draw_count == 0)
+		if (range.capacity == 0)
 			return;
 
-		if (stream.use_count)
+		const u64 offset = u64{range.first} * sizeof(gpu::DrawIndexedIndirectArgs);
+
+		if (visibility.use_count)
 		{
-			cmd.draw_indexed_indirect_count(ctx.buffer(stream.args), 0, ctx.buffer(stream.count), 0,
-											stream.max_draw_count);
+			cmd.draw_indexed_indirect_count(ctx.buffer(visibility.args), offset, ctx.buffer(visibility.counts),
+											u64{bucket} * sizeof(u32), range.capacity);
 		}
 		else
 		{
-			// The clear pass zeroed the drawn range, so entries past the
-			// compacted head cost only command processing.
-			cmd.draw_indexed_indirect(ctx.buffer(stream.args), 0, stream.max_draw_count);
+			// The clear pass zeroed every range, so entries past the cull's count cost only
+			// command processing.
+			cmd.draw_indexed_indirect(ctx.buffer(visibility.args), offset, range.capacity);
 		}
 	}
 
 	struct VisibilityDef
 	{
 		Span<const u8> cull_shader = {}; // cooked blob, entry cs_main
-		u32 command_capacity	   = 1u << 17;
+
+		/// Entries in a view's argument buffer: every object's draw, whichever bucket it lands in.
+		u32 command_capacity = 1u << 17;
+
+		/// Counters in a view's count buffer: the registry's bucket_count().
+		u32 bucket_capacity = 256;
 	};
 
 	[[nodiscard]] constexpr bool is_valid(const VisibilityDef& def) noexcept
 	{
-		return !def.cull_shader.empty() && def.command_capacity != 0;
+		return !def.cull_shader.empty() && def.command_capacity != 0 && def.bucket_capacity != 0;
 	}
 
 	/**
-	 * GPU frustum culling: one dispatch per view walks the object table and
-	 * compacts survivors into indirect draw arguments, keyed by the object slot
-	 * riding first_instance.
+	 * GPU frustum culling: one dispatch per view walks the object table and writes each survivor's
+	 * draw into the range its material's bucket owns, keyed by the object slot riding
+	 * first_instance. The ranges are laid out on the CPU from how many objects use each material,
+	 * so one pass sorts any number of objects into any number of buckets, with one atomic each and
+	 * no second pass to compact them.
 	 *
-	 * The scene tables are read bindlessly and stay outside the graph; the
-	 * staging batch barriers already order every sync write before this frame's
-	 * dispatches. The streams are graph transients, so clear, cull write and
-	 * indirect consumption all get derived barriers.
-	 *
-	 * Instrumentation lives in VisibilityReadback and is opt in per stream.
+	 * The scene tables are read bindlessly and stay outside the graph; the staging batch barriers
+	 * already order every sync write before this frame's dispatches. The argument and count buffers
+	 * are graph transients of fixed size, so the pool recycles them however the scene changes, and
+	 * clear, cull write and indirect consumption all get derived barriers.
 	 */
 	class Visibility
 	{
@@ -109,19 +116,16 @@ namespace ember::render
 		/// Destroys it. Call before the device goes down.
 		void shutdown(gpu::Device& device) noexcept;
 
-		/// Adds the clear and cull passes for one view and returns the streams
-		/// its raster consumers read.
-		[[nodiscard]] ViewVisibility cull(RenderGraph& graph, const GpuScene& gpu_scene, const GeometryPool& geometry,
-										  const View& view) noexcept;
+		/// Adds the clear and cull passes for one view and returns the draws its raster passes read.
+		[[nodiscard]] ViewVisibility cull(RenderGraph& graph, const FrameConstants& constants,
+										  const DrawBuckets& buckets, u32 slot_count, const View& view) noexcept;
 
 	private:
 		ComputePipelineHandle m_cull = {};
 
 		u32 m_command_capacity	 = 0;
+		u32 m_bucket_capacity	 = 0;
 		u32 m_max_indirect_draws = 0; // adapter ceiling for submitted draw counts
 		bool m_use_count		 = false;
 	};
-
-	/// Query slots let several streams (main view, cascades) capture per frame.
-	inline constexpr u32 VISIBILITY_QUERY_SLOTS = 8;
 }
