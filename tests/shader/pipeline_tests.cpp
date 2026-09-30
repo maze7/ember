@@ -77,6 +77,26 @@ namespace
 			m_device.destroy(pipeline);
 		}
 
+		/// What the surface feature draws shadow maps with: depth only, biased away from the light
+		/// and clamped rather than clipped.
+		void expect_shadow(const char* name, Span<const u8> code)
+		{
+			const GraphicsPipelineHandle pipeline = m_device.create_graphics_pipeline({
+				.name		  = name,
+				.vertex		  = {.code = code, .entry = material::VERTEX_ENTRY},
+				.fragment	  = {.code = code, .entry = material::DEPTH_ENTRY},
+				.color_count  = 0,
+				.depth_format = gpu::TextureFormat::D32Float,
+				.depth_test	  = true,
+				.depth_write  = true,
+				.depth_bias	  = {.slope = -2.0f},
+				.depth_clamp  = true,
+			});
+
+			EXPECT_FALSE(pipeline.is_null()) << name;
+			m_device.destroy(pipeline);
+		}
+
 		gpu::Device m_device{gpu::DeviceDef{.enable_validation = true, .adapter = gpu::AdapterPreference::Any}};
 		shader::Compiler m_compiler;
 		u32 m_errors = 0;
@@ -144,6 +164,7 @@ struct Palette : IScreenMaterial
 	{
 		expect_graphics(type->name.c_str(), type->bytecode(), material::COLOR_ENTRY, true, true);
 		expect_graphics(type->name.c_str(), type->bytecode(), material::DEPTH_ENTRY, false, true);
+		expect_shadow(type->name.c_str(), type->bytecode());
 	}
 
 	expect_graphics(screen.name.c_str(), screen.bytecode(), material::COLOR_ENTRY, true, false);

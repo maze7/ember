@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace
@@ -15,6 +16,7 @@ namespace
 	static_assert(sizeof(RenderObjectHandle) == 8);
 	static_assert(sizeof(GeometryHandle) == 4);
 	static_assert(sizeof(MaterialHandle) == 4);
+	static_assert(sizeof(LightHandle) == 4);
 
 	[[nodiscard]] std::vector<u32> dirty_vector(const RenderScene& scene)
 	{
@@ -27,6 +29,7 @@ namespace
 		RenderScene scene;
 
 		EXPECT_TRUE(scene.create_object({}).is_null());
+		EXPECT_TRUE(scene.create_light({}).is_null());
 		EXPECT_EQ(scene.object_count(), 0u);
 		EXPECT_EQ(scene.slot_count(), 0u);
 	}
@@ -310,4 +313,70 @@ TEST(RenderScene, PerObjectDataBelongsToTheObject)
 	// Another material leaves the object's data as it was.
 	scene.set_material(object, {2, 1});
 	EXPECT_EQ(scene.instance(object.index).bytes[0], 7u);
+}
+
+TEST(RenderScene, LightsPackIntoWhatTheShadersRead)
+{
+	// A directional light keeps its direction, normalised, and its colour: linear, times intensity.
+	const LightData sun = pack_light({
+		.type	   = LightType::Directional,
+		.position  = {1.0f, 2.0f, 3.0f},
+		.direction = {0.0f, -2.0f, 0.0f},
+		.color	   = {1.0f, 0.5f, 0.0f},
+		.intensity = 2.0f,
+	});
+
+	EXPECT_EQ(sun.range, 0.0f);
+	EXPECT_EQ(sun.flags, 0u);
+	EXPECT_EQ(pack_light({.casts_shadow = true}).flags, LIGHT_CASTS_SHADOW);
+	EXPECT_EQ(sun.position, glm::vec3(0.0f));
+	EXPECT_EQ(sun.direction, glm::vec3(0.0f, -1.0f, 0.0f));
+	EXPECT_FLOAT_EQ(sun.color.r, 2.0f);
+	EXPECT_NEAR(sun.color.g, 0.4280f, 1e-4f); // sRGB 0.5 is linear 0.2140
+	EXPECT_EQ(sun.color.b, 0.0f);
+
+	// A point light's cone is the identity remap: every direction at full strength. Its falloff
+	// counts distance in source radii.
+	const LightData bulb = pack_light({.position = {1.0f, 2.0f, 3.0f}, .range = 5.0f, .source_radius = 4.0f});
+
+	EXPECT_EQ(bulb.position, glm::vec3(1.0f, 2.0f, 3.0f));
+	EXPECT_EQ(bulb.range, 5.0f);
+	EXPECT_EQ(bulb.cone_scale, 0.0f);
+	EXPECT_EQ(bulb.cone_offset, 1.0f);
+	EXPECT_EQ(bulb.falloff, 1.0f / 16.0f);
+
+	// A spot's remap takes the inner angle's cosine to 1 and the outer angle's to 0.
+	const LightData spot = pack_light({.type = LightType::Spot, .inner_angle = 0.2f, .outer_angle = 0.6f});
+
+	EXPECT_NEAR(std::cos(0.2f) * spot.cone_scale + spot.cone_offset, 1.0f, 1e-4f);
+	EXPECT_NEAR(std::cos(0.6f) * spot.cone_scale + spot.cone_offset, 0.0f, 1e-4f);
+}
+
+TEST(RenderScene, LightsCopyOutDenseAndFillToCapacity)
+{
+	RenderScene scene;
+	scene.init(1, nullptr, 3);
+
+	const LightHandle a = scene.create_light({.range = 1.0f});
+	const LightHandle b = scene.create_light({.range = 2.0f});
+	const LightHandle c = scene.create_light({.range = 3.0f});
+
+	EXPECT_TRUE(scene.create_light({}).is_null());
+	EXPECT_EQ(scene.light_count(), 3u);
+
+	// A destroyed light leaves no hole in the copy.
+	scene.destroy_light(b);
+	EXPECT_FALSE(scene.is_valid(b));
+	EXPECT_TRUE(scene.is_valid(a));
+
+	LightData lights[3] = {};
+	ASSERT_EQ(scene.copy_lights(lights), 2u);
+	EXPECT_EQ(lights[0].range, 1.0f);
+	EXPECT_EQ(lights[1].range, 3.0f);
+
+	// set_light replaces the record whole, and a short span takes what fits.
+	scene.set_light(c, {.range = 7.0f});
+	ASSERT_EQ(scene.copy_lights({lights, 1}), 1u);
+	ASSERT_EQ(scene.copy_lights(lights), 2u);
+	EXPECT_EQ(lights[1].range, 7.0f);
 }

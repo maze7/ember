@@ -6,6 +6,8 @@ ember_add_test_suite(ember_render_tests render
 	view_tests.cpp
 	material_registry_tests.cpp
 	features/surface_tests.cpp
+	features/lighting_tests.cpp
+	features/shadow_tests.cpp
 )
 
 target_link_libraries(ember_render_tests

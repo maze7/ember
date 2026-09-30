@@ -244,7 +244,7 @@ struct Glass : IMaterial
 	EXPECT_EQ(m_type.state.blend, gpu::BlendPreset::AlphaBlend);
 	EXPECT_FALSE(m_type.state.depth_write);
 	EXPECT_FALSE(m_type.state.casts_shadow);
-	EXPECT_EQ(m_type.state.shading, "Lit"); // the default model
+	EXPECT_EQ(m_type.state.shading, "Standard"); // the default model
 }
 
 TEST_F(Compiling, ListsWhatAnAttributeAccepts)
@@ -393,17 +393,17 @@ TEST_F(Compiling, MatchesShadingModelsIgnoringCase)
 {
 	ASSERT_TRUE(compile("loud.slang", R"(
 import material;
-[Shading("LIT")]
+[Shading("PIXEL")]
 struct Loud : IMaterial { void surface(SurfaceInput s, inout Surface out) {} };
 )")) << m_diagnostics;
-	EXPECT_EQ(m_type.state.shading, "Lit");
+	EXPECT_EQ(m_type.state.shading, "Pixel");
 
 	EXPECT_FALSE(compile("toon.slang", R"(
 import material;
 [Shading("toon")]
 struct Toon : IMaterial { void surface(SurfaceInput s, inout Surface out) {} };
 )"));
-	EXPECT_TRUE(said("shading model 'toon' is not one of: unlit, lit")) << m_diagnostics;
+	EXPECT_TRUE(said("shading model 'toon' is not one of: unlit, pixel, standard")) << m_diagnostics;
 }
 
 TEST_F(Compiling, RefusesEngineImportsFromMaterialsAndTheirLibraries)
@@ -536,13 +536,13 @@ TEST_F(Compiling, ListsEveryFileTheCompileRead)
 
 TEST_F(Compiling, ATypeMayShareItsNameWithAShadingModel)
 {
-	// Each link-time export is written in a module of its own, so neither sees the other's Lit.
-	ASSERT_TRUE(compile("lit.slang", "import material;\nstruct Lit : IMaterial { void surface(SurfaceInput s, "
-									 "inout Surface out) {} };\n"))
+	// Each link-time export is written in a module of its own, so neither sees the other's Standard.
+	ASSERT_TRUE(compile("standard.slang", "import material;\nstruct Standard : IMaterial { void surface(SurfaceInput "
+										  "s, inout Surface out) {} };\n"))
 		<< m_diagnostics;
 
-	EXPECT_EQ(m_type.name, "Lit");
-	EXPECT_EQ(m_type.state.shading, "Lit");
+	EXPECT_EQ(m_type.name, "Standard");
+	EXPECT_EQ(m_type.state.shading, "Standard");
 }
 
 TEST_F(Compiling, CompilesTheEnginesPlainPrograms)
