@@ -215,6 +215,9 @@ namespace
 			m_assets.register_type<PartAsset>("part", &m_registry);
 			m_assets.register_type<ListAsset>("list");
 			m_assets.register_type<SelfReadAsset>("self read");
+
+			BytesAsset::unloads = 0;
+			ListAsset::loads	= 0;
 		}
 
 		void TearDown() override
