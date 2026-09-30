@@ -195,3 +195,28 @@ TEST(ParamValues, ParseTheWayFilesWriteThem)
 	param.kind = ParamKind::Texture2D;
 	EXPECT_FALSE(parse_value(param, "0", words)); // textures are named, not numbered
 }
+
+TEST(CookedPair, JoinsOnlyTheBytecodeItWasCookedWith)
+{
+	const Type written = full_type();
+
+	String text;
+	ASSERT_TRUE(write_type(written, text));
+
+	Type read;
+	String error;
+	ASSERT_TRUE(read_cooked(text, written.bytecode(), read, error)) << error;
+	EXPECT_EQ(read.spirv, written.spirv);
+	EXPECT_EQ(read.hash, written.hash);
+
+	// The .spv of another cook: one word differs, and the stored hash says so.
+	Type other = written;
+	other.spirv.back() ^= 1u;
+
+	EXPECT_FALSE(read_cooked(text, other.bytecode(), read, error));
+	EXPECT_NE(error.find("cook it again"), String::npos) << error;
+
+	// Bytes that are not whole words are not SPIR-V at all.
+	EXPECT_FALSE(read_cooked(text, written.bytecode().first(7), read, error));
+	EXPECT_FALSE(read_cooked(text, {}, read, error));
+}

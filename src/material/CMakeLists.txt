@@ -6,5 +6,5 @@ ember_add_module(Material
 	SOURCES
 		type.cpp
 	PUBLIC_DEPS
-		Ember::Gpu
+		Ember::GpuTypes
 )

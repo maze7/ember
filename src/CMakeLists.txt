@@ -80,7 +80,7 @@ target_link_libraries(ember INTERFACE
 	$<$<BOOL:${EMBER_ENABLE_APP}>:Ember::App>
 	$<$<BOOL:${EMBER_ENABLE_GRAPHICS}>:Ember::Gpu>
 	$<$<BOOL:${EMBER_ENABLE_GRAPHICS}>:Ember::Render>
-	$<$<BOOL:${EMBER_ENABLE_GRAPHICS}>:Ember::ShaderCompiler>
+	$<$<AND:$<BOOL:${EMBER_ENABLE_GRAPHICS}>,$<BOOL:${EMBER_SHADER_COMPILER}>>:Ember::ShaderCompiler>
 	$<$<BOOL:${EMBER_ENABLE_GRAPHICS}>:Ember::Material>
 	$<$<BOOL:${EMBER_ENABLE_ASSETS}>:Ember::Assets>
 )

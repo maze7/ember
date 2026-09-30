@@ -23,4 +23,6 @@ ember_embed_shaders(ember_render
 		mesh.slang
 		sprite.slang
 		upscale.slang
+	MATERIALS
+		materials/error.slang
 )

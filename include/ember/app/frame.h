@@ -34,14 +34,16 @@ namespace ember
 		/** The input devices as they stood when the frame began. Copied. */
 		InputState input = {};
 
-		/// The window's drawable size when the frame began, zero while minimized. What update()
-		/// sizes its views by; render() gets the backbuffer's actual extent below.
+		/**
+		 * The window's drawable size when the frame began, zero while minimized. What update()
+		 * sizes its views by; render() gets the backbuffer's actual extent below.
+		 */
 		Extent2D window_extent = {};
 
 		TextureHandle backbuffer   = {}; // null when the frame has no drawable and render() is skipped.
 		Extent2D backbuffer_extent = {};
 
-		/// update()'s hand-off to render(), set by publish() and read through payload().
+		/** update()'s hand-off to render(), set by publish() and read through payload(). */
 		const void* published = nullptr;
 
 		/**
@@ -63,7 +65,7 @@ namespace ember
 		Arena& sim_to_render;  // MemoryLifetime::SimToRender
 		Arena& render_scratch; // MemoryLifetime::RenderScratch
 
-		/// Milliseconds a stage took, zero while it runs or when it did not run.
+		/** Milliseconds a stage took, zero while it runs or when it did not run. */
 		[[nodiscard]] f32 update_ms() const noexcept { return stage_ms(update_begin_ns, update_end_ns); }
 		[[nodiscard]] f32 render_ms() const noexcept { return stage_ms(render_begin_ns, render_end_ns); }
 
@@ -82,7 +84,7 @@ namespace ember
 			return *object;
 		}
 
-		/// What update() published, as the type it published it as; null when it published nothing.
+		/** What update() published, as the type it published it as; null when it published nothing. */
 		template <class T> [[nodiscard]] const T* payload() const noexcept { return static_cast<const T*>(published); }
 
 	private:
@@ -104,7 +106,7 @@ namespace ember
 	public:
 		static constexpr u32 CAPACITY = 16;
 
-		/// Every slot names the same three arenas: allocators are per lifetime, tags are per frame.
+		/** Every slot names the same three arenas: allocators are per lifetime, tags are per frame. */
 		FrameRing(Arena& sim_scratch, Arena& sim_to_render, Arena& render_scratch) noexcept
 			: m_frames(
 				  [&](u32)
@@ -148,16 +150,16 @@ namespace ember
 			return frame;
 		}
 
-		/// The frame index names; null once it has been evicted, before it has begun, and for 0.
+		/** The frame index names; null once it has been evicted, before it has begun, and for 0. */
 		[[nodiscard]] const FrameParams* find(u64 index) const noexcept
 		{
 			return index == 0 ? nullptr : m_frames.find(index - 1);
 		}
 
-		/// The most recently begun frame, 0 before the first begin() and after clear().
+		/** The most recently begun frame, 0 before the first begin() and after clear(). */
 		[[nodiscard]] u64 current_index() const noexcept { return m_frames.next_sequence(); }
 
-		/// Forgets every frame, for a fresh run.
+		/** Forgets every frame, for a fresh run. */
 		void clear() noexcept { m_frames.clear(); }
 
 	private:

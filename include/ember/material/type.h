@@ -69,6 +69,11 @@ namespace ember::material
 	/// equals it.
 	inline constexpr u32 INSTANCE_BYTES = 32;
 
+	/// A cooked type is two files with one stem: its bytecode, and the .type file beside it that
+	/// describes it. The cook writes both; read_cooked() takes both.
+	inline constexpr const char* SPIRV_EXTENSION = ".spv";
+	inline constexpr const char* TYPE_EXTENSION	 = ".type";
+
 	/// One field of a record, as reflection saw it, with its authoring attributes beside it.
 	struct Param
 	{
@@ -173,6 +178,14 @@ namespace ember::material
 	 * `error`.
 	 */
 	[[nodiscard]] bool read_type(StringView text, Type& out, String& error) noexcept;
+
+	/**
+	 * Joins a cooked pair into `out`: a .type file's text and the bytecode cooked with it, as a
+	 * loader reads them from disk or a module embeds them. The stored hash covers the bytecode, so a
+	 * pair that does not belong together (a stale .spv beside a fresh .type, a torn copy) is refused
+	 * here, before any record is written through the wrong layout.
+	 */
+	[[nodiscard]] bool read_cooked(StringView type_file, Span<const u8> spirv, Type& out, String& error) noexcept;
 }
 
 namespace ember

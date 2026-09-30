@@ -1,92 +1,115 @@
-# Shader build support. ember_cook_shader is the one home for the slangc
-# contract; ember's modules embed cooked SPIR-V into their targets through
-# ember_embed_shaders, and game cooks call ember_cook_shader for shaders they
-# load from disk instead.
+# Shader build support. Every Slang file the engine or a game cooks goes through ember_cook, the
+# command line face of shader::Compiler, so what the build cooks and what hot reload compiles come
+# from one set of options, kept in one place: the compiler. ember_embed_shaders links cooked files
+# into an engine module; games cook the files they load from disk with the functions below.
 #
-# Paths resolve from this file's location into INTERNAL cache entries, so the
-# functions work from any directory scope, game trees included.
-
-find_program(EMBER_SLANGC slangc HINTS "$ENV{VULKAN_SDK}/bin")
+# Paths resolve from this file's location into INTERNAL cache entries, so the functions work from
+# any directory scope, game trees included.
 
 get_filename_component(_ember_shaders_root "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 set(EMBER_SHADER_SOURCE_DIR "${_ember_shaders_root}/shaders" CACHE INTERNAL "")
 set(EMBER_EMBED_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/EmbedBlob.cmake" CACHE INTERNAL "")
 
-# ember_cook_shader(<output.spv> <source.slang>)
-#
-# Cooks one plain program, a file with its own entry points, through slangc. slangc also writes a
-# depfile naming every module the source imported, so an edit to an engine module recooks exactly
-# the programs that import it and no dependency list is kept by hand.
-function(ember_cook_shader output source)
-	if(NOT EMBER_SLANGC)
-		message(FATAL_ERROR "ember_cook_shader: slangc not found; install the Vulkan SDK or set EMBER_SLANGC")
-	endif()
+# One ember_cook run: <output>, plus the OUTPUTS the tool writes beside it. The tool writes a
+# depfile naming every file the compile read, so an edit to an engine module or a game library
+# recooks exactly the files that import it, and no dependency list is kept by hand. DEPENDS on the
+# tool recooks everything when the compiler changes; an output whose bytes did not change keeps its
+# timestamp, and the build stops there.
+function(_ember_cook kind output source)
+	cmake_parse_arguments(ARG "" "" "OUTPUTS;INCLUDE_DIRS" ${ARGN})
 
+	# Relative paths name files in the calling directory, as they do everywhere else in CMake; the
+	# tool itself runs in the binary directory.
+	cmake_path(ABSOLUTE_PATH source BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" NORMALIZE)
 	cmake_path(GET source FILENAME source_name)
 
+	set(includes)
+	foreach(dir IN LISTS ARG_INCLUDE_DIRS)
+		cmake_path(ABSOLUTE_PATH dir BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" NORMALIZE)
+		list(APPEND includes -I "${dir}")
+	endforeach()
+
 	add_custom_command(
-		OUTPUT "${output}"
-		COMMAND "${EMBER_SLANGC}" "${source}"
-			-target spirv
-			-fvk-use-entrypoint-name
-			-matrix-layout-column-major
-			# discard lowers to demote: a discarded lane stays a helper, so its quad neighbours
-			# keep defined derivatives. Asking for a capability makes Slang warn that it inferred
-			# the rest (41012); the inferred ones never reach the SPIR-V, so the warning is noise.
-			-capability spvDemoteToHelperInvocation
-			-Wno-41012
-			# Typed views over the one storage buffer binding are the contract; 39001 flags exactly
-			# that overlap.
-			-Wno-39001
-			-I "${EMBER_SHADER_SOURCE_DIR}"
-			-o "${output}"
-			-depfile "${output}.d"
+		OUTPUT "${output}" ${ARG_OUTPUTS}
+		COMMAND ember_cook ${kind} "${source}" -o "${output}" --depfile "${output}.d" ${includes}
 		DEPFILE "${output}.d"
-		DEPENDS "${source}"
-		COMMENT "slangc ${source_name}"
+		DEPENDS "${source}" ember_cook
+		COMMENT "cook ${source_name}"
 		VERBATIM
 	)
+endfunction()
+
+# ember_cook_shader(<output.spv> <source.slang> [INCLUDE_DIRS <dir>...])
+#
+# Cooks one plain program, a file with its own entry points, to SPIR-V. INCLUDE_DIRS hold the
+# game's shader libraries, searched for imports after the file's own directory and the engine's.
+function(ember_cook_shader output source)
+	_ember_cook(program "${output}" "${source}" ${ARGN})
+endfunction()
+
+# ember_cook_material(<output.spv> <source.slang> [INCLUDE_DIRS <dir>...])
+#
+# Cooks one material type to its pair: the SPIR-V, and the .type file ember_cook writes beside it.
+# INCLUDE_DIRS as for ember_cook_shader.
+function(ember_cook_material output source)
+	cmake_path(REPLACE_EXTENSION output LAST_ONLY ".type" OUTPUT_VARIABLE type)
+	_ember_cook(material "${output}" "${source}" OUTPUTS "${type}" ${ARGN})
+endfunction()
+
+# Links one cooked file into the target as <namespace>::<symbol>(), through a generated TU that
+# includes the declaring header, so a declaration that drifts fails to compile rather than to link.
+function(_ember_embed target file symbol namespace header)
+	set(generated "${CMAKE_CURRENT_BINARY_DIR}/embedded/${symbol}.cpp")
+
+	add_custom_command(
+		OUTPUT "${generated}"
+		COMMAND "${CMAKE_COMMAND}"
+			"-DINPUT=${file}"
+			"-DOUTPUT=${generated}"
+			"-DSYMBOL=${symbol}"
+			"-DNAMESPACE=${namespace}"
+			"-DHEADER=${header}"
+			-P "${EMBER_EMBED_SCRIPT}"
+		DEPENDS "${file}" "${EMBER_EMBED_SCRIPT}"
+		COMMENT "embed ${symbol}"
+		VERBATIM
+	)
+
+	target_sources(${target} PRIVATE "${generated}")
 endfunction()
 
 # ember_embed_shaders(<target>
 #     NAMESPACE <c++ namespace for the accessors>
 #     HEADER    <declaring header, as included>
-#     SHADERS   <foo.slang ...>)
+#     [SHADERS   <foo.slang ...>]
+#     [MATERIALS <dir/bar.slang ...>])
 #
-# For each foo.slang: cook, generate foo_spv.cpp defining
-# <NAMESPACE>::foo_shader(), and add it to the target. The generated TU
-# includes HEADER, so declaration drift fails to compile, not to link.
+# Cooks files from the engine's shader directory and links them into the target: foo_shader() for
+# a plain program's SPIR-V, and for a material type bar_material_spirv() and bar_material_type(),
+# the pair material::read_cooked joins.
 function(ember_embed_shaders target)
-	cmake_parse_arguments(ARG "" "NAMESPACE;HEADER" "SHADERS" ${ARGN})
+	cmake_parse_arguments(ARG "" "NAMESPACE;HEADER" "SHADERS;MATERIALS" ${ARGN})
 
-	if(NOT ARG_NAMESPACE OR NOT ARG_HEADER OR NOT ARG_SHADERS)
-		message(FATAL_ERROR "ember_embed_shaders(${target}): NAMESPACE, HEADER and SHADERS are required")
+	if(NOT ARG_NAMESPACE OR NOT ARG_HEADER OR NOT (ARG_SHADERS OR ARG_MATERIALS))
+		message(FATAL_ERROR "ember_embed_shaders(${target}): NAMESPACE, HEADER and SHADERS or MATERIALS are required")
 	endif()
 
-	set(spv_dir "${CMAKE_CURRENT_BINARY_DIR}/shaders")
-	set(gen_dir "${CMAKE_CURRENT_BINARY_DIR}/embedded")
+	set(cooked "${CMAKE_CURRENT_BINARY_DIR}/shaders")
 
 	foreach(shader IN LISTS ARG_SHADERS)
-		cmake_path(REMOVE_EXTENSION shader OUTPUT_VARIABLE stem)
-		set(spv "${spv_dir}/${stem}.spv")
-		set(generated "${gen_dir}/${stem}_spv.cpp")
+		cmake_path(REMOVE_EXTENSION shader LAST_ONLY OUTPUT_VARIABLE stem)
+		cmake_path(GET shader STEM LAST_ONLY name)
 
-		ember_cook_shader("${spv}" "${EMBER_SHADER_SOURCE_DIR}/${shader}")
+		ember_cook_shader("${cooked}/${stem}.spv" "${EMBER_SHADER_SOURCE_DIR}/${shader}")
+		_ember_embed(${target} "${cooked}/${stem}.spv" "${name}_shader" "${ARG_NAMESPACE}" "${ARG_HEADER}")
+	endforeach()
 
-		add_custom_command(
-			OUTPUT "${generated}"
-			COMMAND "${CMAKE_COMMAND}"
-				"-DINPUT=${spv}"
-				"-DOUTPUT=${generated}"
-				"-DSYMBOL=${stem}_shader"
-				"-DNAMESPACE=${ARG_NAMESPACE}"
-				"-DHEADER=${ARG_HEADER}"
-				-P "${EMBER_EMBED_SCRIPT}"
-			DEPENDS "${spv}" "${EMBER_EMBED_SCRIPT}"
-			COMMENT "embed ${stem}.spv"
-			VERBATIM
-		)
+	foreach(material IN LISTS ARG_MATERIALS)
+		cmake_path(REMOVE_EXTENSION material LAST_ONLY OUTPUT_VARIABLE stem)
+		cmake_path(GET material STEM LAST_ONLY name)
 
-		target_sources(${target} PRIVATE "${generated}")
+		ember_cook_material("${cooked}/${stem}.spv" "${EMBER_SHADER_SOURCE_DIR}/${material}")
+		_ember_embed(${target} "${cooked}/${stem}.spv" "${name}_material_spirv" "${ARG_NAMESPACE}" "${ARG_HEADER}")
+		_ember_embed(${target} "${cooked}/${stem}.type" "${name}_material_type" "${ARG_NAMESPACE}" "${ARG_HEADER}")
 	endforeach()
 endfunction()

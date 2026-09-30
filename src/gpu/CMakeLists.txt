@@ -7,6 +7,13 @@ if (NOT EMBER_USE_VULKAN)
 	message(FATAL_ERROR "EMBER_ENABLE_GRAPHICS requires a backend: enable EMBER_USE_VULKAN")
 endif()
 
+# The RHI's vocabulary: handles, enums and Defs, which need no backend to use. Code that describes
+# GPU state without driving a device (material types, and through them the cook tool) links this
+# alone, so an edit to the backend relinks no tool and recooks no shader.
+add_library(ember_gpu_types INTERFACE)
+add_library(Ember::GpuTypes ALIAS ember_gpu_types)
+target_link_libraries(ember_gpu_types INTERFACE Ember::Core)
+
 ember_add_module(Gpu
 	SOURCES
 		vulkan/common.cpp
@@ -25,6 +32,7 @@ ember_add_module(Gpu
 		vulkan/command_list.cpp
 	PUBLIC_DEPS
 		Ember::Core
+		Ember::GpuTypes
 		Ember::Platform
 	PRIVATE_DEPS
 		volk::volk

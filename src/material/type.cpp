@@ -7,6 +7,7 @@
 
 #include <bit>
 #include <charconv>
+#include <cstring>
 #include <iterator>
 
 namespace ember::material
@@ -355,5 +356,24 @@ namespace ember::material
 
 		return read_layout(root["record"], "record", out.record, error) &&
 			   read_layout(root["instance"], "instance", out.instance, error);
+	}
+
+	bool read_cooked(StringView type_file, Span<const u8> spirv, Type& out, String& error) noexcept
+	{
+		if (!read_type(type_file, out, error))
+			return false;
+
+		if (spirv.empty() || spirv.size() % sizeof(u32) != 0)
+			return refuse(error, "the bytecode is {} bytes, which is not SPIR-V", spirv.size());
+
+		// Copied into words, since a file or an embedded array promises no alignment.
+		out.spirv.resize(spirv.size() / sizeof(u32));
+		std::memcpy(out.spirv.data(), spirv.data(), spirv.size());
+		out.dependencies.clear();
+
+		if (hash_type(out) != out.hash)
+			return refuse(error, "'{}' was not cooked with this bytecode; cook it again", out.name);
+
+		return true;
 	}
 }

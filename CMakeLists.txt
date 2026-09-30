@@ -27,6 +27,7 @@ include(EmberShaders)
 
 add_subdirectory(third_party)
 add_subdirectory(src)
+add_subdirectory(tools)
 
 if(EMBER_BUILD_TESTS)
 	enable_testing()
