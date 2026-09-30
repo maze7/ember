@@ -146,9 +146,6 @@ namespace ember
 		 */
 		Span<const char* const> include_dirs = {};
 
-		/// The shading model of surface types that name none.
-		const char* default_shading = "lit";
-
 		/// The engine's shaders. Null is the directory this build was configured with.
 		const char* engine_dir = nullptr;
 
@@ -211,7 +208,6 @@ namespace ember
 		std::once_flag m_start;
 		bool m_started = false;
 		String m_engine_dir{&memory::heap(MemoryTag::Assets)};
-		String m_default_shading{&memory::heap(MemoryTag::Assets)};
 		Vector<String> m_include_dirs{&memory::heap(MemoryTag::Assets)};
 	};
 }

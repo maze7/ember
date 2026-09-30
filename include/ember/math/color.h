@@ -2,6 +2,10 @@
 
 #include <ember/core/common.h>
 
+#include <glm/vec3.hpp>
+
+#include <cmath>
+
 namespace ember
 {
 	/**
@@ -29,4 +33,16 @@ namespace ember
 	};
 
 	static_assert(sizeof(Color) == 16, "ClearColor must be layout-compatible with VkClearColorValue");
+
+	/// The sRGB transfer function inverted (IEC 61966-2-1): a colour picker's value in the linear
+	/// space shading works in.
+	[[nodiscard]] inline f32 linear_from_srgb(f32 c) noexcept
+	{
+		return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+	}
+
+	[[nodiscard]] inline glm::vec3 linear_from_srgb(glm::vec3 c) noexcept
+	{
+		return {linear_from_srgb(c.r), linear_from_srgb(c.g), linear_from_srgb(c.b)};
+	}
 }

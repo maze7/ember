@@ -623,10 +623,18 @@ namespace ember
 
 					if (!window.is_null())
 					{
+						// SDL reports the pointer in window points; the engine measures a window in
+						// pixels, as the swapchain and ImGui's display do. On a scaled display the two
+						// differ. Deltas stay in points, so mouse look feels the same at any scale.
+						f32 density = SDL_GetWindowPixelDensity(m_impl->windows.get(window)->handle);
+
+						if (density <= 0.0f)
+							density = 1.0f;
+
 						input.on_mouse_move(
 							{
-								event.motion.x,
-								event.motion.y,
+								event.motion.x * density,
+								event.motion.y * density,
 							},
 							{
 								event.motion.xrel,

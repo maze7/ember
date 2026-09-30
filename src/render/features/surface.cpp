@@ -37,14 +37,15 @@ namespace ember::render
 
 	SurfaceFeature::SurfaceFeature(Renderer& renderer, const Def& def) noexcept
 		: m_pipelines(renderer.materials().bucket_count(), BucketPipeline{}, &memory::heap(MemoryTag::Graphics)),
-		  m_color_format(def.color_format), m_depth_format(def.depth_format), m_clear(def.clear)
+		  m_color_format(def.color_format), m_depth_format(def.depth_format), m_clear(def.clear),
+		  m_shadow_bias(def.shadow_bias)
 	{
 	}
 
 	void SurfaceFeature::shutdown(gpu::Device& device) noexcept
 	{
 		for (BucketPipeline& entry : m_pipelines)
-			device.destroy(std::exchange(entry, {}).pipeline);
+			destroy(device, entry);
 	}
 
 	void SurfaceFeature::prepare(RenderFrame& frame) noexcept
@@ -58,7 +59,7 @@ namespace ember::render
 			const material::Type* type = frame.materials.type(entry.type);
 
 			if (type == nullptr || type->domain != material::Domain::Surface)
-				frame.device.destroy(std::exchange(entry, {}).pipeline);
+				destroy(frame.device, entry);
 		}
 
 		// New types and new builds get pipelines; a build that has not moved keeps its own. A build
@@ -75,18 +76,22 @@ namespace ember::render
 				if (entry.type == handle && entry.generation == generation)
 					return;
 
-				frame.device.destroy(entry.pipeline);
-				entry = {handle, generation, build(frame.device, type)};
+				destroy(frame.device, entry);
+				entry = {handle, generation, build(frame.device, type), build_shadow(frame.device, type)};
 			});
 	}
 
 	void SurfaceFeature::add_passes(RenderFrame& frame) noexcept
 	{
 		// The buckets with objects this frame, in draw order: by queue, which puts opaque before
-		// cutout before transparent, then by [Priority], then by bucket, so the order is stable.
+		// cutout before transparent, then by [Priority], then by bucket, so the order is stable. The
+		// casters among them, for the shadow maps, in any order: depth needs none.
 		auto* queued = static_cast<QueuedDraw*>(
 			frame.scratch.allocate_fast(m_pipelines.size() * sizeof(QueuedDraw), alignof(QueuedDraw)));
-		u32 count = 0;
+		auto* casters = static_cast<BucketDraw*>(
+			frame.scratch.allocate_fast(m_pipelines.size() * sizeof(BucketDraw), alignof(BucketDraw)));
+		u32 count		 = 0;
+		u32 caster_count = 0;
 
 		for (u32 bucket = 0; bucket < m_pipelines.size() && bucket < frame.buckets.ranges.size(); ++bucket)
 		{
@@ -94,14 +99,22 @@ namespace ember::render
 			const BucketRange range		= frame.buckets.ranges[bucket];
 			const material::Type* type	= frame.materials.type(entry.type);
 
-			if (entry.pipeline.is_null() || range.capacity == 0 || type == nullptr)
+			if (range.capacity == 0 || type == nullptr)
 				continue;
 
-			queued[count++] = {
-				.draw	  = {entry.pipeline, frame.materials.table_index(entry.type), bucket, range},
-				.queue	  = type->state.queue,
-				.priority = type->state.priority,
-			};
+			const u32 table = frame.materials.table_index(entry.type);
+
+			if (!entry.pipeline.is_null())
+			{
+				queued[count++] = {
+					.draw	  = {entry.pipeline, table, bucket, range},
+					.queue	  = type->state.queue,
+					.priority = type->state.priority,
+				};
+			}
+
+			if (!entry.shadow.is_null())
+				casters[caster_count++] = {entry.shadow, table, bucket, range};
 		}
 
 		std::sort(
@@ -130,9 +143,9 @@ namespace ember::render
 
 		// A pass's recording: what every bucket shares, then each bucket's pipeline, table and draws.
 		// Everything is captured by value into the frame's memory, which outlives the recording.
-		const auto record = [visibility = frame.visibility[0], constants = frame.constants,
-							 view		  = frame.view_constants[0],
-							 index_buffer = frame.geometry.index_buffer()](const BucketDraw* first, u32 draw_count)
+		const auto record =
+			[constants = frame.constants, index_buffer = frame.geometry.index_buffer()](
+				const ViewVisibility& visibility, const ViewConstants& view, const BucketDraw* first, u32 draw_count)
 		{
 			return [=](gpu::CommandList& cmd, const PassContext& ctx)
 			{
@@ -148,6 +161,25 @@ namespace ember::render
 			};
 		};
 
+		// Shadow maps first, so every pass after may sample them. Each clears to the far plane even
+		// with nothing to cast, so a map is never read before this frame wrote it.
+		for (u32 i = 0; i < frame.resources.shadow_map_count; ++i)
+		{
+			const ShadowMap& shadow = frame.resources.shadow_maps[i];
+
+			RenderGraph::Pass& shadow_pass = frame.graph.pass("surface.shadow").depth({.texture = shadow.texture});
+
+			read(shadow_pass, frame.visibility[shadow.view]);
+			shadow_pass.record(
+				record(frame.visibility[shadow.view], frame.view_constants[shadow.view], casters, caster_count));
+		}
+
+		const auto read_shadows = [&frame](RenderGraph::Pass& pass)
+		{
+			for (u32 i = 0; i < frame.resources.shadow_map_count; ++i)
+				pass.read(frame.resources.shadow_maps[i].texture);
+		};
+
 		// Opaque and cutout types write colour and depth. The pass clears both even with nothing to
 		// draw, so the targets later features read always hold this frame.
 		RenderGraph::Pass& solid_pass =
@@ -156,7 +188,8 @@ namespace ember::render
 				.depth({.texture = frame.resources.scene_depth, .store = gpu::StoreOp::Store});
 
 		read(solid_pass, frame.visibility[0]);
-		solid_pass.record(record(draws, solid));
+		read_shadows(solid_pass);
+		solid_pass.record(record(frame.visibility[0], frame.view_constants[0], draws, solid));
 
 		if (solid == count)
 			return;
@@ -169,7 +202,8 @@ namespace ember::render
 					{.texture = frame.resources.scene_depth, .load = gpu::LoadOp::Load, .store = gpu::StoreOp::Store});
 
 		read(blended_pass, frame.visibility[0]);
-		blended_pass.record(record(draws + solid, count - solid));
+		read_shadows(blended_pass);
+		blended_pass.record(record(frame.visibility[0], frame.view_constants[0], draws + solid, count - solid));
 	}
 
 	GraphicsPipelineHandle SurfaceFeature::build(gpu::Device& device, const material::Type& type) const noexcept
@@ -188,6 +222,39 @@ namespace ember::render
 			.depth_write   = state.depth_write,
 			.cull		   = state.cull,
 			.blend		   = state.blend,
+		});
+	}
+
+	void SurfaceFeature::destroy(gpu::Device& device, BucketPipeline& entry) noexcept
+	{
+		const BucketPipeline gone = std::exchange(entry, {});
+		device.destroy(gone.pipeline);
+		device.destroy(gone.shadow);
+	}
+
+	GraphicsPipelineHandle SurfaceFeature::build_shadow(gpu::Device& device, const material::Type& type) const noexcept
+	{
+		const material::State& state = type.state;
+
+		// Transparent types let the light through, and a type may say it casts nothing.
+		if (!state.casts_shadow || state.queue == material::Queue::Transparent)
+			return {};
+
+		// Depth only, from both faces: a card has one side, and whichever faces the light casts. The
+		// depth entry runs surface() for its discard, which gives a cutout's shadow its silhouette; a
+		// type that never discards compiles it to nothing. Depth clamps rather than clips, for casters
+		// between the light and the map's near plane.
+		return device.create_graphics_pipeline({
+			.name		  = type.name.c_str(),
+			.vertex		  = {.code = type.bytecode(), .entry = material::VERTEX_ENTRY},
+			.fragment	  = {.code = type.bytecode(), .entry = material::DEPTH_ENTRY},
+			.color_count  = 0,
+			.depth_format = SHADOW_MAP_FORMAT,
+			.depth_test	  = true,
+			.depth_write  = true,
+			.depth_bias	  = m_shadow_bias,
+			.depth_clamp  = true,
+			.cull		  = gpu::CullMode::None,
 		});
 	}
 }

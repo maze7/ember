@@ -2,6 +2,7 @@
 #include <ember/core/json.h>
 #include <ember/core/logger.h>
 #include <ember/gpu/device.h>
+#include <ember/math/color.h>
 #include <ember/memory/pmr/arena.h>
 #include <ember/render/embedded_shaders.h>
 #include <ember/render/gpu_scene.h>
@@ -10,7 +11,6 @@
 #include <fmt/format.h>
 
 #include <algorithm>
-#include <cmath>
 #include <cstring>
 #include <utility>
 
@@ -29,13 +29,6 @@ namespace ember::render
 		constexpr u32 MAX_RECORDS = 65536;
 
 		[[nodiscard]] Heap& graphics() noexcept { return memory::heap(MemoryTag::Graphics); }
-
-		/// The sRGB transfer function inverted (IEC 61966-2-1): a colour picker's value in the linear
-		/// space shading works in.
-		[[nodiscard]] f32 linear_from_srgb(f32 c) noexcept
-		{
-			return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
-		}
 
 		/// "", "2", "3" or "4": what follows a kind's name to spell a vector.
 		[[nodiscard]] StringView width(u8 components) noexcept

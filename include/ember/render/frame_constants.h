@@ -17,6 +17,34 @@
 namespace ember::render
 {
 	/**
+	 * The scene's light for the frame, mirrored in shaders/frame.slang: what a lighting feature
+	 * publishes in prepare(). The defaults are what surfaces see without one, a white sky and ground
+	 * and no lights, under which the lit models shade (close to) as authored.
+	 */
+	struct LightingConstants
+	{
+		glm::vec3 sky	= {1.0f, 1.0f, 1.0f}; // linear
+		u32 light_count = 0;
+
+		glm::vec3 ground = {1.0f, 1.0f, 1.0f};
+		u32 lights		 = 0; // the LightData table
+
+		u32 first_light = 0; // the frame's first record in it
+		u32 bands		= 0; // Pixel model: steps per light, zero for smooth
+		f32 dither		= 0.0f;
+		f32 dither_cell = 1.0f; // world units
+
+		u32 shadows		 = 0; // the ShadowData table
+		u32 first_shadow = 0; // the frame's first record in it
+		u32 pad0		 = 0;
+		u32 pad1		 = 0;
+	};
+
+	static_assert(sizeof(LightingConstants) == 64 && std::is_trivially_copyable_v<LightingConstants>);
+	static_assert(offsetof(LightingConstants, ground) == 16 && offsetof(LightingConstants, first_light) == 32 &&
+				  offsetof(LightingConstants, shadows) == 48);
+
+	/**
 	 * What every scene pass reads first, mirrored in shaders/frame.slang and bound at CONSTANTS_FRAME:
 	 * the frame's time, and the scene's tables by bindless slot, so no pass carries them in constants
 	 * of its own. Constant blocks lay out by std140, so members group into 16 byte rows by hand and
@@ -38,10 +66,13 @@ namespace ember::render
 		u32 attributes = 0;
 		u32 geometries = 0;
 		u32 pad0	   = 0;
+
+		LightingConstants lighting = {}; // the frame's, not the view's: every view sees the same lights
 	};
 
-	static_assert(sizeof(FrameConstants) == 48 && std::is_trivially_copyable_v<FrameConstants>);
-	static_assert(offsetof(FrameConstants, objects) == 16 && offsetof(FrameConstants, positions) == 32);
+	static_assert(sizeof(FrameConstants) == 112 && std::is_trivially_copyable_v<FrameConstants>);
+	static_assert(offsetof(FrameConstants, objects) == 16 && offsetof(FrameConstants, positions) == 32 &&
+				  offsetof(FrameConstants, lighting) == 48);
 
 	/// The view a pass renders, mirrored in shaders/frame.slang and bound at CONSTANTS_PASS.
 	struct ViewConstants
@@ -58,19 +89,15 @@ namespace ember::render
 		glm::vec2 resolution		 = {};
 		glm::vec2 inverse_resolution = {};
 
-		glm::vec3 ambient = {};
-		u32 light_count	  = 0;
-
-		u32 lights		  = 0;
 		u32 scene_color	  = 0; // the opaque world's colour, depth and sampler: for transparent and
 		u32 scene_depth	  = 0; // screen passes, once a feature copies them out
 		u32 scene_sampler = 0;
+		u32 pad0		  = 0;
 	};
 
-	static_assert(sizeof(ViewConstants) == 256 && std::is_trivially_copyable_v<ViewConstants>);
+	static_assert(sizeof(ViewConstants) == 240 && std::is_trivially_copyable_v<ViewConstants>);
 	static_assert(offsetof(ViewConstants, eye) == 192 && offsetof(ViewConstants, resolution) == 208 &&
-				  offsetof(ViewConstants, ambient) == 224 && offsetof(ViewConstants, light_count) == 236 &&
-				  offsetof(ViewConstants, lights) == 240);
+				  offsetof(ViewConstants, scene_color) == 224);
 
 	/// A view's matrices, eye and resolution. Its lighting and the scene targets are the frame's, for
 	/// the renderer to fill.

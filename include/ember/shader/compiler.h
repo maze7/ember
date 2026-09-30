@@ -23,7 +23,7 @@ namespace ember::shader
 		Span<const char* const> include_dirs = {};
 
 		/** The shading model of surface types that name none, matched like [Shading] */
-		const char* default_shading = "lit";
+		const char* default_shading = "standard";
 	};
 
 	/**

@@ -10,6 +10,7 @@ ember_add_module(Render
 		renderer.cpp
 		features/surface.cpp
 		features/upscale.cpp
+		features/lighting.cpp
 	PUBLIC_DEPS
 		Ember::Gpu
 		Ember::Material

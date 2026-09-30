@@ -1,9 +1,11 @@
 #include <ember/core/logger.h>
+#include <ember/math/color.h>
 #include <ember/render/material_registry.h>
 #include <ember/render/scene.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <utility>
 
@@ -27,20 +29,55 @@ namespace ember::render
 		}
 	}
 
+	LightData pack_light(const LightDef& def) noexcept
+	{
+		// A zero direction goes nowhere; straight down is the harmless reading of it.
+		const f32 length = glm::length(def.direction);
+
+		LightData light{
+			.direction = length > 0.0f ? def.direction / length : glm::vec3{0.0f, -1.0f, 0.0f},
+			.color	   = linear_from_srgb(def.color) * def.intensity,
+			.flags	   = def.casts_shadow ? LIGHT_CASTS_SHADOW : 0u,
+		};
+
+		if (def.type == LightType::Directional)
+			return light;
+
+		light.position = def.position;
+		light.range	   = std::max(def.range, 1e-3f); // zero would read as a directional light
+		light.falloff  = 1.0f / std::max(def.source_radius * def.source_radius, 1e-6f);
+
+		if (def.type == LightType::Spot)
+		{
+			// The cosine falls as the angle opens, so the remap takes the outer angle's to 0 and the
+			// inner angle's to 1. The floor keeps a hard-edged cone, inner equal to outer, finite.
+			const f32 cos_outer = std::cos(def.outer_angle);
+			const f32 cos_inner = std::max(std::cos(def.inner_angle), cos_outer + 1e-4f);
+
+			light.cone_scale  = 1.0f / (cos_inner - cos_outer);
+			light.cone_offset = -cos_outer * light.cone_scale;
+		}
+
+		return light;
+	}
+
 	RenderScene::RenderScene() noexcept
 		: m_objects(MemoryTag::Graphics), m_dirty(MemoryTag::Graphics),
-		  m_material_users(&memory::heap(MemoryTag::Graphics)), m_instance_written(&memory::heap(MemoryTag::Graphics))
+		  m_material_users(&memory::heap(MemoryTag::Graphics)), m_instance_written(&memory::heap(MemoryTag::Graphics)),
+		  m_lights(MemoryTag::Graphics)
 	{
 	}
 
 	RenderScene::~RenderScene() noexcept = default;
 
-	void RenderScene::init(u32 object_capacity, const MaterialRegistry* materials) noexcept
+	void RenderScene::init(u32 object_capacity, const MaterialRegistry* materials, u32 light_capacity) noexcept
 	{
 		EMBER_ASSERT(object_capacity != 0 && object_capacity <= decltype(m_objects)::MAX_CAPACITY);
+		EMBER_ASSERT(light_capacity != 0 && light_capacity <= decltype(m_lights)::MAX_CAPACITY);
 
 		m_objects.init(object_capacity);
 		m_dirty.init(object_capacity);
+		m_lights.init(light_capacity);
 
 		m_materials = materials;
 		m_material_users.assign(materials != nullptr ? materials->material_capacity() : ANY_MATERIAL, 0);
@@ -202,6 +239,48 @@ namespace ember::render
 	Span<const u32> RenderScene::material_users() const noexcept
 	{
 		return {m_material_users.data(), m_material_users.size()};
+	}
+
+	LightHandle RenderScene::create_light(const LightDef& def) noexcept
+	{
+		const LightHandle handle = m_lights.insert(pack_light(def));
+
+		if (handle.is_null()) [[unlikely]]
+			EMBER_ERROR("render scene is full ({} lights)", m_lights.capacity());
+
+		return handle;
+	}
+
+	void RenderScene::destroy_light(LightHandle handle) noexcept { (void)m_lights.erase(handle); }
+
+	void RenderScene::set_light(LightHandle handle, const LightDef& def) noexcept
+	{
+		LightData* light = m_lights.get(handle);
+
+		EMBER_ASSERT(light != nullptr && "set_light on a dead handle");
+		if (light == nullptr) [[unlikely]]
+			return;
+
+		*light = pack_light(def);
+	}
+
+	bool RenderScene::is_valid(LightHandle handle) const noexcept { return m_lights.contains(handle); }
+
+	u32 RenderScene::light_count() const noexcept { return m_lights.size(); }
+
+	u32 RenderScene::copy_lights(Span<LightData> out) const noexcept
+	{
+		u32 count = 0;
+
+		for (const LightData& light : m_lights)
+		{
+			if (count == out.size())
+				break;
+
+			out[count++] = light;
+		}
+
+		return count;
 	}
 
 	u32 RenderScene::material_index(MaterialHandle material) const noexcept

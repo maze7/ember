@@ -28,7 +28,7 @@ namespace ember::render
 
 		// The registry first: the scene seeds new objects from its Instance defaults.
 		m_materials.init(device, def.materials);
-		m_scene.init(def.object_capacity, &m_materials);
+		m_scene.init(def.object_capacity, &m_materials, def.light_capacity);
 		m_geometry.init(device, def.geometry);
 		m_gpu_scene.init(device, {.object_capacity = def.object_capacity});
 		m_visibility.init(device,
@@ -102,12 +102,7 @@ namespace ember::render
 
 		for (u32 view = 0; view < frame.view_count; ++view)
 		{
-			// Lighting is the frame's, published in prepare(); the matrices are the view's.
-			ViewConstants& constants = frame.view_constants[view];
-			constants				 = view_constants(frame.views[view]);
-			constants.ambient		 = frame.resources.ambient;
-			constants.light_count	 = frame.resources.light_count;
-			constants.lights		 = frame.resources.lights;
+			frame.view_constants[view] = view_constants(frame.views[view]);
 
 			const View& culled = (view == 0 && m_cull_override != nullptr) ? *m_cull_override : frame.views[view];
 			frame.visibility[view] =

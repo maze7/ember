@@ -55,6 +55,19 @@ namespace ember::gpu
 	};
 
 	/**
+	 * Depth added to every fragment as it is rasterized: `constant` in the format's smallest step and
+	 * `slope` times the primitive's depth change per pixel, capped at `clamp` when that is nonzero.
+	 * Shadow maps push casters away from the light with it, so a lit surface does not shadow itself
+	 * where the map's texels cut across it. Under reverse Z, away is negative.
+	 */
+	struct DepthBias
+	{
+		f32 constant = 0.0f;
+		f32 slope	 = 0.0f;
+		f32 clamp	 = 0.0f;
+	};
+
+	/**
 	 * Everything a about a graphics pipeline.
 	 *
 	 * There is deliberately no vertex input state. Vertex data is pulled from
@@ -78,6 +91,11 @@ namespace ember::gpu
 
 		/// Reverse Z. Depth clears to 0.0, greater is closer.
 		CompareOp depth_compare = CompareOp::GreaterEqual;
+		DepthBias depth_bias	= {};
+
+		/// Clamps depth to the viewport's range instead of clipping at the near and far planes. A
+		/// shadow map sets it so casters between the light and its near plane still land in the map.
+		bool depth_clamp = false;
 
 		CullMode cull			   = CullMode::None;
 		FrontFace front			   = FrontFace::CounterClockwise;

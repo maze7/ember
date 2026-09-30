@@ -168,15 +168,22 @@ namespace ember::gpu
 			.scissorCount  = 1,
 		};
 
+		const bool biased = def.depth_bias.constant != 0.0f || def.depth_bias.slope != 0.0f;
+
 		const VkPipelineRasterizationStateCreateInfo raster{
-			.sType		 = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-			.polygonMode = def.fill == FillMode::Wireframe ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL,
-			.cullMode	 = to_vk_cull(def.cull),
+			.sType			  = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+			.depthClampEnable = def.depth_clamp ? VK_TRUE : VK_FALSE,
+			.polygonMode	  = def.fill == FillMode::Wireframe ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL,
+			.cullMode		  = to_vk_cull(def.cull),
 			// The negative viewport flip mirrors framebuffer winding, so the enum speaks
 			// the content convention (glTF: CCW outward, Y up) and the backend compensates.
 			.frontFace =
 				def.front == FrontFace::CounterClockwise ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE,
-			.lineWidth = 1.0f,
+			.depthBiasEnable		 = biased ? VK_TRUE : VK_FALSE,
+			.depthBiasConstantFactor = def.depth_bias.constant,
+			.depthBiasClamp			 = def.depth_bias.clamp,
+			.depthBiasSlopeFactor	 = def.depth_bias.slope,
+			.lineWidth				 = 1.0f,
 		};
 
 		const VkPipelineMultisampleStateCreateInfo multisample{

@@ -15,7 +15,7 @@ import material;
 import shading;
 
 extern struct Material : IMaterial;
-extern struct Shading : IShadingModel = Lit;
+extern struct Shading : IShadingModel = Standard;
 
 /// The only per-draw value: the drawn type's record table. A draw is one bucket and a bucket is one
 /// type, so everything else is per frame or per view.
@@ -142,7 +142,7 @@ float4 fs_main(Interpolants i, bool front_face : SV_IsFrontFace) : SV_Target
 	Surface surface = preset(s);
 	g_materials[g_draw.materials][i.slot].surface(s, surface);
 
-	return float4(Shading.shade(surface, s, view_lighting()), surface.opacity);
+	return float4(Shading.shade(surface, s, lighting_at(surface.shading_position)), surface.opacity);
 }
 
 /// Depth-only passes of cutout types: the prepass and shadow maps. surface() runs for its discard;

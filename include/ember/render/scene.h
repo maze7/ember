@@ -118,6 +118,73 @@ namespace ember::render
 		Span<const u8> instance = {};
 	};
 
+	/// LightData::flags
+	inline constexpr u32 LIGHT_CASTS_SHADOW = 1u << 0;
+
+	/**
+	 * One light as the shaders read it, mirrored in shaders/shading.slang. Each vec3 shares its row
+	 * with a scalar, and the last row has room for what shadows will add, so a light is four rows.
+	 * The spot cone is stored as a remap of the cosine between the light's axis and the way to the
+	 * lit point, saturate(cos * scale + offset): one multiply-add in the shader, and a scale of 0 and
+	 * an offset of 1 make a point light.
+	 */
+	struct LightData
+	{
+		glm::vec3 position	= {};
+		f32 range			= 0.0f; // zero marks a directional light
+		glm::vec3 direction = {0.0f, -1.0f, 0.0f};
+		f32 cone_scale		= 0.0f;
+		glm::vec3 color		= {}; // linear, times intensity
+		f32 cone_offset		= 1.0f;
+		f32 falloff			= 1.0f; // 1 / source radius squared
+		u32 flags			= 0;	// LIGHT_*, the scene's
+		u32 shadow			= 0;	// the shadow map the lighting feature gave it, plus one; zero for none
+		u32 pad				= 0;
+	};
+
+	static_assert(sizeof(LightData) == 64 && std::is_trivially_copyable_v<LightData>);
+
+	enum class LightType : u8
+	{
+		Directional, // the sun or the moon: one direction, everywhere at once
+		Point,
+		Spot,
+	};
+
+	/// A light as the game describes it; the scene packs it into the record the shaders read.
+	struct LightDef
+	{
+		LightType type		= LightType::Point;
+		glm::vec3 position	= {};				   // point and spot
+		glm::vec3 direction = {0.0f, -1.0f, 0.0f}; // directional and spot: the way the light travels
+		glm::vec3 color		= {1.0f, 1.0f, 1.0f};  // sRGB, as a colour picker gives it
+
+		/// What the light does to a white surface facing it: anywhere, for a directional light, and
+		/// right beside it for a point or a spot, falling off with distance from there.
+		f32 intensity = 1.0f;
+
+		f32 range		= 10.0f; // point and spot: where the light's reach ends
+		f32 inner_angle = 0.3f;	 // spot: half angles off the axis, in radians; full strength inside
+		f32 outer_angle = 0.5f;	 // the inner angle, none past the outer
+
+		/// Point and spot: the size of what glows, in world units. Light keeps the intensity out to
+		/// about this distance and falls off with the inverse square beyond it, so the falloff is in
+		/// the world's own units: a world measured in pixels gives its torches sources a few pixels
+		/// across, not one.
+		f32 source_radius = 1.0f;
+
+		/// Asks for a shadow map. The lighting feature decides which lights get one; for now, the
+		/// first directional light that asks.
+		bool casts_shadow = false;
+	};
+
+	/// Lights a scene holds unless its owner asks for another number.
+	inline constexpr u32 DEFAULT_LIGHT_CAPACITY = 1024;
+
+	/// The record the shaders read for a light: colour to linear, times intensity, the direction
+	/// normalised and the spot cone as a remap the shader applies with one multiply-add.
+	[[nodiscard]] LightData pack_light(const LightDef& def) noexcept;
+
 	/**
 	 * Renderer-owned proxy storage: the game mirrors whatever it considers renderable
 	 * into objects here and the renderer never sees game entities.
@@ -172,7 +239,8 @@ namespace ember::render
 		 * Instance defaults, and material indices stay within its key table; without one, which
 		 * only tests want, per-object data starts zeroed and any u16 index is accepted.
 		 */
-		void init(u32 object_capacity, const MaterialRegistry* materials = nullptr) noexcept;
+		void init(u32 object_capacity, const MaterialRegistry* materials = nullptr,
+				  u32 light_capacity = DEFAULT_LIGHT_CAPACITY) noexcept;
 
 		/// Null handle when the scene is full; the failure is logged.
 		[[nodiscard]] RenderObjectHandle create_object(const RenderObjectDef& def) noexcept;
@@ -239,6 +307,26 @@ namespace ember::render
 		/// Live objects naming each material index, one count per index the scene accepts.
 		[[nodiscard]] Span<const u32> material_users() const noexcept;
 
+		/// Null handle when the scene holds its capacity of lights; the failure is logged.
+		[[nodiscard]] LightHandle create_light(const LightDef& def) noexcept;
+
+		/// Safe on null and stale handles.
+		void destroy_light(LightHandle handle) noexcept;
+
+		/// Replaces the light whole: a torch that moves, flickers or changes colour sets it each frame.
+		void set_light(LightHandle handle, const LightDef& def) noexcept;
+
+		[[nodiscard]] bool is_valid(LightHandle handle) const noexcept;
+		[[nodiscard]] u32 light_count() const noexcept;
+
+		/**
+		 * Copies the live lights' records into out, in slot order, and returns how many: all of them
+		 * when out holds light_count(). Writes each record once, front to back, so out may be
+		 * write-combined memory. The copy is dense, so a light's place in it moves as others come and
+		 * go, and nothing on the GPU names a light by its handle.
+		 */
+		u32 copy_lights(Span<LightData> out) const noexcept;
+
 	private:
 		/// The index an object stores: a material's, or the error material's for one past the key
 		/// table, which could only come from a fabricated handle.
@@ -252,6 +340,9 @@ namespace ember::render
 		/// the defaults. A byte each, so two objects never share one and set_instance runs in parallel.
 		Vector<u8> m_instance_written;
 
+		/// Lights are few and change whole, so they keep no dirty tracking: a lighting feature copies
+		/// every live one each frame.
+		Pool<Light, LightData> m_lights;
 		const MaterialRegistry* m_materials = nullptr;
 		u32 m_slot_count					= 0;
 	};

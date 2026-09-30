@@ -8,6 +8,27 @@ module frame;
 
 import ember;
 
+/// The scene's light, as a lighting feature publishes it for the frame. A struct of whole rows, so it
+/// nests in FrameConstants at a 16 byte boundary with nothing to pad.
+public struct LightingConstants
+{
+	float3 sky;         // hemisphere ambient, linear: the light arriving from straight up
+	uint   light_count;
+
+	float3 ground;      // and from straight down; directions in between blend the two
+	uint   lights;      // LightData table
+
+	uint  first_light;  // the frame's first record in that table
+	uint  bands;        // Pixel model: steps per light, zero for smooth
+	float dither;       // Pixel model: 0 rounds to the nearest step, 1 dithers between the two nearest
+	float dither_cell;  // Pixel model: world units a dither cell spans, in the view's plane
+
+	uint shadows;       // ShadowData table
+	uint first_shadow;  // the frame's first record in that table
+	uint _pad0;
+	uint _pad1;
+};
+
 public struct FrameConstants
 {
 	float time;        // seconds, wrapped by the CPU every hour so float precision stays sub-millisecond
@@ -25,6 +46,9 @@ public struct FrameConstants
 	uint attributes;
 	uint geometries;
 	uint _pad0;
+
+	// The frame's, not the view's: every view of a frame sees the same lights.
+	LightingConstants lighting;
 };
 
 public struct ViewConstants
@@ -42,13 +66,10 @@ public struct ViewConstants
 	float2 resolution;
 	float2 inverse_resolution;
 
-	float3 ambient;       // indirect light until probes exist
-	uint   light_count;
-
-	uint lights;          // LightData table
 	uint scene_color;     // the opaque world's colour and depth: valid in transparent and screen passes
 	uint scene_depth;
 	uint scene_sampler;   // linear clamp, for reading the two above
+	uint _pad0;
 };
 
 public [[vk::binding(CONSTANTS_FRAME, SET_CONSTANTS)]] ConstantBuffer<FrameConstants> g_frame;

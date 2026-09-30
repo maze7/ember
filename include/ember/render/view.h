@@ -41,6 +41,10 @@ namespace ember::render
 		Extent2D extent	   = {};
 
 		LayerMask layers = LAYER_ALL;
+
+		/// Flags an object must carry to be drawn: a shadow view asks for CastsShadow.
+		ObjectFlags required = ObjectFlags::None;
+
 		const char* name = "view";
 	};
 
@@ -50,24 +54,23 @@ namespace ember::render
 	[[nodiscard]] inline Frustum frustum_from(const glm::mat4& view_projection) noexcept
 	{
 		// Rows of the matrix in math convention, gathered from glm's columns.
-		const glm::vec4 row0{
-			view_projection[0][0], view_projection[1][0], view_projection[2][0], view_projection[3][0]};
-		const glm::vec4 row1{
-			view_projection[0][1], view_projection[1][1], view_projection[2][1], view_projection[3][1]};
-		const glm::vec4 row2{
-			view_projection[0][2], view_projection[1][2], view_projection[2][2], view_projection[3][2]};
-		const glm::vec4 row3{
-			view_projection[0][3], view_projection[1][3], view_projection[2][3], view_projection[3][3]};
+		const glm::vec4 row0{view_projection[0][0], view_projection[1][0], view_projection[2][0],
+							 view_projection[3][0]};
+		const glm::vec4 row1{view_projection[0][1], view_projection[1][1], view_projection[2][1],
+							 view_projection[3][1]};
+		const glm::vec4 row2{view_projection[0][2], view_projection[1][2], view_projection[2][2],
+							 view_projection[3][2]};
+		const glm::vec4 row3{view_projection[0][3], view_projection[1][3], view_projection[2][3],
+							 view_projection[3][3]};
 
-		Frustum frustum{
-			.planes = {
-				row3 + row0, // x >= -w
-				row3 - row0, // x <= w
-				row3 + row1, // y >= -w
-				row3 - row1, // y <= w
-				row2,		 // z >= 0, the far plane under reverse Z
-				row3 - row2, // z <= w, the near plane under reverse Z
-			}};
+		Frustum frustum{.planes = {
+							row3 + row0, // x >= -w
+							row3 - row0, // x <= w
+							row3 + row1, // y >= -w
+							row3 - row1, // y <= w
+							row2,		 // z >= 0, the far plane under reverse Z
+							row3 - row2, // z <= w, the near plane under reverse Z
+						}};
 
 		for (glm::vec4& plane : frustum.planes)
 		{
@@ -106,12 +109,8 @@ namespace ember::render
 		return -glm::vec3{view[0][2], view[1][2], view[2][2]};
 	}
 
-	[[nodiscard]] inline View make_view(
-		const glm::mat4& view,
-		const glm::mat4& projection,
-		Extent2D extent,
-		LayerMask layers = LAYER_ALL,
-		const char* name = "view") noexcept
+	[[nodiscard]] inline View make_view(const glm::mat4& view, const glm::mat4& projection, Extent2D extent,
+										LayerMask layers = LAYER_ALL, const char* name = "view") noexcept
 	{
 		const glm::mat4 view_projection = projection * view;
 
@@ -172,16 +171,10 @@ namespace ember::render
 	 * pass. The half height is world units on screen; the texel size follows
 	 * from it and the internal resolution.
 	 */
-	[[nodiscard]] inline SnappedOrthoView make_snapped_ortho_view(
-		glm::vec3 position,
-		glm::vec3 target,
-		glm::vec3 up,
-		f32 half_height,
-		Extent2D internal_extent,
-		f32 near,
-		f32 far,
-		LayerMask layers = LAYER_ALL,
-		const char* name = "main") noexcept
+	[[nodiscard]] inline SnappedOrthoView make_snapped_ortho_view(glm::vec3 position, glm::vec3 target, glm::vec3 up,
+																  f32 half_height, Extent2D internal_extent, f32 near,
+																  f32 far, LayerMask layers = LAYER_ALL,
+																  const char* name = "main") noexcept
 	{
 		const f32 aspect	 = static_cast<f32>(internal_extent.width) / static_cast<f32>(internal_extent.height);
 		const f32 half_width = half_height * aspect;

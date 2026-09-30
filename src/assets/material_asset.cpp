@@ -530,9 +530,8 @@ namespace ember
 
 		if (!m_cooked)
 		{
-			m_compiler		  = memory::new_object<shader::Compiler>(MemoryTag::Tools);
-			m_engine_dir	  = def.engine_dir != nullptr ? def.engine_dir : shader::Compiler::configured_engine_dir();
-			m_default_shading = def.default_shading;
+			m_compiler	 = memory::new_object<shader::Compiler>(MemoryTag::Tools);
+			m_engine_dir = def.engine_dir != nullptr ? def.engine_dir : shader::Compiler::configured_engine_dir();
 
 			// The asset root first: a type imports a library by its path below the root, as it loads one.
 			m_include_dirs.emplace_back(assets.root());
@@ -585,9 +584,8 @@ namespace ember
 								   dirs.push_back(dir.c_str());
 
 							   m_started = m_compiler->initialize({
-								   .engine_dir		= m_engine_dir.c_str(),
-								   .include_dirs	= {dirs.data(), dirs.size()},
-								   .default_shading = m_default_shading.c_str(),
+								   .engine_dir	 = m_engine_dir.c_str(),
+								   .include_dirs = {dirs.data(), dirs.size()},
 							   });
 						   });
 

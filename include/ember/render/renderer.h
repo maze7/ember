@@ -13,8 +13,6 @@
 #include <ember/render/view.h>
 #include <ember/render/visibility.h>
 
-#include <glm/vec3.hpp>
-
 #include <type_traits>
 
 namespace ember::gpu
@@ -28,6 +26,20 @@ namespace ember::render
 
 	/// Views per frame: the main view and the ones features add, shadow cascades and reflections.
 	inline constexpr u32 MAX_FRAME_VIEWS = 8;
+
+	/// Shadow maps one frame can draw.
+	inline constexpr u32 MAX_SHADOW_MAPS = 4;
+
+	/// Every shadow map's format. The surface feature builds its caster pipelines before it knows which
+	/// maps a frame will have, so the format is one contract rather than a property of each map.
+	inline constexpr gpu::TextureFormat SHADOW_MAP_FORMAT = gpu::TextureFormat::D32Float;
+
+	/// A shadow map to draw this frame: the view that sees the casters, and the depth target it fills.
+	struct ShadowMap
+	{
+		u32 view			 = 0; // its index in RenderFrame::views
+		GraphTexture texture = {};
+	};
 
 	/**
 	 * Semantic frame resources. Producers assign, consumers read; a null handle
@@ -49,12 +61,10 @@ namespace ember::render
 		/// when the scene renders through an internal target.
 		Extent2D scene_extent = {};
 
-		/// The lights every surface reads: a lighting feature's table and count, and the ambient
-		/// term, set in prepare(). Without one, surfaces see a white ambient alone, under which the
-		/// Lit model shades like Unlit.
-		u32 lights		  = 0;
-		u32 light_count	  = 0;
-		glm::vec3 ambient = {1.0f, 1.0f, 1.0f};
+		/// Shadow maps a lighting feature asks for in build_views. The surface feature fills each
+		/// with every caster in its view, ahead of the passes that sample them.
+		ShadowMap shadow_maps[MAX_SHADOW_MAPS] = {};
+		u32 shadow_map_count				   = 0;
 	};
 
 	/**
@@ -76,7 +86,8 @@ namespace ember::render
 
 		FrameResources resources = {};
 
-		/// Bound at CONSTANTS_FRAME by every scene pass: time and the scene's tables.
+		/// Bound at CONSTANTS_FRAME by every scene pass: time, the scene's tables, and the lighting
+		/// a lighting feature writes in prepare(), before any pass captures the block.
 		FrameConstants constants = {};
 
 		/// Where each bucket's draws go in every view's argument buffer.
@@ -139,6 +150,7 @@ namespace ember::render
 	{
 		u32 object_capacity			  = 1u << 17;
 		u32 command_capacity		  = 1u << 17;
+		u32 light_capacity			  = DEFAULT_LIGHT_CAPACITY;
 		GeometryPoolDef geometry	  = {};
 		MaterialRegistryDef materials = {};
 
@@ -149,8 +161,8 @@ namespace ember::render
 	/// Every object can be visible at once, so a view's argument buffer holds a draw for each.
 	[[nodiscard]] constexpr bool is_valid(const RendererDef& def) noexcept
 	{
-		return def.object_capacity != 0 && def.command_capacity >= def.object_capacity && is_valid(def.geometry) &&
-			   is_valid(def.materials);
+		return def.object_capacity != 0 && def.command_capacity >= def.object_capacity && def.light_capacity != 0 &&
+			   def.light_capacity <= 65536 && is_valid(def.geometry) && is_valid(def.materials);
 	}
 
 	/// The app's frame, as render() needs it.

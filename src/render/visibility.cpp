@@ -17,9 +17,11 @@ namespace ember::render
 			u32 layers			= 0;
 			u32 buckets			= 0;
 			u32 first_bucket	= 0;
+			u32 required		= 0; // ObjectFlags every drawn object carries
+			u32 pad[3]			= {};
 		};
 
-		static_assert(sizeof(CullConstants) == 112);
+		static_assert(sizeof(CullConstants) == 128);
 
 		struct CullPush
 		{
@@ -105,6 +107,7 @@ namespace ember::render
 			.layers		  = view.layers,
 			.buckets	  = buckets.table,
 			.first_bucket = buckets.first,
+			.required	  = static_cast<u32>(view.required),
 		};
 		std::memcpy(cull.planes, view.frustum.planes, sizeof(cull.planes));
 

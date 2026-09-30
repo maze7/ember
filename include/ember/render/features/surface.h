@@ -35,6 +35,12 @@ namespace ember::render
 			gpu::TextureFormat depth_format = gpu::TextureFormat::D32Float;
 
 			gpu::ClearColor clear = {0.0f, 0.0f, 0.0f, 1.0f};
+
+			/// How far casters are pushed from the light as they are drawn into a shadow map, so a
+			/// lit surface does not shadow itself where the map's texels cut across it. Slope-scaled:
+			/// two texels' worth of the caster's own depth change, the most a snapped lookup can miss
+			/// by, and nothing for a surface facing the light. Negative is away under reverse Z.
+			gpu::DepthBias shadow_bias = {.slope = -2.0f};
 		};
 
 		SurfaceFeature(Renderer& renderer, const Def& def) noexcept;
@@ -50,14 +56,21 @@ namespace ember::render
 			MaterialTypeHandle type			= {};
 			u32 generation					= 0;
 			GraphicsPipelineHandle pipeline = {};
+			GraphicsPipelineHandle shadow	= {}; // depth only, for types that cast shadows
 		};
 
 		[[nodiscard]] GraphicsPipelineHandle build(gpu::Device& device, const material::Type& type) const noexcept;
+
+		[[nodiscard]] GraphicsPipelineHandle build_shadow(gpu::Device& device,
+														  const material::Type& type) const noexcept;
+
+		static void destroy(gpu::Device& device, BucketPipeline& entry) noexcept;
 
 		Vector<BucketPipeline> m_pipelines; // one per bucket
 
 		gpu::TextureFormat m_color_format = gpu::TextureFormat::RGBA8Unorm;
 		gpu::TextureFormat m_depth_format = gpu::TextureFormat::D32Float;
 		gpu::ClearColor m_clear			  = {};
+		gpu::DepthBias m_shadow_bias	  = {};
 	};
 }

@@ -20,6 +20,10 @@ struct CullConstants
 	uint   layers;
 	uint   buckets;      // the frame's bucket ranges, in the transient ring
 	uint   first_bucket; // the element of bucket 0's range there
+	uint   required;     // ObjectFlags every drawn object carries: CastsShadow for a shadow view
+	uint   _pad0;
+	uint   _pad1;
+	uint   _pad2;
 };
 
 [[vk::binding(CONSTANTS_PASS, SET_CONSTANTS)]] ConstantBuffer<CullConstants> g_cull;
@@ -42,9 +46,7 @@ void cs_main(uint3 thread : SV_DispatchThreadID)
 
 	const ObjectData object = g_objects[g_frame.objects][slot];
 
-	// Dead slots carry layer mask zero, so one test retires them and applies the view's layer
-	// selection together.
-	if ((object.layers & g_cull.layers) == 0)
+	if ((object.layers & g_cull.layers) == 0 || (object.flags & g_cull.required) != g_cull.required)
 		return;
 
 	// Mirror of render::intersects, the CPU reference. The infinite far plane has a zero normal and
