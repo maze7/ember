@@ -8,8 +8,8 @@ module render;
 
 import ember;
 
-/// Bytes of per-object data a material type may declare as `struct Instance`. Mirror of
-/// render::INSTANCE_STRIDE: the instance table holds one such record per scene slot.
+/// Bytes of per-object data a material type may declare as `struct Instance`. Equals
+/// material::INSTANCE_BYTES: the instance table holds one such record per scene slot.
 public static const uint INSTANCE_STRIDE = 32;
 
 /// Mirror of render::ObjectFlags.

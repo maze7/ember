@@ -15,7 +15,6 @@ add_subdirectory(core)
 add_subdirectory(memory)
 add_subdirectory(sync)
 add_subdirectory(jobs)
-add_subdirectory(shader)
 
 if(WIN32)
 	target_compile_definitions(ember_core PUBLIC EMBER_PLATFORM_WINDOWS)
@@ -52,6 +51,8 @@ add_library(Ember::Ember ALIAS ember)
 if (EMBER_ENABLE_GRAPHICS)
 	add_subdirectory(gpu)
 	add_subdirectory(render)
+	add_subdirectory(shader)
+	add_subdirectory(material)
 endif()
 
 if (EMBER_ENABLE_ASSETS)
@@ -74,10 +75,12 @@ target_link_libraries(ember INTERFACE
 	Ember::Core
 	Ember::Jobs
 	$<$<BOOL:${EMBER_ENABLE_PLATFORM}>:Ember::Platform>
-	$<$<BOOL:${EMBER_ENABLE_GRAPHICS}>:Ember::Gpu>
 	$<$<BOOL:${EMBER_ENABLE_IMGUI}>:Ember::ImGui>
 	$<$<BOOL:${EMBER_ENABLE_AUDIO}>:Ember::Audio>
 	$<$<BOOL:${EMBER_ENABLE_APP}>:Ember::App>
+	$<$<BOOL:${EMBER_ENABLE_GRAPHICS}>:Ember::Gpu>
 	$<$<BOOL:${EMBER_ENABLE_GRAPHICS}>:Ember::Render>
+	$<$<BOOL:${EMBER_ENABLE_GRAPHICS}>:Ember::ShaderCompiler>
+	$<$<BOOL:${EMBER_ENABLE_GRAPHICS}>:Ember::Material>
 	$<$<BOOL:${EMBER_ENABLE_ASSETS}>:Ember::Assets>
 )
