@@ -95,7 +95,7 @@ namespace ember::render
 
 	MaterialRegistry::MaterialRegistry() noexcept
 		: m_types(MemoryTag::Graphics), m_materials(MemoryTag::Graphics), m_keys(&graphics()),
-		  m_dirty(MemoryTag::Graphics), m_retired(&graphics())
+		  m_dirty(MemoryTag::Graphics), m_retired(&graphics()), m_reseeds(&graphics())
 	{
 	}
 
@@ -174,6 +174,7 @@ namespace ember::render
 				device.destroy(type.table);
 
 		m_retired.clear();
+		m_reseeds.clear();
 		m_types.clear();
 
 		for (TextureHandle& texture : m_builtins)
@@ -231,6 +232,7 @@ namespace ember::render
 			return false;
 
 		const bool resized = next.type.record.size != entry->type.record.size;
+		const bool reseed  = next.instance_defaults != entry->instance_defaults;
 
 		entry->type				 = std::move(next.type);
 		entry->names			 = std::move(next.names);
@@ -276,6 +278,9 @@ namespace ember::render
 
 			encode(*entry, it->slot, {values.data(), values.size()});
 			rekey(it.handle());
+
+			if (reseed)
+				m_reseeds.push_back(it.handle());
 		}
 
 		return true;
@@ -350,6 +355,64 @@ namespace ember::render
 		rekey(handle);
 
 		(void)m_materials.erase(handle);
+	}
+
+	bool MaterialRegistry::set_type(MaterialHandle handle, MaterialTypeHandle type_handle) noexcept
+	{
+		EMBER_ASSERT(handle != m_error && "the error material draws the error type");
+
+		MaterialEntry* material = m_materials.get(handle);
+		TypeEntry* type			= m_types.get(type_handle);
+
+		if (material == nullptr || type == nullptr || handle == m_error) [[unlikely]]
+			return false;
+
+		if (material->type == type_handle)
+			return true;
+
+		u16 slot = 0;
+
+		if (!allocate_slot(*type, slot)) [[unlikely]]
+		{
+			EMBER_ERROR("{} has {} materials, as many as one type can hold", type->type.name, MAX_RECORDS);
+			return false;
+		}
+
+		// The old slot is free at once, as a destroy's is: the row rewrite that moves the material
+		// away is ordered before any read of whatever takes the slot next.
+		TypeEntry* old = m_types.get(material->type);
+
+		if (old != nullptr)
+			old->free_slots.push_back(material->slot);
+
+		// Objects whose per-object data is still the old type's defaults, or zeros from a type that is
+		// gone, take the new type's at the next frame.
+		if (old == nullptr || old->instance_defaults != type->instance_defaults)
+			m_reseeds.push_back(handle);
+
+		*material = {type_handle, slot};
+
+		const Vector<Value>& values = *m_materials.get_cold(handle);
+		encode(*type, slot, {values.data(), values.size()});
+		rekey(handle);
+		return true;
+	}
+
+	void MaterialRegistry::clear(MaterialHandle handle) noexcept
+	{
+		MaterialEntry* material = m_materials.get(handle);
+
+		if (material == nullptr)
+			return;
+
+		m_materials.get_cold(handle)->clear();
+
+		// A material whose type was removed has no record to return to its defaults.
+		if (TypeEntry* type = m_types.get(material->type))
+		{
+			encode(*type, material->slot, {});
+			m_dirty.mark(handle.index);
+		}
 	}
 
 	bool MaterialRegistry::set(MaterialHandle material, StringView param, TextureHandle texture) noexcept

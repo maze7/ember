@@ -133,6 +133,8 @@ namespace ember::render
 			return {material::ParamKind::Bool, 1, {value ? 1u : 0u}};
 		}
 
+		[[nodiscard]] constexpr NumberValue number_value(const NumberValue& value) noexcept { return value; }
+
 		template <glm::length_t N, class T, glm::qualifier Q>
 		[[nodiscard]] constexpr NumberValue number_value(const glm::vec<N, T, Q>& value) noexcept
 		{
@@ -205,7 +207,8 @@ namespace ember::render
 		/**
 		 * A new build of a live type, as hot reload produces one: every material of it re-encodes
 		 * from its values, and generation() moves so passes rebuild their pipelines. A build whose
-		 * hash matches the live one changed nothing a draw can see and is ignored. False for a stale
+		 * hash matches the live one changed nothing a draw can see and is ignored. A build with other
+		 * instance defaults list every material of the type in reseeds(). False for a stale
 		 * handle or a layout that cannot be keyed.
 		 */
 		bool replace_type(MaterialTypeHandle handle, material::Type type) noexcept;
@@ -220,6 +223,16 @@ namespace ember::render
 
 		/// Safe on null and stale handles. The error material cannot be destroyed.
 		void destroy(MaterialHandle material) noexcept;
+
+		/**
+		 * Moves a material to another type and keeps its handle, so every object using it draws the
+		 * new type from the next sync. Its values carry over by name, like a replace_type(), and one
+		 * the new layout lacks waits for a type that has it; its objects' per-object data is listed
+		 * in reseeds() when the new type's Instance defaults differ. For a material whose file now
+		 * names another type, or whose type failed and is back. False for a dead material or type, or
+		 * a full table; logged when full.
+		 */
+		bool set_type(MaterialHandle material, MaterialTypeHandle type) noexcept;
 
 		/**
 		 * Sets a number parameter from f32, i32, u32 or bool, or a glm vector of one of them, which
@@ -242,6 +255,10 @@ namespace ember::render
 				 gpu::AddressMode wrap) noexcept;
 
 		bool set(MaterialHandle material, StringView param, material::BuiltinTexture texture) noexcept;
+
+		/// Forgets every value set, so the record is the type's defaults again: for a material rebuilt
+		/// from a file, whose values are exactly the file's. Safe on null and stale handles.
+		void clear(MaterialHandle material) noexcept;
 
 		/// Uploads what changed since the last sync. Once per frame, before the graph executes;
 		/// scratch holds the sorted slot lists only until the copies are recorded.
@@ -289,6 +306,25 @@ namespace ember::render
 
 		/// The key table's row for the handle's index, as the next sync uploads it.
 		[[nodiscard]] u32 key(MaterialHandle material) const noexcept;
+
+		/// The bucket, which is to say the type, a material index draws in now. By index alone, as
+		/// objects store their material; a destroyed material's row draws the error type's.
+		[[nodiscard]] u16 bucket_of(u32 material_index) const noexcept
+		{
+			return key_bucket(material_index < m_keys.size() ? m_keys[material_index] : ERROR_MATERIAL_KEY);
+		}
+
+		/**
+		 * Materials whose objects' per-object defaults changed since clear_reseeds(): each moved to a
+		 * type with other Instance [Default]s, or its type was rebuilt with other ones. The renderer
+		 * hands them to the scene every frame, which reseeds the objects still holding the old ones.
+		 */
+		[[nodiscard]] Span<const MaterialHandle> reseeds() const noexcept
+		{
+			return {m_reseeds.data(), m_reseeds.size()};
+		}
+
+		void clear_reseeds() noexcept { m_reseeds.clear(); }
 
 		[[nodiscard]] TextureHandle builtin(material::BuiltinTexture texture) const noexcept;
 		[[nodiscard]] SamplerHandle sampler(gpu::Filter filter, gpu::AddressMode wrap) const noexcept;
@@ -379,7 +415,8 @@ namespace ember::render
 		BufferHandle m_key_table = {};
 		DirtySet m_dirty; // material indices whose record or row changed
 
-		Vector<BufferHandle> m_retired; // tables of removed types, destroyed at the next sync
+		Vector<BufferHandle> m_retired;	  // tables of removed types, destroyed at the next sync
+		Vector<MaterialHandle> m_reseeds; // see reseeds()
 
 		// Every sampler a parameter can ask for, made once: that fixed table is the deduplication.
 		static constexpr size_t FILTERS = enum_names<gpu::Filter>().size();

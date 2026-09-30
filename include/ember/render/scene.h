@@ -136,6 +136,12 @@ namespace ember::render
 	 * counts into each draw bucket's share of an argument buffer, which is how the cull can
 	 * sort any number of objects into any number of buckets with one pass and no overflow.
 	 *
+	 * An object's per-object data starts as its material type's Instance defaults and follows
+	 * them until the game writes it: when the material moves to another type, or its type is
+	 * rebuilt with other defaults, reseed() hands such objects the new ones. Data the game wrote
+	 * stays the game's, until the game gives the object a material of another type.
+	 *
+	 *
 	 * destroy_object() scrubs the record to all-zero dead state before the slot dies,
 	 * and the scrub rides the dirty list. Slot storage outlives the handle, so sync uploads
 	 * the scrub from the dead slot; layer mask zero is what tells the cull kernel to skip it.
@@ -177,17 +183,28 @@ namespace ember::render
 		/// Parallel safe on distinct handles.
 		void set_transform(RenderObjectHandle handle, const glm::mat4& world) noexcept;
 
-		/// Leaves the per-object data as it is: it belongs to the object, not the material. Parallel
-		/// safe on distinct handles.
+		/**
+		 * Keeps the per-object data while the new material draws the same type. A material of another
+		 * type starts it over from that type's defaults, since data laid out for one type means
+		 * nothing to another. Parallel safe on distinct handles.
+		 */
 		void set_material(RenderObjectHandle handle, MaterialHandle material) noexcept;
 
 		/**
 		 * Replaces the object's per-object data: the bytes of its type's `struct Instance`, packed in
 		 * declaration order, colours linear, at most material::INSTANCE_BYTES; the rest is zeroed.
 		 * This is what animation and hit flashes write every frame instead of creating materials.
+		 * From here the data is the game's, and a type change underneath the material leaves it be.
 		 * Parallel safe on distinct handles.
 		 */
 		void set_instance(RenderObjectHandle handle, Span<const u8> data) noexcept;
+
+		/**
+		 * Objects of these materials whose per-object data the game has not written take their
+		 * material's Instance defaults again: what the renderer does each frame with the registry's
+		 * reseeds(). Stale handles are skipped. Sync phase.
+		 */
+		void reseed(Span<const MaterialHandle> materials) noexcept;
 
 		/// The typed form: T mirrors the Instance struct field for field.
 		template <class T> void set_instance(RenderObjectHandle handle, const T& data) noexcept
@@ -230,6 +247,10 @@ namespace ember::render
 		Pool<RenderObject, ObjectData, ObjectCold, u32> m_objects;
 		DirtySet m_dirty;
 		Vector<u32> m_material_users; // indexed by material index
+
+		/// Per slot, whether the game wrote the object's per-object data, which then no longer follows
+		/// the defaults. A byte each, so two objects never share one and set_instance runs in parallel.
+		Vector<u8> m_instance_written;
 
 		const MaterialRegistry* m_materials = nullptr;
 		u32 m_slot_count					= 0;

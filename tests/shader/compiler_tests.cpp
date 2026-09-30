@@ -575,3 +575,27 @@ TEST_F(Compiling, AProgramWithoutEntryPointsIsRefused)
 		s_compiler->compile_program(path, "import ember;\nfloat helper() { return 1.0; }\n", program, diagnostics));
 	EXPECT_NE(StringView(diagnostics).find("declares no entry points"), StringView::npos) << diagnostics;
 }
+
+TEST_F(Compiling, AFixedSaveCompilesAfterABrokenOne)
+{
+	// What hot reload does with a typo: the broken save of a file, then the fix.
+	ASSERT_FALSE(compile("typo.slang", "import material;\nstruct Typo : IMaterial { oops };\n"));
+
+	EXPECT_TRUE(compile("typo.slang", "import material;\nstruct Typo : IMaterial { void surface(SurfaceInput s, "
+									  "inout Surface out) {} };\n"))
+		<< m_diagnostics;
+}
+
+TEST_F(Compiling, AFailedCompileStillListsWhatItRead)
+{
+	(void)write("lib/tone.slang", "public static const float TONE = 0.5;\n");
+
+	// It loads, imports and all, and then fails a check: the fix may be made in any file it read.
+	ASSERT_FALSE(compile("unfit.slang", "import material;\nimport tone;\n[Queue(\"sideways\")] struct Unfit : "
+										"IMaterial { void surface(SurfaceInput s, inout Surface out) { out.albedo = "
+										"TONE; } };\n"));
+
+	const Vector<String>& files = m_type.dependencies;
+	EXPECT_TRUE(std::any_of(files.begin(), files.end(),
+							[](const String& file) { return StringView(file).ends_with("/tone.slang"); }));
+}

@@ -27,7 +27,19 @@ namespace ember
 
 	using AssetId = u64;
 
-	[[nodiscard]] constexpr AssetId asset_id(StringView path) noexcept { return hash_text(path); }
+	/**
+	 * An asset's name as a number: FNV-1a over its path below the root or a mount, reading either
+	 * separator as '/', so a path spelt the Windows way names the same asset.
+	 */
+	[[nodiscard]] constexpr AssetId asset_id(StringView path) noexcept
+	{
+		u64 hash = HASH_SEED;
+
+		for (const char c : path)
+			hash = (hash ^ static_cast<u8>(c == '\\' ? '/' : c)) * 0x100000001b3ull;
+
+		return hash;
+	}
 
 	enum class AssetState : u8
 	{
@@ -50,7 +62,7 @@ namespace ember
 			std::atomic<u32> refs{0};			   // AssetRefs alive; the last one to go hands the slot to the pump
 			std::atomic<bool> unreferenced{false}; // queued for the pump's zero refs check
 
-			// Signalled by the first load's outcome, loaded or failed, exactly once.
+			// Signalled once, by the first load's outcome: its payload published, or its failure.
 			jobs::Counter first_load{1};
 
 			AssetManager* manager = nullptr;
@@ -59,6 +71,9 @@ namespace ember
 
 		/** The last reference let go: any thread, into the manager's queue. */
 		void unreferenced(AssetSlot& slot) noexcept;
+
+		/** AssetRef::wait(), which the manager answers: some types publish on the owner thread. */
+		void wait(AssetSlot& slot) noexcept;
 
 		class FileWatcher;
 	}
@@ -110,17 +125,22 @@ namespace ember
 
 		[[nodiscard]] bool is_null() const noexcept { return m_slot == nullptr; }
 
-		/** Parks until the first load has finished, loaded or failed. Reloads never block anyone. */
+		/**
+		 * Parks until the first load has finished, loaded or failed. Reloads never block anyone. A
+		 * type that publishes on the owner thread (see AssetType) is waited for on that thread only,
+		 * which publishes what is due rather than wait for a pump it is holding up.
+		 */
 		void wait() const noexcept
 		{
 			if (m_slot != nullptr)
-				jobs::wait(m_slot->first_load);
+				detail::wait(*m_slot);
 		}
 
 		void reset() noexcept { release(); }
 
 	private:
 		friend class AssetManager;
+		friend class AssetLoad;
 
 		struct Adopt
 		{
@@ -154,8 +174,10 @@ namespace ember
 	class AssetLoad final
 	{
 	public:
-		AssetLoad(StringView path, fs::FileData&& data, const void* live, gpu::Device& gpu, Heap& heap) noexcept
-			: m_path(path), m_data(std::move(data)), m_live(live), m_gpu(&gpu), m_heap(&heap)
+		AssetLoad(AssetManager& manager, u32 slot, StringView path, StringView file, fs::FileData&& data,
+				  const void* live, void* context, gpu::Device& gpu, Heap& heap) noexcept
+			: m_manager(&manager), m_slot(slot), m_path(path), m_file(file), m_data(std::move(data)), m_live(live),
+			  m_context(context), m_gpu(&gpu), m_heap(&heap), m_dependencies(&heap)
 		{
 		}
 
@@ -167,11 +189,23 @@ namespace ember
 		 */
 		template <class T> [[nodiscard]] const T* live() const noexcept { return static_cast<const T*>(m_live); }
 
-		/** Relative to the asset root, null terminated: fine as a debug name. */
+		/** The asset's name: below the root, or under a mount's prefix. Null terminated: fine as a debug name. */
 		[[nodiscard]] StringView path() const noexcept { return m_path; }
+
+		/** The file behind the name, absolute: where a type that reads its own files starts from. */
+		[[nodiscard]] StringView file() const noexcept { return m_file; }
+
+		/** Empty for a type that reads its own files. */
 		[[nodiscard]] Span<const u8> bytes() const noexcept { return m_data.bytes(); }
 		[[nodiscard]] gpu::Device& gpu() const noexcept { return *m_gpu; }
 		[[nodiscard]] Heap& heap() const noexcept { return *m_heap; }
+
+		/** What the type was registered with: the system its payloads belong to. */
+		template <class C> [[nodiscard]] C& context() const noexcept
+		{
+			EMBER_ASSERT(m_context != nullptr && "register the type with its context");
+			return *static_cast<C*>(m_context);
+		}
 
 		/**
 		 * Hands the file's bytes to the payload instead of copying them: a cooked asset is its
@@ -180,19 +214,56 @@ namespace ember
 		 */
 		[[nodiscard]] fs::FileData take_bytes() noexcept { return std::move(m_data); }
 
+		/**
+		 * Another asset this one is made of, requested and never waited for: a loader that parked
+		 * on another asset would hold a loader slot that asset may need, and enough of them would
+		 * hold every slot. Keep the reference in the payload. When the asset loads or reloads, this
+		 * one hears it on the owner thread: its publish() is asked again, then its refresh() runs.
+		 */
+		template <class T> [[nodiscard]] AssetRef<T> load(StringView path) noexcept;
+
+		/**
+		 * A file this asset was made from that is no asset itself, such as a shader it imported: a
+		 * change to it reloads this asset. An absolute path under the root or a mount, or a name
+		 * below them; any other file is outside every watch, and is ignored.
+		 */
+		void depends_on(StringView path) noexcept;
+
 	private:
+		friend class AssetManager;
+
+		AssetManager* m_manager;
+		u32 m_slot; // the loading slot's handle bits: the parent of whatever it loads
 		StringView m_path;
+		StringView m_file;
 		fs::FileData m_data;
 		const void* m_live = nullptr;
+		void* m_context	   = nullptr;
 		gpu::Device* m_gpu;
 		Heap* m_heap;
+		Vector<AssetId> m_dependencies;
 	};
 
-	/** What unload and reload may use. Both run on the owner thread between frames. */
-	struct AssetServices
+	/** What unload, reload, publish and refresh may use. All four run on the owner thread. */
+	class AssetServices final
 	{
+	public:
+		AssetServices(gpu::Device& gpu, Heap& heap, void* context) noexcept : gpu(gpu), heap(heap), m_context(context)
+		{
+		}
+
 		gpu::Device& gpu;
 		Heap& heap;
+
+		/** What the type was registered with. */
+		template <class C> [[nodiscard]] C& context() const noexcept
+		{
+			EMBER_ASSERT(m_context != nullptr && "register the type with its context");
+			return *static_cast<C*>(m_context);
+		}
+
+	private:
+		void* m_context;
 	};
 
 	/** A type that says how a reload folds into the live payload. */
@@ -201,15 +272,34 @@ namespace ember
 		{ T::reload(services, live, fresh) } noexcept -> std::same_as<void>;
 	};
 
+	/** A type whose payloads are finished on the owner thread before anyone sees them. */
+	template <class T>
+	concept HasAssetPublish = requires(AssetServices& services, T& asset) {
+		{ T::publish(services, asset) } noexcept -> std::same_as<bool>;
+	};
+
+	/** A type that hears when an asset it loaded has loaded or reloaded. */
+	template <class T>
+	concept HasAssetRefresh = requires(AssetServices& services, T& asset) {
+		{ T::refresh(services, asset) } noexcept -> std::same_as<void>;
+	};
+
+	/** A type whose loader reads its own files. */
+	template <class T>
+	concept ReadsOwnFiles = requires { requires T::READS_OWN_FILES; };
+
 	/**
 	 * A payload type: any nothrow default constructible struct with two static functions,
 	 *
 	 *   static bool load(AssetLoad&, T& out) noexcept;
 	 *   static void unload(AssetServices&, T& asset) noexcept;
 	 *
-	 * and optionally a third, for how a reload reaches the live payload while frames read it:
+	 * and optionally, one for each need a type may have beyond them:
 	 *
 	 *   static void reload(AssetServices&, T& live, T& fresh) noexcept;
+	 *   static bool publish(AssetServices&, T& asset) noexcept;
+	 *   static void refresh(AssetServices&, T& asset) noexcept;
+	 *   static constexpr bool READS_OWN_FILES = true;
 	 *
 	 * load() fills a default constructed T, on the first load and on every reload alike, so it
 	 * never knows which it is. reload() runs between frames with both in hand and makes `live`
@@ -217,6 +307,20 @@ namespace ember
 	 * frames later. A type without reload() is swapped, which is right whenever the payload is
 	 * plain data. A type that hands out GPU handles keeps them instead: it moves the new object
 	 * behind the old handle (Device::replace_texture) so nothing that stored the handle changes.
+	 *
+	 * publish() is for a payload finished by a system only the owner thread may change, such as a
+	 * registry of GPU tables: the first payload waits at the pump, which calls publish() and lets
+	 * the payload be seen once it returns true. False means not yet (an asset it loaded has still
+	 * to arrive), and the pump asks again after that asset has. Only the owner thread can wait for
+	 * such a type: the pump it would wait for is its own.
+	 *
+	 * refresh() runs between frames once an asset this one loaded through AssetLoad::load() has
+	 * loaded or reloaded: how a payload binds what arrives after it, without a loader ever waiting.
+	 *
+	 * READS_OWN_FILES leaves the reading to load(), for an asset whose name is not its file: a
+	 * shader the compiler reads with its imports, or a cooked pair standing in for a source.
+	 *
+	 * unload() gets every payload a load made, including one dropped before publish() let it out.
 	 */
 	template <class T>
 	concept AssetType = std::is_nothrow_default_constructible_v<T> && std::is_nothrow_destructible_v<T> &&
@@ -269,14 +373,25 @@ namespace ember
 	 * the old contents has gone by. GPU objects keep their handles across a reload: the device
 	 * moves the new object behind the old handle. Nothing that consumed the asset takes part.
 	 *
+	 * Assets are made of assets: a loader requests the ones it needs and never waits for them. A
+	 * payload that must be finished on the owner thread is published by the pump instead of the
+	 * loader, once what it needs has arrived, and a published one is refreshed when something it
+	 * loaded arrives or reloads. So a material that names a texture and a shader type loads in any
+	 * order with them, and no loader holds a slot another load needs.
+	 *
 	 * Lifetime is the references': the last AssetRef to go queues the slot, and the next pump
-	 * unloads it. Hot reload is the watcher naming a changed file by AssetId, pump() waiting for
-	 * it to go quiet, and the same load again. A reload that fails keeps the old payload, so a
-	 * broken save never takes the game down.
+	 * unloads it; a payload's own references go with it, a pump or two later. Hot reload is the
+	 * watcher naming a changed file by AssetId, pump() waiting for it to go quiet, and the same
+	 * load again, for the asset the file is and for every asset that said it depends on the file.
+	 * A reload that fails keeps the old payload, so a broken save never takes the game down.
+	 *
+	 * Names are paths below the root, or below a mount: a directory outside the root served under
+	 * a prefix, such as the engine's shaders in a dev build, and watched along with the root.
 	 *
 	 * THREADING
-	 *   load(): any thread. References: copy, drop, read, wait from any thread.
+	 *   load(): any thread. References: copy, drop, read from any thread; wait as the type allows.
 	 *   notify_changed(): any thread, the watcher's included.
+	 *   register_type(), mount(): the owner thread, before the first load.
 	 *   pump(), wait_idle(), shutdown(): the owner thread, between frames.
 	 */
 	class AssetManager final
@@ -295,13 +410,17 @@ namespace ember
 		void init(gpu::Device& gpu, const AssetManagerDef& def = {}) noexcept;
 
 		/**
-		 * Finishes every load in flight and unloads every asset. Every AssetRef must be gone by
-		 * now; one that is not asserts.
+		 * Finishes every load in flight and unloads every asset, each after the assets holding it.
+		 * Every AssetRef outside a payload must be gone by now; one that is not asserts.
 		 */
 		void shutdown() noexcept;
 
-		/** Once per type, before its first load(). Types are process wide: one manager at a time. */
-		template <AssetType T> void register_type(const char* name) noexcept
+		/**
+		 * Once per type, before its first load(). Types are process wide: one manager at a time.
+		 * `context` is what its loads and hooks reach through context<C>(): the system its payloads
+		 * belong to, which must outlive every payload of the type.
+		 */
+		template <AssetType T> void register_type(const char* name, void* context = nullptr) noexcept
 		{
 			s_type_index<T> = add_type({
 				.name  = name,
@@ -333,8 +452,19 @@ namespace ember
 					else
 						std::swap(*static_cast<T*>(live), *static_cast<T*>(fresh));
 				},
+				.publish		 = publish_thunk<T>(),
+				.refresh		 = refresh_thunk<T>(),
+				.context		 = context,
+				.reads_own_files = ReadsOwnFiles<T>,
 			});
 		}
+
+		/**
+		 * Serves the files under `directory` as `prefix/...`, and watches them with the root when hot
+		 * reload is on. Before the first load, like register_type(). A mount hides a directory of the
+		 * same name below the root.
+		 */
+		void mount(StringView prefix, StringView directory) noexcept;
 
 		/**
 		 * The asset at path, loading it if nothing holds it yet. Returns at  once; wait() on the
@@ -345,7 +475,7 @@ namespace ember
 		 */
 		template <AssetType T> [[nodiscard]] AssetRef<T> load(StringView path) noexcept
 		{
-			return AssetRef<T>(request(s_type_index<T>, path), typename AssetRef<T>::Adopt{});
+			return AssetRef<T>(request(s_type_index<T>, path, 0), typename AssetRef<T>::Adopt{});
 		}
 
 		/** A file changed on disk. Any thread; the watcher calls this. Unknown ids are ignored. */
@@ -353,13 +483,24 @@ namespace ember
 
 		/**
 		 * Once per frame on the owner thread, before the frame's update is kicked: unloads assets
-		 * nothing references, folds finished reloads into their payloads, frees what earlier
+		 * nothing references, publishes what finished for types that publish here, folds finished
+		 * reloads into their payloads, refreshes the payloads those touched, frees what earlier
 		 * reloads left behind, and turns quiet file changes into reloads.
 		 */
 		void pump(u64 frame_index) noexcept;
 
-		/** Parks until no loader is running. For boot and level loads; new requests restart loaders. */
+		/**
+		 * Parks until no loader is running. For boot and level loads; new requests restart loaders.
+		 * On the owner thread it then publishes what finished for types that publish there, so a
+		 * boot that waits here has every asset it asked for, and everything those asked for.
+		 */
 		void wait_idle() noexcept;
+
+		/** The root, absolute and ending in a separator. */
+		[[nodiscard]] StringView root() const noexcept { return m_root; }
+
+		/** True while saves on disk reload assets. */
+		[[nodiscard]] bool watching() const noexcept { return m_watcher != nullptr; }
 
 		struct Stats
 		{
@@ -374,7 +515,9 @@ namespace ember
 
 	private:
 		template <class T> friend class AssetRef;
+		friend class AssetLoad;
 		friend void detail::unreferenced(detail::AssetSlot& slot) noexcept;
+		friend void detail::wait(detail::AssetSlot& slot) noexcept;
 
 		static constexpr u16 NO_TYPE = 0xFFFF;
 
@@ -393,7 +536,29 @@ namespace ember
 			bool (*load)(AssetLoad&, void*) noexcept			  = nullptr; // constructs, then T::load
 			void (*unload)(AssetServices&, void*) noexcept		  = nullptr; // T::unload, then destroys
 			void (*reload)(AssetServices&, void*, void*) noexcept = nullptr; // T::reload, or a swap
+			bool (*publish)(AssetServices&, void*) noexcept		  = nullptr; // null: the loader publishes
+			void (*refresh)(AssetServices&, void*) noexcept		  = nullptr; // null: nothing to rebind
+			void* context										  = nullptr;
+			bool reads_own_files								  = false;
 		};
+
+		template <class T> static constexpr auto publish_thunk() noexcept
+		{
+			if constexpr (HasAssetPublish<T>)
+				return +[](AssetServices& services, void* payload) noexcept
+				{ return T::publish(services, *static_cast<T*>(payload)); };
+			else
+				return static_cast<bool (*)(AssetServices&, void*) noexcept>(nullptr);
+		}
+
+		template <class T> static constexpr auto refresh_thunk() noexcept
+		{
+			if constexpr (HasAssetRefresh<T>)
+				return +[](AssetServices& services, void* payload) noexcept
+				{ T::refresh(services, *static_cast<T*>(payload)); };
+			else
+				return static_cast<void (*)(AssetServices&, void*) noexcept>(nullptr);
+		}
 
 		/**
 		 * One asset: what references see, plus what only the manager and its loaders touch.
@@ -401,12 +566,22 @@ namespace ember
 		 */
 		struct Slot : detail::AssetSlot
 		{
-			Slot(u16 type, AssetId id, String&& path) noexcept : type(type), id(id), path(std::move(path)) {}
+			Slot(u16 type, AssetId id, String&& path, String&& file) noexcept
+				: type(type), id(id), path(std::move(path)), file(std::move(file)),
+				  dependents(this->path.get_allocator())
+			{
+			}
 
 			u16 type;
 			AssetId id;
-			String path;		   // root joined; the in flight read points at it
-			void* fresh = nullptr; // a finished reload waiting for the pump; under the lock
+			String path;		   // the name: below the root or under a mount's prefix
+			String file;		   // absolute; the in flight read points at it
+			void* fresh = nullptr; // a payload waiting for the pump: a reload, or a first to publish; under the lock
+
+			// Under the lock: the slots that loaded this one through AssetLoad::load(), which hear
+			// when it loads or reloads, and whether any load of it has made a payload yet.
+			Vector<u32> dependents;
+			bool produced = false;
 
 			std::atomic<bool> queued{false}; // a load for this slot is queued or running
 			std::atomic<bool> dirty{false};	 // changed again while queued: load once more
@@ -439,11 +614,29 @@ namespace ember
 			u64 frame	  = 0; // pump index at retirement; unloaded RETIRE_GRACE pumps on
 		};
 
+		/** A directory served under a name that is not below the root. */
+		struct Mount
+		{
+			String prefix;	  // without a separator: "ember"
+			String directory; // absolute, ending in a separator
+		};
+
+		/** A file that is no asset, and a slot made from it. */
+		struct FileDependency
+		{
+			AssetId file;
+			u32 slot; // SlotHandle bits
+		};
+
 		template <class T> inline static u16 s_type_index = NO_TYPE;
 
 		[[nodiscard]] u16 add_type(const Type& type) noexcept;
-		[[nodiscard]] Slot* request(u16 type, StringView path) noexcept;
+		[[nodiscard]] AssetServices services(const Type& type) const noexcept;
+		[[nodiscard]] bool resolve(StringView path, String& name, String& file) const noexcept;
+		[[nodiscard]] bool name_of(StringView file, String& name) const noexcept;
+		[[nodiscard]] Slot* request(u16 type, StringView path, u32 parent) noexcept;
 		void unreferenced(detail::AssetSlot& slot) noexcept;
+		void wait(detail::AssetSlot& slot) noexcept;
 		void free_slot(Slot& slot, SlotHandle handle) noexcept; // under the lock
 
 		void reload(AssetId id) noexcept;
@@ -451,24 +644,31 @@ namespace ember
 		void wake_loader() noexcept;
 		void run_loader() noexcept;
 		void load_one(Slot& slot, SlotHandle handle) noexcept;
+		[[nodiscard]] bool read_file(const Slot& slot, fs::FileData& out) noexcept; // parks the loader
 		void publish(Slot& slot, SlotHandle handle, void* payload) noexcept;
+		void apply_fresh(bool between_frames) noexcept;
+		void notify_dependents(Slot& slot) noexcept; // under the lock
+		void depend(SlotHandle handle, Span<const AssetId> files, bool replace) noexcept;
 		void retire(void* payload, u16 type) noexcept; // under the lock
 		void release(const Retired& retired) noexcept;
 
 		gpu::Device* m_gpu = nullptr;
 		Heap* m_heap	   = nullptr;
 		String m_root;
-		u32 m_relative		  = 0; // where a slot's path stops being the root
 		u64 m_reload_delay_ns = 0;
 
-		Vector<Type> m_types; // fixed once loads begin, so slots address it by index without the lock
+		// Fixed once loads begin, so slots and loaders read them by index without the lock.
+		Vector<Type> m_types;
+		Vector<Mount> m_mounts;
 
-		/// Slots, the path index, finished reloads and the retire list move under this lock; a
-		/// request is rare next to a read through a reference, which never takes it.
+		/// Slots, the path index, the dependency lists, pending payloads and the retire list move
+		/// under this lock; a request is rare next to a read through a reference, which never takes it.
 		mutable SpinMutex m_lock;
 		SlotPool m_slots;
 		HashMap<AssetId, u32> m_by_id; // SlotHandle bits
-		Vector<u32> m_fresh;		   // slots with a reload waiting for the pump
+		Vector<FileDependency> m_file_dependencies;
+		Vector<u32> m_fresh;   // slots with a payload waiting for the pump
+		Vector<u32> m_refresh; // slots to refresh at the next pump
 		Vector<Retired> m_retired;
 		Vector<Retired> m_due; // pump only: taken out from under the lock, unloaded outside it
 
@@ -482,7 +682,14 @@ namespace ember
 		u32 m_loader_count = 0;
 		jobs::Counter m_loaders; // every loader job kicked, for wait_idle
 
-		/// The OS watch on the root, when hot reload is on. Its thread only ever calls notify_changed().
+		/// The OS watch on the root and the mounts, when hot reload is on. Its thread only ever
+		/// calls notify_changed().
 		detail::FileWatcher* m_watcher = nullptr;
 	};
+
+	template <class T> AssetRef<T> AssetLoad::load(StringView path) noexcept
+	{
+		return AssetRef<T>(m_manager->request(AssetManager::s_type_index<T>, path, m_slot),
+						   typename AssetRef<T>::Adopt{});
+	}
 }

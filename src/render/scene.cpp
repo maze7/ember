@@ -29,7 +29,7 @@ namespace ember::render
 
 	RenderScene::RenderScene() noexcept
 		: m_objects(MemoryTag::Graphics), m_dirty(MemoryTag::Graphics),
-		  m_material_users(&memory::heap(MemoryTag::Graphics))
+		  m_material_users(&memory::heap(MemoryTag::Graphics)), m_instance_written(&memory::heap(MemoryTag::Graphics))
 	{
 	}
 
@@ -44,6 +44,7 @@ namespace ember::render
 
 		m_materials = materials;
 		m_material_users.assign(materials != nullptr ? materials->material_capacity() : ANY_MATERIAL, 0);
+		m_instance_written.assign(object_capacity, 0);
 	}
 
 	RenderObjectHandle RenderScene::create_object(const RenderObjectDef& def) noexcept
@@ -79,7 +80,8 @@ namespace ember::render
 		}
 
 		++m_material_users[material];
-		m_slot_count = std::max(m_slot_count, handle.index + 1);
+		m_instance_written[handle.index] = def.instance.empty() ? 0 : 1;
+		m_slot_count					 = std::max(m_slot_count, handle.index + 1);
 		m_dirty.mark(handle.index);
 
 		return handle;
@@ -141,6 +143,14 @@ namespace ember::render
 			std::atomic_ref(m_material_users[next]).fetch_add(1, std::memory_order_relaxed);
 		}
 
+		// Data laid out for one type means nothing to another: given a material of another type, the
+		// object starts over from that type's defaults, as a new object would.
+		if (m_materials != nullptr && m_materials->bucket_of(previous) != m_materials->bucket_of(next))
+		{
+			write_instance(m_objects.cold_data()[handle.index].instance, m_materials->instance_defaults(material));
+			m_instance_written[handle.index] = 0;
+		}
+
 		m_dirty.mark(handle.index);
 	}
 
@@ -155,6 +165,7 @@ namespace ember::render
 			return;
 
 		write_instance(m_objects.cold_data()[handle.index].instance, data);
+		m_instance_written[handle.index] = 1;
 		m_dirty.mark(handle.index);
 	}
 
@@ -199,5 +210,42 @@ namespace ember::render
 		EMBER_ASSERT((m_material_users.empty() || material.index < m_material_users.size()) &&
 					 "a material index past the key table");
 		return material.index < m_material_users.size() ? material.index : 0;
+	}
+
+	void RenderScene::reseed(Span<const MaterialHandle> materials) noexcept
+	{
+		if (materials.empty() || m_materials == nullptr)
+			return;
+
+		// The live ones, sorted by index: objects store their material's index, so one search each
+		// finds whether theirs is listed. A dead handle's index may be another material's by now.
+		Vector<MaterialHandle> listed(&memory::heap(MemoryTag::Graphics));
+
+		for (const MaterialHandle material : materials)
+			if (!m_materials->type_of(material).is_null())
+				listed.push_back(material);
+
+		const auto by_index = [](MaterialHandle a, MaterialHandle b) { return a.index < b.index; };
+		std::sort(listed.begin(), listed.end(), by_index);
+
+		// One pass over every object, which is fine for what calls this: a type rebuilt, a material
+		// moved, a few times in a session.
+		for (auto it = m_objects.begin(); it != m_objects.end(); ++it)
+		{
+			const u32 slot = it.handle().index;
+
+			if (m_instance_written[slot] != 0)
+				continue;
+
+			const auto found =
+				std::lower_bound(listed.begin(), listed.end(), it->material,
+								 [](MaterialHandle material, u32 index) { return material.index < index; });
+
+			if (found == listed.end() || found->index != it->material)
+				continue;
+
+			write_instance(m_objects.cold_data()[slot].instance, m_materials->instance_defaults(*found));
+			m_dirty.mark(slot);
+		}
 	}
 }

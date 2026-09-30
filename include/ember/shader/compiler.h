@@ -91,6 +91,9 @@ namespace ember::shader
 		/** The engine shader directory in use: absolute, ending in a separator */
 		StringView engine_dir() const noexcept;
 
+		/** The engine shader directory this build was configured with: what a null engine_dir means. */
+		[[nodiscard]] static const char* configured_engine_dir() noexcept;
+
 	private:
 		struct Impl;
 

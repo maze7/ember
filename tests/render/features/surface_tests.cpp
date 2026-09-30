@@ -457,3 +457,22 @@ TEST_F(Drawing, EachMaterialDrawsWhatItsTypeSays)
 	const u32 error = pixel(3.0f, 0.0f);
 	EXPECT_TRUE(error == rgba(255, 0, 255) || error == rgba(51, 0, 51)) << std::hex << error;
 }
+
+TEST_F(Drawing, AnObjectsDataFollowsItsMaterialToAnotherType)
+{
+	const MaterialHandle moving	  = material(StockType::Unlit);
+	const RenderObjectHandle card = object(moving, 0.0f);
+
+	f32 frame_rect[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+	std::memcpy(frame_rect, m_renderer.scene().instance(card.index).bytes, sizeof(frame_rect));
+	EXPECT_EQ(frame_rect[2], 0.0f); // the unlit type has no per-object data
+
+	// The material moves to the sprite type, as a .material saved with another type does. The
+	// renderer hands the move to the scene at the next frame, and the card shows its whole texture.
+	ASSERT_TRUE(m_renderer.materials().set_type(moving, m_renderer.materials().stock_type(StockType::Sprite)));
+	EXPECT_EQ(frame()[bucket(StockType::Sprite)], 1u);
+
+	std::memcpy(frame_rect, m_renderer.scene().instance(card.index).bytes, sizeof(frame_rect));
+	EXPECT_EQ(frame_rect[2], 1.0f);
+	EXPECT_EQ(frame_rect[3], 1.0f);
+}

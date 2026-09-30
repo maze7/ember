@@ -3,6 +3,7 @@
 #include <ember/app/frame.h>
 #include <ember/app/main.h>
 #include <ember/assets/asset.h>
+#include <ember/assets/material_asset.h>
 #include <ember/core/common.h>
 #include <ember/gpu/common.h>
 #include <ember/gpu/device.h>
@@ -21,6 +22,7 @@ namespace ember
 		MemoryConfig memory			  = {};
 		jobs::JobSystemDef jobs		  = {};
 		AssetManagerDef assets		  = {};
+		MaterialAssetsDef materials	  = {};
 		WindowDef window			  = {};
 		gpu::DeviceDef gpu			  = {};
 		gpu::PresentMode present_mode = gpu::PresentMode::VSync;

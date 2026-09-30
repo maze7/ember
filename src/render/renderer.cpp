@@ -63,6 +63,11 @@ namespace ember::render
 	{
 		EMBER_ASSERT(m_device != nullptr && "render before init");
 
+		// Per-object data the game never wrote follows its type's defaults, which a material moving to
+		// another type, or a type rebuilt, has just changed. Before the scene uploads what changed.
+		m_scene.reseed(m_materials.reseeds());
+		m_materials.clear_reseeds();
+
 		m_gpu_scene.sync(*m_device, m_scene, scratch);
 		m_materials.sync(*m_device, scratch);
 

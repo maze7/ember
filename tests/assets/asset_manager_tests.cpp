@@ -12,6 +12,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <algorithm>
 
 #if defined(EMBER_PLATFORM_WINDOWS)
 	#include <process.h>
@@ -56,6 +57,132 @@ namespace
 
 	static_assert(AssetType<BytesAsset>);
 
+	[[nodiscard]] StringView text_of(Span<const u8> bytes) noexcept
+	{
+		return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+	}
+
+	/// What an owner-thread system is to these tests: a registry only the owner thread may change,
+	/// which is why the assets that fill it publish there. It keeps a log of its hooks.
+	struct Registry
+	{
+		std::vector<std::string> log;
+		bool off_thread = false; // a hook ran somewhere other than the owner thread
+	};
+
+	/// A payload a registry finishes. Its file is a line of text, then optionally "part: <path>",
+	/// another of its kind it is made of: it publishes once that part has settled, loaded or
+	/// failed, and binds the part's text whenever it hears the part has changed.
+	struct PartAsset
+	{
+		std::string text;
+		AssetRef<PartAsset> part;
+		std::string bound; // the part's text when last bound
+
+		static bool load(AssetLoad& load, PartAsset& out) noexcept
+		{
+			const StringView file = text_of(load.bytes());
+			const size_t line	  = file.find('\n');
+
+			out.text = std::string(file.substr(0, line));
+
+			if (line != StringView::npos && file.substr(line + 1).starts_with("part: "))
+				out.part = load.load<PartAsset>(file.substr(line + 7));
+
+			return !out.text.empty();
+		}
+
+		static bool publish(AssetServices& services, PartAsset& asset) noexcept
+		{
+			if (asset.part.state() == AssetState::Loading && !asset.part.is_null())
+				return false;
+
+			log(services, "publish " + asset.text);
+			bind(asset);
+			return true;
+		}
+
+		static void refresh(AssetServices& services, PartAsset& asset) noexcept
+		{
+			log(services, "refresh " + asset.text);
+			bind(asset);
+		}
+
+		static void reload(AssetServices& services, PartAsset& live, PartAsset& fresh) noexcept
+		{
+			log(services, "reload " + fresh.text);
+			std::swap(live.text, fresh.text);
+			std::swap(live.part, fresh.part);
+			bind(live);
+		}
+
+		static void unload(AssetServices& services, PartAsset& asset) noexcept
+		{
+			log(services, "unload " + asset.text);
+		}
+
+		static void bind(PartAsset& asset) noexcept { asset.bound = asset.part ? asset.part->text : std::string(); }
+
+		static void log(AssetServices& services, std::string entry) noexcept
+		{
+			Registry& registry = services.context<Registry>();
+			registry.off_thread |= !jobs::is_main();
+			registry.log.push_back(std::move(entry));
+		}
+	};
+
+	static_assert(AssetType<PartAsset> && HasAssetPublish<PartAsset> && HasAssetRefresh<PartAsset>);
+
+	/// A payload made from files that are no assets: its file lists them, a line each, as names or
+	/// absolute paths. It counts its loads, so a test sees a change to one of them reload it, and a
+	/// line of "!" fails the load after the files before it were named, as a compile error would.
+	struct ListAsset
+	{
+		inline static std::atomic<u32> loads{0};
+
+		static bool load(AssetLoad& load, ListAsset&) noexcept
+		{
+			loads.fetch_add(1);
+			StringView file = text_of(load.bytes());
+
+			while (!file.empty())
+			{
+				const size_t line	   = std::min(file.find('\n'), file.size());
+				const StringView entry = file.substr(0, line);
+
+				if (entry == "!")
+					return false;
+
+				load.depends_on(entry);
+				file.remove_prefix(std::min(line + 1, file.size()));
+			}
+
+			return true;
+		}
+
+		static void unload(AssetServices&, ListAsset&) noexcept {}
+	};
+
+	/// A payload whose loader reads for itself: the manager names the file and reads nothing.
+	struct SelfReadAsset
+	{
+		static constexpr bool READS_OWN_FILES = true;
+
+		std::string file;
+		size_t bytes = 0;
+
+		static bool load(AssetLoad& load, SelfReadAsset& out) noexcept
+		{
+			out.file  = std::string(load.file());
+			out.bytes = load.bytes().size();
+			return true;
+		}
+
+		static void unload(AssetServices&, SelfReadAsset&) noexcept {}
+	};
+
+	static_assert(ReadsOwnFiles<SelfReadAsset> && !ReadsOwnFiles<BytesAsset>);
+
 	/// A manager over a scratch directory of this process's own, with the job system's IO thread
 	/// and a headless device under it. The watcher is off here so the tests drive notify_changed()
 	/// by hand and stay deterministic.
@@ -74,14 +201,20 @@ namespace
 			ASSERT_TRUE(fs::join(scratch, scratch, "ember_asset_tests_" + std::to_string(process_id())).has_value());
 			m_root.assign(scratch.data(), scratch.size());
 
-			ASSERT_TRUE(fs::remove_tree(m_root).has_value());
+			// A run that crashed leaves its directory behind; a clean one leaves none to remove.
+			if (const auto removed = fs::remove_tree(m_root); !removed)
+			{
+				ASSERT_EQ(removed.error().code, fs::FileErrorCode::NotFound);
+			}
+
 			ASSERT_TRUE(fs::create_directories(m_root + "/sub").has_value());
 
 			jobs::initialize({.worker_count = 4});
 			m_assets.init(m_device, def());
 			m_assets.register_type<BytesAsset>("bytes");
-
-			BytesAsset::unloads = 0;
+			m_assets.register_type<PartAsset>("part", &m_registry);
+			m_assets.register_type<ListAsset>("list");
+			m_assets.register_type<SelfReadAsset>("self read");
 		}
 
 		void TearDown() override
@@ -92,13 +225,16 @@ namespace
 		}
 
 		/// `size` bytes of a pattern keyed by `seed`; the asset path is the name.
-		void write(const char* name, size_t size, u8 seed)
+		void write(const char* name, size_t size, u8 seed) { write_to(m_root + "/" + name, size, seed); }
+
+		/// The same pattern at a path of its own, outside the root.
+		static void write_to(const std::string& path, size_t size, u8 seed)
 		{
 			std::vector<u8> bytes(size);
 			for (size_t i = 0; i < size; ++i)
 				bytes[i] = static_cast<u8>(seed + i);
 
-			write_bytes(name, Span<const u8>(bytes));
+			ASSERT_TRUE(fs::write_file(path, Span<const u8>(bytes)).has_value());
 		}
 
 		void write_bytes(const char* name, Span<const u8> bytes)
@@ -132,6 +268,19 @@ namespace
 
 		void pump() { m_assets.pump(++m_frame); }
 
+		void write_text(const char* name, std::string_view text)
+		{
+			write_bytes(name, {reinterpret_cast<const u8*>(text.data()), text.size()});
+		}
+
+		/// Waits for the loaders from a job, which, unlike the owner thread, publishes nothing.
+		void wait_for_loaders()
+		{
+			auto idle = [this]() noexcept { m_assets.wait_idle(); };
+			jobs::Batch batch(jobs::make_job(idle, "wait for loaders"));
+		}
+
+		Registry m_registry;
 		std::string m_root;
 		u64 m_frame = 0;
 
@@ -351,6 +500,189 @@ namespace
 		EXPECT_EQ(stats.failed, 0u);
 	}
 
+	TEST_F(AssetManagerTest, ATypeThatPublishesOnTheOwnerThreadIsSeenOnlyOnceThePumpHasPublishedIt)
+	{
+		write_text("a.part", "alpha");
+
+		const AssetRef<PartAsset> ref = m_assets.load<PartAsset>("a.part");
+		wait_for_loaders();
+
+		// Loaded, but not yet published: nobody sees a payload the registry has not taken.
+		EXPECT_FALSE(ref);
+		EXPECT_EQ(ref.state(), AssetState::Loading);
+		EXPECT_TRUE(m_registry.log.empty());
+
+		pump();
+
+		ASSERT_TRUE(ref);
+		EXPECT_EQ(ref->text, "alpha");
+		EXPECT_EQ(m_registry.log, (std::vector<std::string>{"publish alpha"}));
+		EXPECT_FALSE(m_registry.off_thread);
+	}
+
+	TEST_F(AssetManagerTest, TheOwnerThreadWaitingForOnePublishesItItself)
+	{
+		write_text("b.part", "bravo");
+
+		const AssetRef<PartAsset> ref = m_assets.load<PartAsset>("b.part");
+		ref.wait(); // no pump runs while this thread waits: the wait publishes
+
+		ASSERT_TRUE(ref);
+		EXPECT_EQ(ref.state(), AssetState::Loaded);
+		EXPECT_EQ(ref->text, "bravo");
+	}
+
+	TEST_F(AssetManagerTest, AnAssetPublishesOnceWhatItLoadedHasSettled)
+	{
+		write_text("whole.part", "whole\npart: piece.part");
+		write_text("piece.part", "piece");
+		write_text("broken.part", "broken\npart: missing.part");
+
+		const AssetRef<PartAsset> whole	 = m_assets.load<PartAsset>("whole.part");
+		const AssetRef<PartAsset> broken = m_assets.load<PartAsset>("broken.part");
+		m_assets.wait_idle();
+
+		// Whichever loader finished first, the part published before the whole that waits on it,
+		// and a part that failed let its whole publish without it.
+		ASSERT_TRUE(whole);
+		ASSERT_TRUE(broken);
+		EXPECT_EQ(whole->bound, "piece");
+		EXPECT_EQ(broken->bound, "");
+		EXPECT_EQ(broken->part.state(), AssetState::Failed);
+
+		const auto order = [&](const char* entry)
+		{ return std::find(m_registry.log.begin(), m_registry.log.end(), entry) - m_registry.log.begin(); };
+
+		EXPECT_LT(order("publish piece"), order("publish whole"));
+	}
+
+	TEST_F(AssetManagerTest, APayloadHearsWhenWhatItLoadedArrivesOrReloads)
+	{
+		write_text("late.part", "late\npart: slow.part");
+
+		// The part is broken at first, so the whole publishes without it.
+		const AssetRef<PartAsset> whole = m_assets.load<PartAsset>("late.part");
+		whole.wait();
+		ASSERT_TRUE(whole);
+		EXPECT_EQ(whole->bound, "");
+
+		// Then the part is written and arrives: the whole binds it at the pump that publishes it.
+		write_text("slow.part", "slow");
+		reload_now("slow.part");
+		EXPECT_EQ(whole->bound, "slow");
+
+		// And when the part reloads, the whole binds what it says now.
+		write_text("slow.part", "slower");
+		reload_now("slow.part");
+		EXPECT_EQ(whole->bound, "slower");
+		EXPECT_FALSE(m_registry.off_thread);
+	}
+
+	TEST_F(AssetManagerTest, AChangeToAFileAnAssetDependsOnReloadsTheAsset)
+	{
+		write_text("sub/common.inc", "shared");
+		write_text("sub/other.inc", "other");
+		write_text("one.list", "sub/common.inc");
+		write_text("two.list", m_root + "/sub/common.inc\nsub/other.inc"); // an absolute path names it too
+
+		const AssetRef<ListAsset> one = m_assets.load<ListAsset>("one.list");
+		const AssetRef<ListAsset> two = m_assets.load<ListAsset>("two.list");
+		m_assets.wait_idle();
+		ASSERT_EQ(ListAsset::loads.load(), 2u);
+
+		reload_now("sub/common.inc");
+		EXPECT_EQ(ListAsset::loads.load(), 4u); // both were made from it
+
+		reload_now("sub/other.inc");
+		EXPECT_EQ(ListAsset::loads.load(), 5u); // only the second
+
+		// A reload names its dependencies anew: one that is gone no longer reloads anything.
+		write_text("two.list", "sub/other.inc");
+		reload_now("two.list");
+		ASSERT_EQ(ListAsset::loads.load(), 6u);
+
+		reload_now("sub/common.inc");
+		EXPECT_EQ(ListAsset::loads.load(), 7u);
+	}
+
+	TEST_F(AssetManagerTest, AFailedLoadAddsToWhatTheLastGoodOneDependedOn)
+	{
+		write_text("sub/a.inc", "a");
+		write_text("sub/b.inc", "b");
+		write_text("one.list", "sub/a.inc");
+
+		const AssetRef<ListAsset> one = m_assets.load<ListAsset>("one.list");
+		one.wait();
+		ASSERT_EQ(ListAsset::loads.load(), 1u);
+
+		// A broken save that got as far as naming another file: both are watched now, since the
+		// fix may be made in either.
+		write_text("one.list", "sub/b.inc\n!");
+		reload_now("one.list");
+		ASSERT_EQ(ListAsset::loads.load(), 2u);
+
+		reload_now("sub/a.inc");
+		EXPECT_EQ(ListAsset::loads.load(), 3u);
+
+		reload_now("sub/b.inc");
+		EXPECT_EQ(ListAsset::loads.load(), 4u);
+	}
+
+	TEST_F(AssetManagerTest, ATypeThatReadsItsOwnFilesIsGivenTheFileAndNoBytes)
+	{
+		// Nothing on disk: the manager never reads it, so it cannot fail to.
+		const AssetRef<SelfReadAsset> ref = m_assets.load<SelfReadAsset>("sub/../own/thing.src");
+		ref.wait();
+
+		ASSERT_TRUE(ref);
+		EXPECT_EQ(ref->file, m_root + "/own/thing.src");
+		EXPECT_EQ(ref->bytes, 0u);
+	}
+
+	TEST_F(AssetManagerTest, AMountServesADirectoryOutsideTheRootUnderItsPrefix)
+	{
+		const std::string engine = m_root + "_engine";
+		ASSERT_TRUE(fs::create_directories(engine + "/shaders").has_value());
+		ASSERT_TRUE(fs::write_file(engine + "/shaders/core.bin", Span<const u8>(std::vector<u8>{7, 8, 9})).has_value());
+
+		m_assets.mount("engine", engine);
+
+		const AssetRef<BytesAsset> ref = m_assets.load<BytesAsset>("engine/shaders/core.bin");
+		ref.wait();
+		EXPECT_TRUE(matches(ref, 3, 7));
+
+		// A file under a mount is named with its prefix, as a dependency and as a change.
+		write_text("uses.list", engine + "/shaders/core.bin");
+		const AssetRef<ListAsset> list = m_assets.load<ListAsset>("uses.list");
+		m_assets.wait_idle();
+		ASSERT_EQ(ListAsset::loads.load(), 1u);
+
+		reload_now("engine/shaders/core.bin");
+		EXPECT_EQ(ListAsset::loads.load(), 2u);
+
+		(void)fs::remove_tree(engine);
+	}
+
+	TEST_F(AssetManagerTest, ShutdownUnloadsAnAssetBeforeTheAssetsItHolds)
+	{
+		write_text("outer.part", "outer\npart: inner.part");
+		write_text("inner.part", "inner");
+
+		AssetRef<PartAsset> outer = m_assets.load<PartAsset>("outer.part");
+		outer.wait();
+		ASSERT_TRUE(outer);
+		outer.reset();
+
+		// Only the outer payload holds the inner asset now; it has to go first for the inner to.
+		m_assets.shutdown();
+
+		const auto order = [&](const char* entry)
+		{ return std::find(m_registry.log.begin(), m_registry.log.end(), entry) - m_registry.log.begin(); };
+
+		ASSERT_LT(order("unload inner"), static_cast<ptrdiff_t>(m_registry.log.size()));
+		EXPECT_LT(order("unload outer"), order("unload inner"));
+	}
+
 	/// A 4 by 4 RGBA PNG, so the engine's own texture type is exercised end to end.
 	constexpr u8 SMALL_PNG[] = {
 		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00,
@@ -363,16 +695,15 @@ namespace
 
 	/// An 8 by 8 one, so a reload changes the extent as well as the pixels.
 	constexpr u8 BIG_PNG[] = {
-		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00,
-		0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x08, 0x06, 0x00, 0x00, 0x00, 0xc4, 0x0f, 0xbe, 0x8b, 0x00, 0x00, 0x00,
-		0x6e, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0x0f, 0x04, 0x0c, 0x0c, 0x0c, 0xf6, 0x8d, 0x0d, 0xff,
-		0x19, 0xd8, 0xf7, 0xff, 0x9e, 0x1f, 0xf7, 0xff, 0xef, 0xff, 0xff, 0x0c, 0x0c, 0x4c, 0x0c, 0x2c, 0x0c, 0xac,
-		0x0c, 0xec, 0x0c, 0x9c, 0x0c, 0x5c, 0x0c, 0xdc, 0x0c, 0x3c, 0x0c, 0xbc, 0x0c, 0x7c, 0x0c, 0xfc, 0x0c, 0x02,
-		0x0c, 0x82, 0x0c, 0x42, 0x0c, 0xc2, 0x0c, 0x22, 0x0c, 0xa2, 0x0c, 0x62, 0x0c, 0xe2, 0x0c, 0x12, 0x0c, 0x92,
-		0x0c, 0x52, 0x0c, 0xd2, 0x0c, 0x32, 0x0c, 0xb2, 0x0c, 0x72, 0x0c, 0xf2, 0x0c, 0x0a, 0x0c, 0x8a, 0x0c, 0x4a,
-		0x0c, 0xca, 0x0c, 0x2a, 0x0c, 0xaa, 0x0c, 0x6a, 0x0c, 0xea, 0x0c, 0x1a, 0x0c, 0x9a, 0x0c, 0x5a, 0x0c, 0xda,
-		0x0c, 0x3a, 0x0c, 0xba, 0x0c, 0x7a, 0x0c, 0xfa, 0x0c, 0x06, 0x00, 0x8c, 0x8b, 0x22, 0x8e, 0x00, 0x00, 0x00,
-		0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00,
+		0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x08, 0x06, 0x00, 0x00, 0x00, 0xc4, 0x0f, 0xbe, 0x8b, 0x00,
+		0x00, 0x00, 0x5c, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x15, 0xca, 0x31, 0x01, 0x03, 0x41, 0x08, 0x00,
+		0xb0, 0x93, 0xf2, 0x52, 0x90, 0x82, 0x14, 0xa4, 0x20, 0x05, 0x29, 0x38, 0x69, 0xc3, 0x90, 0x2d, 0xef,
+		0xbd, 0xfa, 0x7d, 0x04, 0x49, 0xd1, 0x0c, 0xcb, 0x7b, 0x9f, 0x40, 0x90, 0x14, 0xcd, 0xb0, 0xdf, 0x85,
+		0x10, 0x08, 0x92, 0xa2, 0x19, 0x36, 0x2e, 0xa4, 0x40, 0x90, 0x14, 0xcd, 0xb0, 0x79, 0xa1, 0x04, 0x82,
+		0xa4, 0x68, 0x86, 0xad, 0x0b, 0x2d, 0x10, 0x24, 0x45, 0x33, 0x6c, 0x5f, 0x18, 0x81, 0x20, 0x29, 0x9a,
+		0x61, 0xe7, 0xc2, 0x0a, 0x04, 0x49, 0xd1, 0x0c, 0xcb, 0x1f, 0xfa, 0x91, 0x97, 0xc1, 0x4d, 0x43, 0xd8,
+		0x85, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
 	};
 
 	TEST_F(AssetManagerTest, ATextureReloadKeepsItsHandleAndTakesTheNewPixels)
@@ -499,5 +830,24 @@ namespace
 
 		EXPECT_TRUE(pump_until(ref, 16, 6));
 		m_assets.wait_idle();
+	}
+
+	TEST_F(WatchedAssetManagerTest, ASaveUnderAMountReloadsTheAssetNamedWithItsPrefix)
+	{
+		const std::string engine = m_root + "_engine";
+		ASSERT_TRUE(fs::create_directories(engine + "/deep").has_value());
+		write_to(engine + "/deep/live.bin", 20, 1);
+
+		m_assets.mount("engine", engine);
+
+		const AssetRef<BytesAsset> ref = m_assets.load<BytesAsset>("engine/deep/live.bin");
+		ref.wait();
+		ASSERT_TRUE(matches(ref, 20, 1));
+
+		write_to(engine + "/deep/live.bin", 30, 2);
+
+		EXPECT_TRUE(pump_until(ref, 30, 2));
+		m_assets.wait_idle();
+		(void)fs::remove_tree(engine);
 	}
 }

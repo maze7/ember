@@ -79,6 +79,10 @@ namespace ember
 
 		m_assets = memory::make_unique<AssetManager>(MemoryTag::Assets);
 		m_assets->init(*m_gpu, config.assets);
+
+		// Materials are assets that load into the renderer's registry, which they reach through this.
+		m_materials = memory::make_unique<MaterialAssets>(MemoryTag::Assets);
+		m_materials->init(*m_assets, m_renderer->materials(), config.materials);
 		m_state = State::Ready;
 
 		return {};
@@ -86,11 +90,18 @@ namespace ember
 
 	void Runtime::shutdown() noexcept
 	{
+		// The material library lets go of what it holds first, and goes last: the manager's unloads
+		// reach the registry through it.
+		if (m_materials)
+			m_materials->shutdown();
+
 		if (m_assets)
 		{
 			m_assets->shutdown();
 			m_assets.reset();
 		}
+
+		m_materials.reset();
 
 		// Submitted frames may still reference renderer-owned resources,
 		// so quiesce the GPU before tearing the renderer down.

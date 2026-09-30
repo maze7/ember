@@ -27,16 +27,34 @@ namespace
 namespace ember::detail
 {
 	void unreferenced(AssetSlot& slot) noexcept { slot.manager->unreferenced(slot); }
+
+	void wait(AssetSlot& slot) noexcept { slot.manager->wait(slot); }
 }
 
 namespace ember
 {
+	void AssetLoad::depends_on(StringView path) noexcept
+	{
+		String name(m_heap);
+
+		// Outside the root and every mount, no watch would ever report a change to it.
+		if (!m_manager->name_of(path, name))
+			return;
+
+		const AssetId id = asset_id(name);
+
+		if (std::find(m_dependencies.begin(), m_dependencies.end(), id) == m_dependencies.end())
+			m_dependencies.push_back(id);
+	}
+
 	AssetManager::AssetManager() noexcept
 		: m_root(&memory::heap(MemoryTag::Assets)), m_types(&memory::heap(MemoryTag::Assets)),
-		  m_slots(MemoryTag::Assets), m_by_id(&memory::heap(MemoryTag::Assets)),
-		  m_fresh(&memory::heap(MemoryTag::Assets)), m_retired(&memory::heap(MemoryTag::Assets)),
-		  m_due(&memory::heap(MemoryTag::Assets)), m_requests(MemoryTag::Assets), m_unreferenced(MemoryTag::Assets),
-		  m_changes(MemoryTag::Assets), m_pending(&memory::heap(MemoryTag::Assets))
+		  m_mounts(&memory::heap(MemoryTag::Assets)), m_slots(MemoryTag::Assets),
+		  m_by_id(&memory::heap(MemoryTag::Assets)), m_file_dependencies(&memory::heap(MemoryTag::Assets)),
+		  m_fresh(&memory::heap(MemoryTag::Assets)), m_refresh(&memory::heap(MemoryTag::Assets)),
+		  m_retired(&memory::heap(MemoryTag::Assets)), m_due(&memory::heap(MemoryTag::Assets)),
+		  m_requests(MemoryTag::Assets), m_unreferenced(MemoryTag::Assets), m_changes(MemoryTag::Assets),
+		  m_pending(&memory::heap(MemoryTag::Assets))
 	{
 	}
 
@@ -65,8 +83,6 @@ namespace ember
 		if (m_root.empty() || m_root.back() != '/')
 			m_root += '/';
 
-		m_relative = static_cast<u32>(m_root.size());
-
 		// A slot is queued once at a time and unreferenced once at a time, so a cell per slot means
 		// neither queue can ever be full.
 		m_slots.init(def.max_assets);
@@ -80,9 +96,9 @@ namespace ember
 		// Last, so the first event it can deliver finds a manager ready to take it.
 		if (def.hot_reload)
 		{
-			m_watcher = memory::new_object<detail::FileWatcher>(MemoryTag::Assets, *this, StringView(m_root));
+			m_watcher = memory::new_object<detail::FileWatcher>(MemoryTag::Assets, *this);
 
-			if (!m_watcher->start())
+			if (!m_watcher->watch(m_root, {}))
 			{
 				memory::delete_object(MemoryTag::Assets, m_watcher);
 				m_watcher = nullptr;
@@ -99,36 +115,70 @@ namespace ember
 		memory::delete_object(MemoryTag::Assets, m_watcher);
 		m_watcher = nullptr;
 
-		wait_idle();
+		// Not wait_idle(): what the loaders finished is about to be unloaded, not published.
+		jobs::wait(m_loaders);
 
+		// In rounds: the assets nothing holds, then the ones only those were holding, until a round
+		// frees nothing. A payload's references are what hold the assets it was made of, and they go
+		// when it is unloaded, which is outside the lock, since an unload may call the manager.
+		for (bool any = true; any;)
+		{
+			{
+				std::lock_guard lock(m_lock);
+
+				for (auto it = m_slots.begin(); it != m_slots.end();)
+				{
+					const SlotHandle handle = it.handle();
+					++it;
+
+					Slot& slot = *m_slots.get(handle);
+					EMBER_ASSERT(!slot.queued.load(std::memory_order_relaxed) && "a load outlived its loader");
+
+					if (slot.refs.load(std::memory_order_acquire) != 0)
+						continue;
+
+					m_by_id.erase(slot.id);
+					free_slot(slot, handle);
+				}
+
+				m_due = std::move(m_retired);
+				m_retired.clear();
+			}
+
+			// Everything retired now is past every reader: no grace.
+			for (const Retired& retired : m_due)
+				release(retired);
+
+			any = !m_due.empty();
+			m_due.clear();
+		}
+
+		// What is left is held from outside, by a reference that will outlive the manager.
 		{
 			std::lock_guard lock(m_lock);
+			EMBER_ASSERT(m_slots.empty() && "an AssetRef outlives the asset manager");
 
 			for (auto it = m_slots.begin(); it != m_slots.end();)
 			{
 				const SlotHandle handle = it.handle();
 				++it;
-
-				Slot& slot = *m_slots.get(handle);
-				EMBER_ASSERT(!slot.queued.load(std::memory_order_relaxed) && "a load survived wait_idle");
-				EMBER_ASSERT(slot.refs.load(std::memory_order_acquire) == 0 &&
-							 "an AssetRef outlives the asset manager");
-
-				m_by_id.erase(slot.id);
-				free_slot(slot, handle);
+				free_slot(*m_slots.get(handle), handle);
 			}
 
 			m_due = std::move(m_retired);
 			m_retired.clear();
 		}
 
-		// Everything is retired now and nothing may read it: no grace.
 		for (const Retired& retired : m_due)
 			release(retired);
 
 		m_due.clear();
+		m_by_id.clear();
+		m_file_dependencies.clear();
 		m_fresh.clear();
+		m_refresh.clear();
 		m_pending.clear();
+		m_mounts.clear();
 		m_types.clear();
 		m_gpu  = nullptr;
 		m_heap = nullptr;
@@ -143,52 +193,138 @@ namespace ember
 		return static_cast<u16>(m_types.size() - 1);
 	}
 
-	AssetManager::Slot* AssetManager::request(u16 type, StringView path) noexcept
+	void AssetManager::mount(StringView prefix, StringView directory) noexcept
+	{
+		EMBER_ASSERT(m_gpu != nullptr && "mount after init");
+		EMBER_ASSERT(m_slots.empty() && "mount before the first load");
+		EMBER_ASSERT(!prefix.empty() && prefix.find('/') == StringView::npos && prefix != "." && prefix != "..");
+
+		Mount mount{String(prefix, m_heap), String(m_heap)};
+
+		if (!fs::absolute(directory, mount.directory))
+		{
+			EMBER_ERROR("asset mount '{}': '{}' is not a usable path", prefix, directory);
+			return;
+		}
+
+		if (mount.directory.back() != '/')
+			mount.directory += '/';
+
+		// A mount the OS will not watch still serves its files; its saves just go unnoticed.
+		if (m_watcher != nullptr)
+			(void)m_watcher->watch(mount.directory, mount.prefix);
+
+		m_mounts.push_back(std::move(mount));
+	}
+
+	AssetServices AssetManager::services(const Type& type) const noexcept { return {*m_gpu, *m_heap, type.context}; }
+
+	bool AssetManager::resolve(StringView path, String& name, String& file) const noexcept
+	{
+		// A name is relative and stays below what it names. Normalising it first means two spellings
+		// of one file meet at one id, and one that climbs out is refused rather than resolved.
+		if (path.empty() || fs::is_absolute(path) || !fs::normalize_lexical(path, name) || name.empty() ||
+			name == "." || name == ".." || name.starts_with("../"))
+			return false;
+
+		for (const Mount& mount : m_mounts)
+		{
+			if (name.size() > mount.prefix.size() && name.starts_with(mount.prefix) && name[mount.prefix.size()] == '/')
+				return fs::join(file, mount.directory, StringView(name).substr(mount.prefix.size() + 1)).has_value();
+		}
+
+		return fs::join(file, m_root, name).has_value();
+	}
+
+	bool AssetManager::name_of(StringView file, String& name) const noexcept
+	{
+		if (!fs::is_absolute(file))
+		{
+			String unused(m_heap);
+			return resolve(file, name, unused);
+		}
+
+		String normal(m_heap);
+		if (!fs::normalize_lexical(file, normal))
+			return false;
+
+		for (const Mount& mount : m_mounts)
+		{
+			if (normal.size() > mount.directory.size() && normal.starts_with(mount.directory))
+			{
+				name = mount.prefix;
+				name += '/';
+				name += StringView(normal).substr(mount.directory.size());
+				return true;
+			}
+		}
+
+		if (normal.size() > m_root.size() && normal.starts_with(m_root))
+		{
+			name.assign(StringView(normal).substr(m_root.size()));
+			return true;
+		}
+
+		return false;
+	}
+
+	AssetManager::Slot* AssetManager::request(u16 type, StringView path, u32 parent) noexcept
 	{
 		EMBER_ASSERT(type != NO_TYPE && "register the type before loading it");
 		EMBER_ASSERT(m_gpu != nullptr && "load before init");
 
-		// The full path first, outside the lock. The join normalises, so two spellings of one file
-		// meet at one id, and a name that climbs out of the root is refused rather than resolved.
-		String full(m_heap);
+		// The name and the file first, outside the lock.
+		String name(m_heap);
+		String file(m_heap);
 
-		if (!fs::join(full, m_root, path) || full.size() <= m_relative ||
-			!StringView(full).starts_with(StringView(m_root)))
+		if (!resolve(path, name, file))
 		{
-			EMBER_ERROR("asset '{}': not a path inside the asset root", path);
+			EMBER_ERROR("asset '{}': not a path inside the asset root or a mount", path);
 			return nullptr;
 		}
 
-		const AssetId id = asset_id(StringView(full).substr(m_relative));
+		const AssetId id = asset_id(name);
 
 		std::lock_guard lock(m_lock);
+
+		Slot* slot = nullptr;
+		SlotHandle handle;
 
 		// The reference is counted here, under the lock, so a pump that finds the slot queued as
 		// unreferenced sees the count and leaves it alone.
 		if (const auto it = m_by_id.find(id); it != m_by_id.end())
 		{
-			Slot* slot = m_slots.get(SlotHandle::from_bits(it->second));
+			handle = SlotHandle::from_bits(it->second);
+			slot   = m_slots.get(handle);
 			EMBER_ASSERT(slot->type == type && "one asset, one type");
 
 			slot->refs.fetch_add(1, std::memory_order_relaxed);
-			return slot;
 		}
-
-		const SlotHandle handle = m_slots.emplace(type, id, std::move(full));
-
-		if (handle.is_null())
+		else
 		{
-			EMBER_ERROR("asset '{}': registry full ({} assets)", path, m_slots.capacity());
-			return nullptr;
+			handle = m_slots.emplace(type, id, std::move(name), std::move(file));
+
+			if (handle.is_null())
+			{
+				EMBER_ERROR("asset '{}': registry full ({} assets)", path, m_slots.capacity());
+				return nullptr;
+			}
+
+			slot		  = m_slots.get(handle);
+			slot->manager = this;
+			slot->handle  = handle.to_bits();
+			slot->refs.store(1, std::memory_order_relaxed);
+
+			m_by_id.emplace(id, handle.to_bits());
+			queue_load(*slot, handle);
 		}
 
-		Slot* slot	  = m_slots.get(handle);
-		slot->manager = this;
-		slot->handle  = handle.to_bits();
-		slot->refs.store(1, std::memory_order_relaxed);
+		// A loader asking for an asset hears when it loads or reloads. Bits are never zero, since a
+		// generation never is, so zero can mean no one asked.
+		if (parent != 0 && parent != handle.to_bits() &&
+			std::find(slot->dependents.begin(), slot->dependents.end(), parent) == slot->dependents.end())
+			slot->dependents.push_back(parent);
 
-		m_by_id.emplace(id, handle.to_bits());
-		queue_load(*slot, handle);
 		return slot;
 	}
 
@@ -204,6 +340,30 @@ namespace ember
 			detail::cpu_relax(spins);
 	}
 
+	void AssetManager::wait(detail::AssetSlot& base) noexcept
+	{
+		Slot& slot = static_cast<Slot&>(base);
+
+		if (m_types[slot.type].publish == nullptr)
+		{
+			jobs::wait(slot.first_load);
+			return;
+		}
+
+		// Only the owner thread's pump publishes this type, so a job parked here would hold up the
+		// frame that pump waits for. The owner thread waits for the loaders and publishes what they
+		// finished itself, again while doing so sets more loads going.
+		EMBER_ASSERT(jobs::is_main() && "wait for a type that publishes on the owner thread there; poll it elsewhere");
+
+		while (slot.state.load(std::memory_order_acquire) == AssetState::Loading)
+		{
+			wait_idle();
+
+			if (m_running.load(std::memory_order_acquire) == 0)
+				break;
+		}
+	}
+
 	void AssetManager::free_slot(Slot& slot, SlotHandle handle) noexcept
 	{
 		// Both payloads outlive the slot by the grace: the live one for a pointer a frame took, the
@@ -213,6 +373,18 @@ namespace ember
 
 		if (slot.fresh != nullptr)
 			retire(std::exchange(slot.fresh, nullptr), slot.type);
+
+		// A first payload the pump never published leaves the first load open. Nobody holds a
+		// reference to wait on it, but the counter must balance before it goes.
+		if (slot.state.load(std::memory_order_relaxed) == AssetState::Loading)
+		{
+			slot.state.store(AssetState::Failed, std::memory_order_relaxed);
+			jobs::signal(slot.first_load);
+		}
+
+		const u32 bits = handle.to_bits();
+		std::erase_if(m_file_dependencies,
+					  [bits](const FileDependency& dependency) { return dependency.slot == bits; });
 
 		(void)m_slots.erase(handle);
 	}
@@ -237,38 +409,43 @@ namespace ember
 
 	void AssetManager::reload(AssetId id) noexcept
 	{
-		Slot* slot = nullptr;
-		SlotHandle handle;
+		// The asset the file is, and every asset made from it. A dead slot's loader is about to free
+		// it and nobody wants it any more; every other slot stays put while this thread holds it,
+		// since only the pump, on this thread, frees the living.
+		Vector<Slot*> slots(m_heap);
 
 		{
 			std::lock_guard lock(m_lock);
 
-			const auto it = m_by_id.find(id);
-			if (it == m_by_id.end())
-				return;
+			const auto add = [&](u32 bits) noexcept
+			{
+				Slot* slot = m_slots.get(SlotHandle::from_bits(bits));
 
-			handle = SlotHandle::from_bits(it->second);
-			slot   = m_slots.get(handle);
+				if (slot != nullptr && !slot->dead.load(std::memory_order_acquire) &&
+					std::find(slots.begin(), slots.end(), slot) == slots.end())
+					slots.push_back(slot);
+			};
+
+			if (const auto it = m_by_id.find(id); it != m_by_id.end())
+				add(it->second);
+
+			for (const FileDependency& dependency : m_file_dependencies)
+				if (dependency.file == id)
+					add(dependency.slot);
 		}
 
-		// Dirty before queued: a loader that is running sees the flag at the end of its pass and
-		// goes round again, and one that is not gets queued here.
-		slot->dirty.store(true, std::memory_order_release);
-		queue_load(*slot, handle);
+		for (Slot* slot : slots)
+		{
+			// Dirty before queued: a loader that is running sees the flag at the end of its pass and
+			// goes round again, and one that is not gets queued here.
+			slot->dirty.store(true, std::memory_order_release);
+			queue_load(*slot, SlotHandle::from_bits(slot->handle));
+		}
 	}
 
 	void AssetManager::pump(u64 frame_index) noexcept
 	{
 		m_frame.store(frame_index, std::memory_order_release);
-
-		struct Apply
-		{
-			Slot* slot;
-			void* fresh;
-		};
-
-		Apply applies[64]; // per pump; the rest wait a frame
-		u32 apply_count = 0;
 
 		{
 			std::lock_guard lock(m_lock);
@@ -297,26 +474,6 @@ namespace ember
 					free_slot(*slot, handle);
 			}
 
-			// Finished reloads, taken out to be applied without the lock: the slot cannot go away
-			// meanwhile, since only this thread frees slots.
-			u32 kept = 0;
-			for (const u32 fresh_bits : m_fresh)
-			{
-				Slot* slot = m_slots.get(SlotHandle::from_bits(fresh_bits));
-
-				if (slot == nullptr || slot->fresh == nullptr)
-					continue;
-
-				if (apply_count == std::size(applies))
-				{
-					m_fresh[kept++] = fresh_bits;
-					continue;
-				}
-
-				applies[apply_count++] = {slot, std::exchange(slot->fresh, nullptr)};
-			}
-			m_fresh.resize(kept);
-
 			// Retired payloads past the grace.
 			for (u32 i = 0; i < m_retired.size();)
 			{
@@ -332,17 +489,45 @@ namespace ember
 			}
 		}
 
-		// The fold: no stage is running, so the live payload can change under nobody. What the
-		// type leaves in `fresh` is spent and goes the way of every retired payload.
-		AssetServices services{*m_gpu, *m_heap};
+		// No stage is running: first payloads publish, reloads fold into the live ones, and then
+		// the payloads that loaded any of them hear of it.
+		apply_fresh(true);
 
-		for (u32 i = 0; i < apply_count; ++i)
+		Vector<u32> refresh(m_heap);
+
 		{
-			const Type& type = m_types[applies[i].slot->type];
-			type.reload(services, applies[i].slot->payload.load(std::memory_order_relaxed), applies[i].fresh);
-
 			std::lock_guard lock(m_lock);
-			retire(applies[i].fresh, applies[i].slot->type);
+			refresh.swap(m_refresh);
+		}
+
+		std::sort(refresh.begin(), refresh.end());
+		refresh.erase(std::unique(refresh.begin(), refresh.end()), refresh.end());
+
+		for (const u32 bits : refresh)
+		{
+			Slot* slot = nullptr;
+
+			// Looked up under the lock, where a dead slot is seen before its loader can free it.
+			{
+				std::lock_guard lock(m_lock);
+				slot = m_slots.get(SlotHandle::from_bits(bits));
+
+				if (slot != nullptr && slot->dead.load(std::memory_order_acquire))
+					slot = nullptr;
+			}
+
+			// One still waiting to publish is asked again at its publish; this is for the published.
+			if (slot == nullptr)
+				continue;
+
+			const Type& type = m_types[slot->type];
+			void* live		 = slot->payload.load(std::memory_order_relaxed);
+
+			if (live != nullptr && type.refresh != nullptr)
+			{
+				AssetServices services = this->services(type);
+				type.refresh(services, live);
+			}
 		}
 
 		for (const Retired& retired : m_due)
@@ -380,7 +565,16 @@ namespace ember
 		}
 	}
 
-	void AssetManager::wait_idle() noexcept { jobs::wait(m_loaders); }
+	void AssetManager::wait_idle() noexcept
+	{
+		jobs::wait(m_loaders);
+
+		// A boot or level load on the owner thread holds up the pump that would publish what the
+		// loaders finished for types that publish there, so it publishes them itself. Reloads keep
+		// waiting for the pump: frames may be reading the payloads they fold into.
+		if (jobs::is_main())
+			apply_fresh(false);
+	}
 
 	AssetManager::Stats AssetManager::stats() const noexcept
 	{
@@ -461,8 +655,7 @@ namespace ember
 
 	void AssetManager::load_one(Slot& slot, SlotHandle handle) noexcept
 	{
-		const Type& type		  = m_types[slot.type];
-		const StringView relative = StringView(slot.path).substr(m_relative);
+		const Type& type = m_types[slot.type];
 
 		do
 		{
@@ -474,40 +667,29 @@ namespace ember
 			// can be freed below; only the file work is skipped.
 			if (!slot.dead.load(std::memory_order_acquire))
 			{
-				// The read: submitted to the IO thread, waited for on this fiber. The worker
-				// underneath runs other jobs meanwhile and this code resumes wherever one is free.
-				jobs::FileRead read{.path = slot.path, .memory = m_heap};
-				jobs::Counter done;
+				fs::FileData bytes;
 
-				if (const auto submitted = jobs::read_file(read, done); !submitted)
+				if (type.reads_own_files || read_file(slot, bytes))
 				{
-					EMBER_ERROR("asset '{}': read refused ({})", relative, enum_name(submitted.error()));
-				}
-				else
-				{
-					jobs::wait(done);
+					payload = m_heap->allocate(type.size, type.align);
 
-					if (!read.result)
+					// The load owns the bytes from here: they die with it unless the loader takes them.
+					AssetLoad load(*this, handle.to_bits(), slot.path, slot.file, std::move(bytes),
+								   slot.payload.load(std::memory_order_acquire), type.context, *m_gpu, *m_heap);
+
+					const bool loaded = type.load(load, payload);
+
+					if (!loaded)
 					{
-						const fs::FileError& error = read.result.error();
-						EMBER_ERROR("asset '{}': read failed ({} in {}, native {})", relative, enum_name(error.code),
-									enum_name(error.op), error.native_code);
+						EMBER_ERROR("asset '{}': {} load failed", slot.path, type.name);
+						m_heap->deallocate(payload, type.size, type.align);
+						payload = nullptr;
 					}
-					else
-					{
-						payload = m_heap->allocate(type.size, type.align);
 
-						// The load owns the bytes from here: they die with it unless the loader takes them.
-						AssetLoad load(relative, std::move(read.result.value()),
-									   slot.payload.load(std::memory_order_acquire), *m_gpu, *m_heap);
-
-						if (!type.load(load, payload))
-						{
-							EMBER_ERROR("asset '{}': {} load failed", relative, type.name);
-							m_heap->deallocate(payload, type.size, type.align);
-							payload = nullptr;
-						}
-					}
+					// A load that worked names everything it was made from. One that failed may have
+					// stopped before it found them all, so it adds to what the last good one named
+					// instead: fixing the file it broke on must still bring the next attempt.
+					depend(handle, {load.m_dependencies.data(), load.m_dependencies.size()}, loaded);
 				}
 			}
 
@@ -535,39 +717,211 @@ namespace ember
 			queue_load(slot, handle);
 	}
 
+	bool AssetManager::read_file(const Slot& slot, fs::FileData& out) noexcept
+	{
+		// Submitted to the IO thread and waited for on this fiber. The worker underneath runs other
+		// jobs meanwhile, and this code resumes wherever one is free.
+		jobs::FileRead read{.path = slot.file, .memory = m_heap};
+		jobs::Counter done;
+
+		if (const auto submitted = jobs::read_file(read, done); !submitted)
+		{
+			EMBER_ERROR("asset '{}': read refused ({})", slot.path, enum_name(submitted.error()));
+			return false;
+		}
+
+		jobs::wait(done);
+
+		if (!read.result)
+		{
+			const fs::FileError& error = read.result.error();
+			EMBER_ERROR("asset '{}': read failed ({} in {}, native {})", slot.path, enum_name(error.code),
+						enum_name(error.op), error.native_code);
+			return false;
+		}
+
+		out = std::move(read.result.value());
+		return true;
+	}
+
 	void AssetManager::publish(Slot& slot, SlotHandle handle, void* payload) noexcept
 	{
-		const bool first = slot.state.load(std::memory_order_relaxed) == AssetState::Loading;
+		const Type& type = m_types[slot.type];
+		std::lock_guard lock(m_lock);
 
-		if (payload != nullptr)
+		// A failure is news only while no load has made a payload: it was the first load, and it
+		// failed. One made earlier may still be waiting for the pump.
+		if (payload == nullptr)
 		{
-			if (slot.payload.load(std::memory_order_relaxed) == nullptr)
+			if (!slot.produced && slot.state.load(std::memory_order_relaxed) == AssetState::Loading)
 			{
-				// Nobody can have read a payload that was not there: the pointer goes out at once.
-				slot.payload.store(payload, std::memory_order_release);
-				slot.state.store(AssetState::Loaded, std::memory_order_release);
+				slot.state.store(AssetState::Failed, std::memory_order_release);
+				jobs::signal(slot.first_load);
 			}
-			else
+
+			return;
+		}
+
+		slot.produced = true;
+
+		// A first payload that nothing else has to finish goes out at once: nobody can have read a
+		// payload that was not there. After a failed first load, that is a reload too.
+		if (type.publish == nullptr && slot.payload.load(std::memory_order_relaxed) == nullptr)
+		{
+			slot.payload.store(payload, std::memory_order_release);
+
+			if (slot.state.exchange(AssetState::Loaded, std::memory_order_acq_rel) == AssetState::Loading)
+				jobs::signal(slot.first_load);
+
+			notify_dependents(slot);
+			return;
+		}
+
+		// Everything else reaches the world at the pump: a reload folds in between frames, and the
+		// first payload of a type that publishes on the owner thread is published there. One
+		// nobody has seen yet is simply replaced by a fresher one.
+		if (slot.fresh != nullptr)
+			retire(std::exchange(slot.fresh, nullptr), slot.type);
+		else
+			m_fresh.push_back(handle.to_bits());
+
+		slot.fresh = payload;
+	}
+
+	void AssetManager::apply_fresh(bool between_frames) noexcept
+	{
+		struct Apply
+		{
+			Slot* slot;
+			void* fresh;
+		};
+
+		for (;;)
+		{
+			Apply applies[64]; // per pass; the rest wait for the next one, or the next pump
+			u32 count = 0;
+
 			{
-				// Frames are reading the live one: the pump folds this in between them. A fresh
-				// payload nobody saw yet is simply replaced by a fresher one.
 				std::lock_guard lock(m_lock);
 
-				if (slot.fresh != nullptr)
-					retire(std::exchange(slot.fresh, nullptr), slot.type);
+				u32 kept = 0;
+				for (const u32 bits : m_fresh)
+				{
+					Slot* slot = m_slots.get(SlotHandle::from_bits(bits));
 
-				slot.fresh = payload;
-				m_fresh.push_back(handle.to_bits());
+					// Gone, or dead with its loader about to free it, payload and all.
+					if (slot == nullptr || slot->fresh == nullptr || slot->dead.load(std::memory_order_acquire))
+						continue;
+
+					// A reload folds between frames only: a frame may be reading the live payload. The
+					// slot cannot go away meanwhile, since only this thread frees the living.
+					const bool reload = slot->payload.load(std::memory_order_relaxed) != nullptr;
+
+					if (count == std::size(applies) || (reload && !between_frames))
+					{
+						m_fresh[kept++] = bits;
+						continue;
+					}
+
+					applies[count++] = {slot, std::exchange(slot->fresh, nullptr)};
+				}
+
+				m_fresh.resize(kept);
 			}
+
+			if (count == 0)
+				return;
+
+			u32 published = 0;
+
+			for (u32 i = 0; i < count; ++i)
+			{
+				Slot& slot			   = *applies[i].slot;
+				void* fresh			   = applies[i].fresh;
+				const Type& type	   = m_types[slot.type];
+				AssetServices services = this->services(type);
+
+				// The fold: the live payload changes under nobody. What the type leaves in `fresh` is
+				// spent and goes the way of every retired payload.
+				if (void* live = slot.payload.load(std::memory_order_relaxed))
+				{
+					type.reload(services, live, fresh);
+
+					std::lock_guard lock(m_lock);
+					retire(fresh, slot.type);
+					notify_dependents(slot);
+					continue;
+				}
+
+				// A first payload, finished here because only this thread may finish it. Not yet means
+				// it waits for an asset it loaded; a newer payload staged meanwhile supersedes it.
+				if (type.publish != nullptr && !type.publish(services, fresh))
+				{
+					std::lock_guard lock(m_lock);
+
+					if (slot.fresh == nullptr)
+					{
+						slot.fresh = fresh;
+						m_fresh.push_back(slot.handle);
+					}
+					else
+					{
+						retire(fresh, slot.type);
+					}
+
+					continue;
+				}
+
+				slot.payload.store(fresh, std::memory_order_release);
+
+				if (slot.state.exchange(AssetState::Loaded, std::memory_order_acq_rel) == AssetState::Loading)
+					jobs::signal(slot.first_load);
+
+				std::lock_guard lock(m_lock);
+				notify_dependents(slot);
+				++published;
+			}
+
+			// One published here may be what another was waiting for: go round until nothing moves.
+			if (published == 0)
+				return;
 		}
-		else if (first)
+	}
+
+	void AssetManager::notify_dependents(Slot& slot) noexcept
+	{
+		// Dependents that went away drop out here, rather than being chased down when they go.
+		u32 kept = 0;
+
+		for (const u32 bits : slot.dependents)
 		{
-			slot.state.store(AssetState::Failed, std::memory_order_release);
+			if (!m_slots.contains(SlotHandle::from_bits(bits)))
+				continue;
+
+			slot.dependents[kept++] = bits;
+			m_refresh.push_back(bits);
 		}
 
-		// Only the first outcome wakes waiters, loaded or failed, exactly once.
-		if (first)
-			jobs::signal(slot.first_load);
+		slot.dependents.resize(kept);
+	}
+
+	void AssetManager::depend(SlotHandle handle, Span<const AssetId> files, bool replace) noexcept
+	{
+		const u32 bits = handle.to_bits();
+		std::lock_guard lock(m_lock);
+
+		if (replace)
+			std::erase_if(m_file_dependencies,
+						  [bits](const FileDependency& dependency) { return dependency.slot == bits; });
+
+		for (const AssetId file : files)
+		{
+			const auto same = [&](const FileDependency& dependency)
+			{ return dependency.file == file && dependency.slot == bits; };
+
+			if (std::none_of(m_file_dependencies.begin(), m_file_dependencies.end(), same))
+				m_file_dependencies.push_back({.file = file, .slot = bits});
+		}
 	}
 
 	void AssetManager::retire(void* payload, u16 type) noexcept
@@ -577,8 +931,8 @@ namespace ember
 
 	void AssetManager::release(const Retired& retired) noexcept
 	{
-		const Type& type = m_types[retired.type];
-		AssetServices services{*m_gpu, *m_heap};
+		const Type& type	   = m_types[retired.type];
+		AssetServices services = this->services(type);
 
 		type.unload(services, retired.payload);
 		m_heap->deallocate(retired.payload, type.size, type.align);

@@ -9,11 +9,19 @@ ember_add_module(Assets
 		asset_manager.cpp
 		texture_asset.cpp
 		file_watcher.cpp
+		material_asset.cpp
 	PUBLIC_DEPS
 		Ember::Core
 		Ember::Jobs
 		Ember::Gpu
+		Ember::Render
+		Ember::Material
 	PRIVATE_DEPS
 		Stb::Stb
 		efsw::efsw
+		$<$<BOOL:${EMBER_SHADER_COMPILER}>:Ember::ShaderCompiler>
 )
+
+# Material types build from source, and hot reload, only in builds with the compiler; ship builds
+# read the pairs ember_cook wrote, and never link libslang.
+target_compile_definitions(ember_assets PRIVATE EMBER_SHADER_COMPILER=$<BOOL:${EMBER_SHADER_COMPILER}>)

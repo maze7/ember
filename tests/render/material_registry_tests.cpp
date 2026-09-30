@@ -2,6 +2,7 @@
 #include <ember/memory/memory.h>
 #include <ember/memory/pmr/arena.h>
 #include <ember/render/material_registry.h>
+#include <ember/render/scene.h>
 
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
@@ -115,6 +116,15 @@ namespace
 		EXPECT_LE(offset + sizeof(T), record.size());
 		std::memcpy(&value, record.data() + offset, sizeof(T));
 		return value;
+	}
+
+	/// The same type with per-object data of its own: an Instance laid out as `params`.
+	material::Type with_instance(material::Type type, std::vector<material::Param> params, u32 size)
+	{
+		type.instance.params = {params.begin(), params.end()};
+		type.instance.size	 = size;
+		type.hash			 = material::hash_type(type);
+		return type;
 	}
 
 	/// sRGB 0.5, decoded: the value a mid-grey picked in an editor becomes in a record.
@@ -472,4 +482,128 @@ TEST_F(Materials, BucketsLieEndToEndSizedByTheirObjects)
 
 	for (size_t i = 1; i < ranges.size(); ++i)
 		EXPECT_EQ(ranges[i].first, ranges[i - 1].first + ranges[i - 1].capacity) << i;
+}
+
+TEST_F(Materials, AMaterialMovedToATypeWithOtherInstanceDefaultsIsListedForReseeding)
+{
+	const std::vector<material::Param> frame = {number("frame", ParamKind::Float, 4, 0, "0 0 1 1")};
+
+	const MaterialTypeHandle plain = m_registry.add_type(make_type("Plain", {number("a", ParamKind::Float, 1, 0)}, 4));
+	const MaterialTypeHandle framed =
+		m_registry.add_type(with_instance(make_type("Framed", {number("a", ParamKind::Float, 1, 0)}, 4), frame, 16));
+	const MaterialTypeHandle framed_too =
+		m_registry.add_type(with_instance(make_type("FramedToo", {number("b", ParamKind::Float, 1, 0)}, 4), frame, 16));
+
+	const MaterialHandle material = make(plain);
+	EXPECT_TRUE(m_registry.reseeds().empty());
+
+	ASSERT_TRUE(m_registry.set_type(material, framed));
+	ASSERT_EQ(m_registry.reseeds().size(), 1u);
+	EXPECT_EQ(m_registry.reseeds()[0], material);
+
+	// Another type with the same Instance defaults leaves the objects' data as it is.
+	m_registry.clear_reseeds();
+	ASSERT_TRUE(m_registry.set_type(material, framed_too));
+	EXPECT_TRUE(m_registry.reseeds().empty());
+}
+
+TEST_F(Materials, ARebuildWithOtherInstanceDefaultsListsEveryMaterialOfTheType)
+{
+	const auto build = [](const char* rate)
+	{
+		return with_instance(make_type("Blinking", {number("a", ParamKind::Float, 1, 0)}, 4),
+							 {number("rate", ParamKind::Float, 1, 0, rate)}, 4);
+	};
+
+	const MaterialTypeHandle type = m_registry.add_type(build("1"));
+	const MaterialHandle a		  = make(type);
+	const MaterialHandle b		  = make(type);
+
+	// New code, same defaults: nothing to reseed.
+	material::Type recompiled = build("1");
+	recompiled.spirv.push_back(0u);
+	recompiled.hash = material::hash_type(recompiled);
+
+	ASSERT_TRUE(m_registry.replace_type(type, std::move(recompiled)));
+	EXPECT_TRUE(m_registry.reseeds().empty());
+
+	ASSERT_TRUE(m_registry.replace_type(type, build("0.5")));
+	ASSERT_EQ(m_registry.reseeds().size(), 2u);
+	EXPECT_NE(std::find(m_registry.reseeds().begin(), m_registry.reseeds().end(), a), m_registry.reseeds().end());
+	EXPECT_NE(std::find(m_registry.reseeds().begin(), m_registry.reseeds().end(), b), m_registry.reseeds().end());
+}
+
+TEST_F(Materials, ObjectsFollowTheirTypesDefaultsUntilTheGameWritesTheirData)
+{
+	const MaterialTypeHandle plain = m_registry.add_type(make_type("Plain", {number("a", ParamKind::Float, 1, 0)}, 4));
+	const MaterialTypeHandle framed =
+		m_registry.add_type(with_instance(make_type("Framed", {number("a", ParamKind::Float, 1, 0)}, 4),
+										  {number("frame", ParamKind::Float, 4, 0, "0 0 1 1")}, 16));
+
+	const MaterialHandle material = make(plain);
+
+	RenderScene scene;
+	scene.init(8, &m_registry);
+
+	const glm::vec4 given(0.5f);
+	const auto untouched = scene.create_object({.material = material});
+	const auto seeded	 = scene.create_object({
+		.material = material,
+		.instance = {reinterpret_cast<const u8*>(&given), sizeof(given)},
+	});
+	const auto written	 = scene.create_object({.material = material});
+	scene.set_instance(written, glm::vec4(0.25f));
+
+	// The material moves to a type that frames its objects: what the renderer does each frame.
+	ASSERT_TRUE(m_registry.set_type(material, framed));
+	scene.reseed(m_registry.reseeds());
+	m_registry.clear_reseeds();
+
+	const auto data = [&](RenderObjectHandle object)
+	{ return read<glm::vec4>({scene.instance(object.index).bytes, material::INSTANCE_BYTES}, 0); };
+
+	EXPECT_EQ(data(untouched), glm::vec4(0.0f, 0.0f, 1.0f, 1.0f)); // the engine's: the new defaults
+	EXPECT_EQ(data(seeded), given);								   // the game's, as it gave them
+	EXPECT_EQ(data(written), glm::vec4(0.25f));					   // and as it wrote them
+}
+
+TEST_F(Materials, AnObjectGivenAMaterialOfAnotherTypeStartsItsDataOver)
+{
+	const std::vector<material::Param> frame = {number("frame", ParamKind::Float, 4, 0, "0 0 1 1")};
+
+	const MaterialTypeHandle plain = m_registry.add_type(make_type("Plain", {number("a", ParamKind::Float, 1, 0)}, 4));
+	const MaterialTypeHandle framed =
+		m_registry.add_type(with_instance(make_type("Framed", {number("a", ParamKind::Float, 1, 0)}, 4), frame, 16));
+
+	const MaterialHandle plain_material = make(plain);
+	const MaterialHandle framed_a		= make(framed);
+	const MaterialHandle framed_b		= make(framed);
+
+	RenderScene scene;
+	scene.init(4, &m_registry);
+
+	const auto object = scene.create_object({.material = framed_a});
+	scene.set_instance(object, glm::vec4(0.5f));
+
+	const auto data = [&]
+	{ return read<glm::vec4>({scene.instance(object.index).bytes, material::INSTANCE_BYTES}, 0); };
+
+	// The same type: the data is still the object's.
+	scene.set_material(object, framed_b);
+	EXPECT_EQ(data(), glm::vec4(0.5f));
+
+	// Another type: its defaults, which a type without an Instance leaves at zero.
+	scene.set_material(object, plain_material);
+	EXPECT_EQ(data(), glm::vec4(0.0f));
+
+	scene.set_material(object, framed_a);
+	EXPECT_EQ(data(), glm::vec4(0.0f, 0.0f, 1.0f, 1.0f));
+
+	// And being the engine's again, it follows the defaults when the type is rebuilt with others.
+	ASSERT_TRUE(
+		m_registry.replace_type(framed, with_instance(make_type("Framed", {number("a", ParamKind::Float, 1, 0)}, 4),
+													  {number("frame", ParamKind::Float, 4, 0, "0 0 0.5 0.5")}, 16)));
+	scene.reseed(m_registry.reseeds());
+	m_registry.clear_reseeds();
+	EXPECT_EQ(data(), glm::vec4(0.0f, 0.0f, 0.5f, 0.5f));
 }

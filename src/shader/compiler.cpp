@@ -210,6 +210,12 @@ namespace ember::shader
 			slang::IModule* module =
 				session->loadModuleFromSourceString(name, file.c_str(), text.c_str(), diagnostics.writeRef());
 			report.forward(diagnostics);
+
+			// A session keeps a failed attempt by its path and answers the next with the same failure,
+			// whatever the text says now: a fixed save must start over in a session of its own.
+			if (module == nullptr)
+				stale = true;
+
 			return module;
 		}
 
@@ -381,6 +387,10 @@ namespace ember::shader
 			if (module == nullptr)
 				return false;
 
+			// What the module read is known from here on, and is recorded before anything else can
+			// fail: a compile that fails still names the files a fix can be made in.
+			add_dependencies(module, out.dependencies);
+
 			check_imports(module, file, source, engine(), report);
 			check_globals(session, module, engine(), report);
 
@@ -451,6 +461,9 @@ namespace ember::shader
 
 			slang::IModule* entry = entry_module(out.domain, report);
 
+			if (entry != nullptr)
+				add_dependencies(entry, out.dependencies);
+
 			if (out.domain == material::Domain::Surface && entry != nullptr)
 				resolve_shading(shading, file, out.state, report);
 
@@ -516,9 +529,6 @@ namespace ember::shader
 				if (linked->getLayout()->findEntryPointByName(entry_points[i]) == nullptr)
 					report.error(engine_dir, "the engine's {} module has no {} entry point",
 								 ENTRY_MODULES[static_cast<size_t>(out.domain)], entry_points[i]);
-
-			add_dependencies(module, out.dependencies);
-			add_dependencies(entry, out.dependencies);
 
 			out.hash = material::hash_type(out);
 			return !report.failed();
@@ -627,4 +637,6 @@ namespace ember::shader
 	{
 		return m_impl != nullptr ? StringView(m_impl->engine_dir) : StringView();
 	}
+
+	const char* Compiler::configured_engine_dir() noexcept { return EMBER_SHADER_DIR; }
 }

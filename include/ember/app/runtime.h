@@ -3,6 +3,7 @@
 #include <ember/app/app.h>
 #include <ember/app/frame.h>
 #include <ember/assets/asset.h>
+#include <ember/assets/material_asset.h>
 #include <ember/core/common.h>
 #include <ember/core/result.h>
 #include <ember/gpu/common.h>
@@ -103,6 +104,7 @@ namespace ember
 		Unique<gpu::Device> m_gpu;
 		Unique<render::Renderer> m_renderer;
 		Unique<AssetManager> m_assets;
+		Unique<MaterialAssets> m_materials;
 
 		Input m_input;
 

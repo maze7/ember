@@ -31,6 +31,7 @@ struct Sprite : IMaterial
 			discard;
 
 		out.albedo = lerp(texel.rgb, 1.0, data.flash);
+		// out.albedo = lerp(float3(luminance(texel.rgb)), 1.0, data.flash);
 
 		// Light and shadow edges land on the art's texels instead of cutting through them.
 		snap_to_texels(s, albedo, uv, out);
