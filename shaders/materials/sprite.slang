@@ -4,7 +4,7 @@ import material;
 /// write depth and draw in any order: standees sort against the world and each other by depth,
 /// with no sorting pass. The frame shown is per object, so animation writes Instance data and never
 /// touches a material.
-[Queue("cutout")] [Cull("none")]
+[Queue("cutout")] [Cull("none")] [Shading("pixel")]
 struct Sprite : IMaterial
 {
 	[Filter("point")] Texture2DRef albedo;
