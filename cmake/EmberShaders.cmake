@@ -18,6 +18,16 @@ set(EMBER_EMBED_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/EmbedBlob.cmake" CACHE INTERNA
 function(_ember_cook kind output source)
 	cmake_parse_arguments(ARG "" "" "OUTPUTS;INCLUDE_DIRS" ${ARGN})
 
+	# Without the cook the files are sources: whatever a build with it on left behind.
+	if(NOT EMBER_COOK)
+		foreach(file IN ITEMS "${output}" ${ARG_OUTPUTS})
+			if(NOT EXISTS "${file}")
+				message(FATAL_ERROR "${file} is not cooked and EMBER_COOK is off: build with the cook on first")
+			endif()
+		endforeach()
+		return()
+	endif()
+
 	# Relative paths name files in the calling directory, as they do everywhere else in CMake; the
 	# tool itself runs in the binary directory.
 	cmake_path(ABSOLUTE_PATH source BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" NORMALIZE)
@@ -94,7 +104,13 @@ function(ember_embed_shaders target)
 		message(FATAL_ERROR "ember_embed_shaders(${target}): NAMESPACE, HEADER and SHADERS or MATERIALS are required")
 	endif()
 
-	set(cooked "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+	# The build tree, unless the game named a directory in its source tree (EMBER_COOKED_DIR, set
+	# before adding the engine), where a build that cannot cook finds them.
+	if(EMBER_COOKED_DIR)
+		set(cooked "${EMBER_COOKED_DIR}")
+	else()
+		set(cooked "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+	endif()
 
 	foreach(shader IN LISTS ARG_SHADERS)
 		cmake_path(REMOVE_EXTENSION shader LAST_ONLY OUTPUT_VARIABLE stem)

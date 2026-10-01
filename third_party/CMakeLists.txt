@@ -171,7 +171,7 @@ add_subdirectory(yyjson)
 #   GameNetworkingSockets   open source, built here, static, without its examples, tests and tools.
 #                           Needs OpenSSL and protobuf from the system (Fedora: dnf install
 #                           openssl-devel protobuf-devel; Windows: vcpkg).
-#   SteamNetworkingSockets  EMBER_USE_STEAM_NETWORKING: Steam's, in the Steamworks SDK, which adds
+#   SteamNetworkingSockets  EMBER_USE_STEAM: Steam's, in the Steamworks SDK, which adds
 #                           Steam's relay network and connections by Steam ID. The SDK comes from
 #                           partner.steamgames.com/downloads; STEAMWORKS_SDK is its sdk folder.
 if(EMBER_ENABLE_NET)
@@ -184,10 +184,10 @@ if(EMBER_ENABLE_NET)
 	add_library(networking_sockets INTERFACE)
 	add_library(Valve::NetworkingSockets ALIAS networking_sockets)
 
-	if(EMBER_USE_STEAM_NETWORKING)
+	if(EMBER_USE_STEAM)
 		set(STEAMWORKS_SDK "" CACHE PATH "The Steamworks SDK's sdk folder, holding public/ and redistributable_bin/")
 		if(NOT EXISTS "${STEAMWORKS_SDK}/public/steam/steam_api.h")
-			message(FATAL_ERROR "EMBER_USE_STEAM_NETWORKING needs STEAMWORKS_SDK: the Steamworks SDK's sdk folder")
+			message(FATAL_ERROR "EMBER_USE_STEAM needs STEAMWORKS_SDK: the Steamworks SDK's sdk folder")
 		endif()
 
 		# steam_api is a shared library the game ships beside its executable.

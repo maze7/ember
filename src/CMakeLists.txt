@@ -51,7 +51,11 @@ add_library(Ember::Ember ALIAS ember)
 if (EMBER_ENABLE_GRAPHICS)
 	add_subdirectory(gpu)
 	add_subdirectory(render)
-	add_subdirectory(shader)
+	# The compiler, and the Slang it links, only for a build that compiles shaders: the cook, hot
+	# reload or the tests.
+	if (EMBER_COOK OR EMBER_SHADER_COMPILER OR EMBER_BUILD_TESTS)
+		add_subdirectory(shader)
+	endif()
 	add_subdirectory(material)
 endif()
 

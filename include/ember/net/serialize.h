@@ -124,16 +124,6 @@
 namespace ember::net
 {
 	/**
-	 * The largest packet or message the protocol sends. GameNetworkingSockets puts at most 1132
-	 * bytes of one message in a single UDP packet at its default MTU (1300, less 52 of framing, 16
-	 * of AES-GCM tag and 100 kept for its own headers); a larger unreliable message is fragmented,
-	 * and losing any fragment loses all of it. 1024 stays clear of that with room for relay
-	 * headers, and is a multiple of 8, as serialize's writer needs. Every transport carries this
-	 * much in one piece.
-	 */
-	inline constexpr u32 MAX_PACKET_BYTES = 1024;
-
-	/**
 	 * Packet memory both serialize and streams accept. The writer stores whole qwords, so it writes into
 	 * MAX_PACKET_BYTES, a multiple of 8; the reader loads 64 bit windows, so 8 readable bytes must follow a packet's
 	 * last byte. One buffer of MAX_PACKET_BYTES plus thyat slack serves either way.

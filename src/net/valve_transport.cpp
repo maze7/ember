@@ -3,7 +3,7 @@
 #include <ember/net/valve_transport.h>
 #include <ember/sync/thread.h>
 
-#if EMBER_USE_STEAM_NETWORKING
+#if EMBER_USE_STEAM
 	#include <steam/steam_api.h>
 	#include <steam/steam_gameserver.h>
 #else
@@ -25,7 +25,7 @@ namespace ember::net
 {
 	static_assert(sizeof(HSteamNetConnection) == sizeof(u32) && sizeof(HSteamListenSocket) == sizeof(u32) &&
 					  sizeof(HSteamNetPollGroup) == sizeof(u32),
-				  "ValveTransport:w keeps the library's handles as u32, so sockets.h needs none of its headers");
+				  "ValveTransport keeps the library's handles as u32, so valve_transport.h needs none of its headers");
 
 	namespace
 	{
@@ -285,17 +285,17 @@ namespace ember::net
 #if EMBER_USE_STEAM
 		// Steam is the app's to start and stop; take the interface for the role it started.
 		ISteamNetworkingSockets* const api =
-			def.steam_role == SteamRole::Server ? SteamGameServerNetworkingSockets() : SteamNetworkingSockets();
+			def.role == Role::Server ? SteamGameServerNetworkingSockets() : SteamNetworkingSockets();
 
 		if (api == nullptr || SteamNetworkingUtils() == nullptr)
 		{
-			EMBER_ERROR("Steam networking is unavailable: start Steam as a {} first", enum_name(def.steam_role));
+			EMBER_ERROR("Steam networking is unavailable: start Steam as a {} first", enum_name(def.role));
 			s_claimed = false;
-			return fail(NetError::SteamNotRunning);
+			return fail(TransportError::SteamNotRunning);
 		}
 
 		// Measuring the relays takes a few seconds: start now, not at the first connection to a friend.
-		if (def.steam_role == SteamRole::Client)
+		if (def.role == Role::Client)
 			SteamNetworkingUtils()->InitRelayNetworkAccess();
 #else
 		(void)def;

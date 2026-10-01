@@ -3,12 +3,11 @@
 # reaches the engine's public include tree.
 ember_add_module(Net
 	SOURCES
-		# command_stream.cpp
-		# common.cpp
+		command_stream.cpp
 		connection.cpp
-		# loopback.cpp
+		loopback.cpp
 		valve_transport.cpp
-		# time_dilation.cpp
+		time_dilation.cpp
 	PUBLIC_DEPS
 		Ember::Core
 		serialize::serialize
@@ -20,7 +19,7 @@ target_compile_definitions(ember_net PUBLIC EMBER_USE_STEAM=$<BOOL:${EMBER_USE_S
 
 # The sockets library's objects are built without RTTI (GameNetworkingSockets) or outside this build
 # (Steam), so UBSan's vptr check cannot recognise them and would stop every call into the library
-# under the asan preset. Only sockets.cpp calls in.
+# under the asan preset. Only valve_transport.cpp calls in.
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-	set_source_files_properties(sockets.cpp PROPERTIES COMPILE_OPTIONS "-fno-sanitize=vptr")
+	set_source_files_properties(valve_transport.cpp PROPERTIES COMPILE_OPTIONS "-fno-sanitize=vptr")
 endif()

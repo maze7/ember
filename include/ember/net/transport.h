@@ -15,20 +15,11 @@ namespace ember::net
 
 	inline constexpr PeerId NO_PEER = 0;
 
-	/**
-	 * The largest packet or message the protocol sends. GameNetworkingSockets puts at most 1132
-	 * bytes of one message in a single UDP packet at its default MTU (1300, less 52 of framing, 16
-	 * of AES-GCM tag and 100 kept for its own headers); a larger unreliable message is fragmented,
-	 * and losing any fragment loses all of it. 1024 stays clear of that with room for relay
-	 * headers, and is a multiple of 8, as serialize's writer needs. Every transport carries this
-	 * much in one piece.
-	 */
-	inline constexpr u32 MAX_PACKET_BYTES = 1024;
-
 	enum class Role : u8
 	{
 		Client, // the app is a game client, hosting or not
 		Server, // the app is a dedicated server
+		Count
 	};
 
 	struct NetDef
@@ -41,6 +32,7 @@ namespace ember::net
 		AlreadyInitialized, // the library behidn the transport is already running
 		NotInitialized,		// the library behind the transport is not running: call net::initialize()
 		LibraryFailed,		// the underlying library (GNS / SteamNetworkingSockets) failed to init
+		SteamNotRunning,	// Steam builds: Steam has not been started, or not in the role asked for
 		BadAddress,			// the address does not parse for this transport
 		AlreadyListening,	// listen() called twice
 		AddressInUse,		// another endpoint holds the address
@@ -126,7 +118,7 @@ namespace ember::net
 	};
 
 	/** Starts the networking layer for the process. */
-	[[nodiscard]] Result<void, TransportError> initialize() noexcept;
+	[[nodiscard]] Result<void, TransportError> initialize(const NetDef& def = {}) noexcept;
 
 	/** Stops the library. Every Transport must be destroyed first. */
 	void shutdown() noexcept;
@@ -169,8 +161,9 @@ namespace ember::net
 
 namespace ember
 {
-	EMBER_ENUM_NAMES(net::TransportError, "AlreadyInitialized", "NotInitialized", "LibraryFailed", "BadAddress",
-					 "AlreadyListening", "AddressInUse", "Unreachable", "Unsupported");
+	EMBER_ENUM_NAMES(net::Role, "Client", "Server");
+	EMBER_ENUM_NAMES(net::TransportError, "AlreadyInitialized", "NotInitialized", "LibraryFailed", "SteamNotRunning",
+					 "BadAddress", "AlreadyListening", "AddressInUse", "Unreachable", "Unsupported");
 	EMBER_ENUM_NAMES(net::Delivery, "Unreliable", "Reliable");
 	EMBER_ENUM_NAMES(net::TransportEventKind, "Connected", "Disconnected", "Received");
 	EMBER_ENUM_NAMES(net::DisconnectReason, "None", "Requested", "TimedOut", "Rejected", "ProtocolMismatch",

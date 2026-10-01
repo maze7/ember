@@ -10,7 +10,7 @@ namespace ember::net
 {
 	/**
 	 * True when this build runs on Steam's SteamNetworkingSockets, from the Steamworks SDK, rather
-	 * than GameNetworkingSockets, its open source twin: the EMBER_USER_STEAM Cmake option.
+	 * than GameNetworkingSockets, its open source twin: the EMBER_USE_STEAM CMake option.
 	 *
 	 * Both libraries implement one API, so everything below works on either; Steam adds connections
 	 * to other Steam users by Steam ID, through its relay network.
