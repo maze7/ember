@@ -11,6 +11,7 @@ ember_add_module(Render
 		features/surface.cpp
 		features/upscale.cpp
 		features/lighting.cpp
+		features/screen.cpp
 	PUBLIC_DEPS
 		Ember::Gpu
 		Ember::Material
@@ -22,6 +23,7 @@ ember_embed_shaders(ember_render
 	SHADERS
 		cull.slang
 		upscale.slang
+		post.slang
 	MATERIALS
 		materials/error.slang
 		materials/unlit.slang

@@ -607,3 +607,17 @@ TEST_F(Materials, AnObjectGivenAMaterialOfAnotherTypeStartsItsDataOver)
 	m_registry.clear_reseeds();
 	EXPECT_EQ(data(), glm::vec4(0.0f, 0.0f, 0.5f, 0.5f));
 }
+
+TEST_F(Materials, ScreenMaterialsAreFoundByTheirSlot)
+{
+	const MaterialTypeHandle screen =
+		m_registry.add_type(make_type("Grade", {color("tint", 4, 0, "1 1 1 1")}, 16, Domain::Screen));
+
+	const MaterialHandle first	= make(screen);
+	const MaterialHandle second = make(screen);
+
+	// No key reaches a screen material, so the pass that draws one pushes its type's table and its slot.
+	EXPECT_EQ(m_registry.slot(first), 0u);
+	EXPECT_EQ(m_registry.slot(second), 1u);
+	EXPECT_EQ(m_registry.slot(MaterialHandle{}), 0u);
+}

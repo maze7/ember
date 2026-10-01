@@ -643,6 +643,12 @@ namespace ember::render
 		return handle.index < m_keys.size() ? m_keys[handle.index] : ERROR_MATERIAL_KEY;
 	}
 
+	u16 MaterialRegistry::slot(MaterialHandle handle) const noexcept
+	{
+		const MaterialEntry* material = m_materials.get(handle);
+		return material != nullptr ? material->slot : 0;
+	}
+
 	TextureHandle MaterialRegistry::builtin(BuiltinTexture texture) const noexcept
 	{
 		return m_builtins[static_cast<size_t>(texture)];

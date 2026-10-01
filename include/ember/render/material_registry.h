@@ -307,6 +307,11 @@ namespace ember::render
 		/// The key table's row for the handle's index, as the next sync uploads it.
 		[[nodiscard]] u32 key(MaterialHandle material) const noexcept;
 
+		/// The material's slot in its type's table. A pass that draws one material outright pushes it
+		/// beside table_index(), which is how a screen material, which no key reaches, finds its
+		/// record. Zero for a dead material, whose type_of() is null.
+		[[nodiscard]] u16 slot(MaterialHandle material) const noexcept;
+
 		/// The bucket, which is to say the type, a material index draws in now. By index alone, as
 		/// objects store their material; a destroyed material's row draws the error type's.
 		[[nodiscard]] u16 bucket_of(u32 material_index) const noexcept

@@ -66,9 +66,9 @@ public struct ViewConstants
 	float2 resolution;
 	float2 inverse_resolution;
 
-	uint scene_color;     // the opaque world's colour and depth: valid in transparent and screen passes
+	uint scene_color;     // the image so far and the world's depth: filled in for screen passes
 	uint scene_depth;
-	uint scene_sampler;   // linear clamp, for reading the two above
+	uint scene_sampler;   // nearest, clamped: depth must not blend across an edge
 	uint _pad0;
 };
 

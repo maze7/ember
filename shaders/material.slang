@@ -189,8 +189,10 @@ public interface IMaterial
 	void vertex(inout VertexData v) {}
 };
 
-/// A material drawn over the whole target once per frame: post effects, palette mapping,
-/// outlines. Reads the scene through scene_color() and scene_depth().
+/// A material drawn over the whole screen once per frame, after the grade, in the order the game
+/// lists them: palette mapping, outlines, fades. pixel() returns the new image, reading the old one
+/// through scene_color() and the world's depth through scene_depth(). A type with [Blend] draws over
+/// the image instead, and cannot read it: no pass can read the target it draws on.
 public interface IScreenMaterial
 {
 	float4 pixel(ScreenInput s);
@@ -232,7 +234,8 @@ public float3 unpack_normal(float4 texel) { return normalize(texel.xyz * 2.0 - 1
 /// Rec. 709 luminance of a linear colour.
 public float luminance(float3 color) { return dot(color, float3(0.2126, 0.7152, 0.0722)); }
 
-/// The opaque world's colour and depth at a screen position. Valid in transparent and screen
-/// passes, which run after it; elsewhere they read the heap's fallback.
+/// The image so far, linear, and the world's depth (1 near, 0 far), at a screen position, read
+/// unfiltered. Valid in screen materials, colour only in those that replace the image; elsewhere they
+/// read the heap's fallback.
 public float4 scene_color(float2 screen_uv) { return texture_2d(g_view.scene_color).SampleLevel(sampler(g_view.scene_sampler), screen_uv, 0.0); }
 public float  scene_depth(float2 screen_uv) { return texture_2d(g_view.scene_depth).SampleLevel(sampler(g_view.scene_sampler), screen_uv, 0.0).r; }

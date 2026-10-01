@@ -9,6 +9,7 @@ namespace ember::render::embedded
 	/// use when a Def carries no shader override.
 	[[nodiscard]] Span<const u8> cull_shader() noexcept;
 	[[nodiscard]] Span<const u8> upscale_shader() noexcept;
+	[[nodiscard]] Span<const u8> post_shader() noexcept;
 
 	/// The engine's material types, each as its SPIR-V and its .type file, which material::read_cooked
 	/// joins. The registry loads them at init: the error type, drawn for a null or stale material

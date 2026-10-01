@@ -211,16 +211,7 @@ void cs_main(uint3 id : SV_DispatchThreadID)
 						   .entry = "cs_main"},
 			});
 
-			// A dither cell the size of the camera's pixel, 8 pixels a unit, and shadows fit to every
-			// height the camera sees.
-			m_lighting = &m_renderer.add_feature<LightingFeature>({
-				.dither_cell = 1.0f / 8.0f,
-				.shadow		 = {.resolution = 512, .min_height = -8.0f, .max_height = 8.0f},
-			});
-			m_renderer.add_feature<SurfaceFeature>({
-				.color_format = gpu::TextureFormat::RGBA8Unorm,
-				.clear		  = {0.0f, 0.0f, 1.0f, 1.0f},
-			});
+			add_features();
 			m_renderer.add_feature<CountProbe>({.readback = m_readback});
 			m_renderer.add_feature<PixelProbe>({.pipeline = m_probe, .readback = m_pixels, .extent = TARGET});
 
@@ -254,6 +245,22 @@ void cs_main(uint3 id : SV_DispatchThreadID)
 			m_scratch.shutdown();
 
 			EXPECT_EQ(gpu::Device::validation_error_count() - m_errors, 0u);
+		}
+
+		/// The features under test, registered ahead of the probes: lighting, and the surfaces drawing
+		/// straight into the target. A dither cell the size of the camera's pixel, 8 pixels a unit, and
+		/// shadows fit to every height the camera sees. A fixture testing another arrangement of
+		/// features overrides this.
+		virtual void add_features()
+		{
+			m_lighting = &m_renderer.add_feature<LightingFeature>({
+				.dither_cell = 1.0f / 8.0f,
+				.shadow		 = {.resolution = 512, .min_height = -8.0f, .max_height = 8.0f},
+			});
+			m_renderer.add_feature<SurfaceFeature>({
+				.color_format = gpu::TextureFormat::RGBA8Unorm,
+				.clear		  = {0.0f, 0.0f, 1.0f, 1.0f},
+			});
 		}
 
 		/// A unit quad on the z = 0 plane, facing the camera, whose vertices carry this normal. Shading

@@ -137,7 +137,7 @@ namespace ember::render
 		frame.resources.scene_depth = frame.graph.create({
 			.name	= "scene_depth",
 			.format = m_depth_format,
-			.usage	= gpu::TextureUsage::DepthStencilTarget,
+			.usage	= gpu::TextureUsage::DepthStencilTarget | gpu::TextureUsage::Sampled,
 			.extent = frame.resources.scene_extent,
 		});
 

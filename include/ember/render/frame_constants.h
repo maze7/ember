@@ -89,8 +89,8 @@ namespace ember::render
 		glm::vec2 resolution		 = {};
 		glm::vec2 inverse_resolution = {};
 
-		u32 scene_color	  = 0; // the opaque world's colour, depth and sampler: for transparent and
-		u32 scene_depth	  = 0; // screen passes, once a feature copies them out
+		u32 scene_color	  = 0; // the image so far, the world's depth and a sampler for them: what a
+		u32 scene_depth	  = 0; // screen pass reads, filled in by the feature that draws it
 		u32 scene_sampler = 0;
 		u32 pad0		  = 0;
 	};
