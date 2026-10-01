@@ -128,16 +128,27 @@ namespace ember
 
 		// One heap view per tag, in MemoryTag declaration order. memory_resource's  destructor
 		// is not constexpr, so these are aggregate-initialized directly rather than through a factory.
-		constinit std::array<Heap, static_cast<size_t>(MemoryTag::Count)> s_heaps = {
+		//
+		// The views are never destroyed, the way the standard library keeps its own resources: static
+		// destructors in any translation unit may still free through them (the tagged heap, anything on
+		// the default resource), and an ordinary static would die at a link-order-dependent point of exit.
+		union HeapViews
+		{
+			std::array<Heap, static_cast<size_t>(MemoryTag::Count)> heaps;
+
+			~HeapViews() noexcept {} // leaves heaps alive
+		};
+
+		constinit HeapViews s_views = {{
 			Heap{MemoryTag::Unknown},	Heap{MemoryTag::Engine},  Heap{MemoryTag::Graphics}, Heap{MemoryTag::Audio},
 			Heap{MemoryTag::Physics},	Heap{MemoryTag::ECS},	  Heap{MemoryTag::Gameplay}, Heap{MemoryTag::Assets},
 			Heap{MemoryTag::Scripting}, Heap{MemoryTag::Network}, Heap{MemoryTag::Platform}, Heap{MemoryTag::Input},
 			Heap{MemoryTag::Tools},		Heap{MemoryTag::Strings},
-		};
+		}};
 
 		// Ensure we don't drift from MemoryTag
 		static_assert(static_cast<size_t>(MemoryTag::Count) == 14,
-					  "New MemoryTag: add its HeapResource to s_heaps above.");
+					  "New MemoryTag: add its Heap to s_views above.");
 	}
 
 	// Tracking accounts the usable (block) size rather than the requested size: it mirrors
@@ -166,7 +177,7 @@ namespace ember
 	{
 		// Containers use equality to decide whether buffers may be adopted or move-assign
 		// and swap; any two tagged heaps qualify. Cold path, and the loop avoids RTTI.
-		for (const Heap& heap : s_heaps)
+		for (const Heap& heap : s_views.heaps)
 			if (&heap == &other)
 				return true;
 
@@ -236,8 +247,8 @@ namespace ember
 		Heap& heap(MemoryTag tag) noexcept
 		{
 			const size_t index = static_cast<size_t>(tag);
-			EMBER_ASSERT(index < s_heaps.size());
-			return s_heaps[index < s_heaps.size() ? index : 0];
+			EMBER_ASSERT(index < s_views.heaps.size());
+			return s_views.heaps[index < s_views.heaps.size() ? index : 0];
 		}
 
 		void initialize_thread() noexcept

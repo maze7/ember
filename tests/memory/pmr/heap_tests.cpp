@@ -5,6 +5,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 
@@ -14,6 +15,21 @@ namespace
 	using ember::MemoryTag;
 
 	Heap& heap(MemoryTag tag = MemoryTag::Engine) { return ember::memory::heap(tag); }
+
+	// Frees its block when the process exits. Test objects link ahead of the engine library, so this
+	// static's destructor runs after every engine static's, the heap views' included.
+	struct FreedAtExit
+	{
+		void* block = nullptr;
+
+		~FreedAtExit()
+		{
+			if (block != nullptr)
+				heap(MemoryTag::Tools).deallocate(block, 64, 16);
+		}
+	};
+
+	FreedAtExit s_freed_at_exit;
 }
 
 TEST(HeapResource, AllocateGivesWritableMemory)
@@ -151,4 +167,17 @@ TEST(HeapResourceTracking, LiveBlocksAreObservableAsLeaks)
 TEST(HeapResourceDeathTest, ImpossibleAllocationIsFatal)
 {
 	EXPECT_DEATH((void)heap().allocate(std::numeric_limits<size_t>::max() / 2, 16), "Out of memory");
+}
+
+// memory.h lets static destructors free heap memory after shutdown, so the views must outlive every
+// other static. A destroyed view still dispatches by luck in a normal build; a build with
+// -fno-sanitize-recover=undefined clears its vptr and fails this exit instead.
+TEST(HeapResourceDeathTest, StaticDestructorsCanStillFree)
+{
+	EXPECT_EXIT(
+		{
+			s_freed_at_exit.block = heap(MemoryTag::Tools).allocate(64, 16);
+			std::exit(0);
+		},
+		::testing::ExitedWithCode(0), "");
 }

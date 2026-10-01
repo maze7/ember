@@ -18,5 +18,9 @@ int main(int argc, char** argv)
 		return 1;
 	}
 
-	return RUN_ALL_TESTS();
-} // leak reporting and shutdown happen here
+	const int result = RUN_ALL_TESTS();
+
+	// Before static destruction: reports leaks and releases the tagged heap.
+	memory::shutdown();
+	return result;
+}

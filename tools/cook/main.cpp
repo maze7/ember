@@ -244,5 +244,7 @@ int main(int argc, char** argv)
 		return 1;
 	}
 
-	return run(argc, argv);
+	const int result = run(argc, argv);
+	ember::memory::shutdown();
+	return result;
 }
