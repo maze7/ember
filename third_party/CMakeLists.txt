@@ -162,3 +162,67 @@ if(EMBER_ENABLE_ASSETS)
 endif()
 
 add_subdirectory(yyjson)
+
+# Ember::Net's dependencies. serialize (Glenn Fiedler) is the wire format: one header, public,
+# because game types describe themselves with its macros. The transport is Valve's networking
+# sockets, private to Ember::Net as SDL is to Ember::Platform, as Valve::NetworkingSockets: one of two
+# libraries with one API.
+#
+#   GameNetworkingSockets   open source, built here, static, without its examples, tests and tools.
+#                           Needs OpenSSL and protobuf from the system (Fedora: dnf install
+#                           openssl-devel protobuf-devel; Windows: vcpkg).
+#   SteamNetworkingSockets  EMBER_USE_STEAM_NETWORKING: Steam's, in the Steamworks SDK, which adds
+#                           Steam's relay network and connections by Steam ID. The SDK comes from
+#                           partner.steamgames.com/downloads; STEAMWORKS_SDK is its sdk folder.
+if(EMBER_ENABLE_NET)
+	add_library(serialize INTERFACE)
+	add_library(serialize::serialize ALIAS serialize)
+	target_include_directories(serialize SYSTEM INTERFACE
+		"$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/serialize>"
+	)
+
+	add_library(networking_sockets INTERFACE)
+	add_library(Valve::NetworkingSockets ALIAS networking_sockets)
+
+	if(EMBER_USE_STEAM_NETWORKING)
+		set(STEAMWORKS_SDK "" CACHE PATH "The Steamworks SDK's sdk folder, holding public/ and redistributable_bin/")
+		if(NOT EXISTS "${STEAMWORKS_SDK}/public/steam/steam_api.h")
+			message(FATAL_ERROR "EMBER_USE_STEAM_NETWORKING needs STEAMWORKS_SDK: the Steamworks SDK's sdk folder")
+		endif()
+
+		# steam_api is a shared library the game ships beside its executable.
+		set(steam_bin "${STEAMWORKS_SDK}/redistributable_bin")
+		add_library(steam_api SHARED IMPORTED GLOBAL)
+
+		if(WIN32)
+			set_target_properties(steam_api PROPERTIES
+				IMPORTED_LOCATION "${steam_bin}/win64/steam_api64.dll"
+				IMPORTED_IMPLIB "${steam_bin}/win64/steam_api64.lib"
+			)
+		elseif(APPLE)
+			set_target_properties(steam_api PROPERTIES IMPORTED_LOCATION "${steam_bin}/osx/libsteam_api.dylib")
+		elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+			set_target_properties(steam_api PROPERTIES IMPORTED_LOCATION "${steam_bin}/linuxarm64/libsteam_api.so")
+		else()
+			set_target_properties(steam_api PROPERTIES IMPORTED_LOCATION "${steam_bin}/linux64/libsteam_api.so")
+		endif()
+
+		target_include_directories(steam_api SYSTEM INTERFACE "${STEAMWORKS_SDK}/public")
+		target_link_libraries(networking_sockets INTERFACE steam_api)
+	else()
+		set(BUILD_STATIC_LIB ON CACHE BOOL "GameNetworkingSockets as a static library" FORCE)
+		set(BUILD_SHARED_LIB OFF CACHE BOOL "No shared GameNetworkingSockets" FORCE)
+		set(BUILD_EXAMPLES OFF CACHE BOOL "No GameNetworkingSockets examples" FORCE)
+		set(BUILD_TESTS OFF CACHE BOOL "No GameNetworkingSockets tests" FORCE)
+		set(BUILD_TOOLS OFF CACHE BOOL "No GameNetworkingSockets tools" FORCE)
+		add_subdirectory(GameNetworkingSockets EXCLUDE_FROM_ALL)
+
+		# GNS packs and parses its packets with unaligned loads and stores, which UBSan stops under the
+		# asan preset. Its memory errors still show under ASan; its undefined behaviour is not ours.
+		if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+			target_compile_options(GameNetworkingSockets_s PRIVATE -fno-sanitize=undefined)
+		endif()
+
+		target_link_libraries(networking_sockets INTERFACE GameNetworkingSockets::static)
+	endif()
+endif()

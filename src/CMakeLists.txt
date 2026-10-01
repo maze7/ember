@@ -63,6 +63,10 @@ if (EMBER_ENABLE_AUDIO)
 	add_subdirectory(audio)
 endif()
 
+if (EMBER_ENABLE_NET)
+	add_subdirectory(net)
+endif()
+
 if (EMBER_ENABLE_IMGUI AND EMBER_ENABLE_GRAPHICS)
 	add_subdirectory(imgui)
 endif()
@@ -82,4 +86,5 @@ target_link_libraries(ember INTERFACE
 	$<$<BOOL:${EMBER_ENABLE_GRAPHICS}>:Ember::Render>
 	$<$<BOOL:${EMBER_ENABLE_GRAPHICS}>:Ember::Material>
 	$<$<BOOL:${EMBER_ENABLE_ASSETS}>:Ember::Assets>
+	$<$<BOOL:${EMBER_ENABLE_NET}>:Ember::Net>
 )
