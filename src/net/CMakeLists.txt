@@ -8,6 +8,8 @@ ember_add_module(Net
 		loopback.cpp
 		valve_transport.cpp
 		time_dilation.cpp
+		client.cpp
+		server.cpp
 	PUBLIC_DEPS
 		Ember::Core
 		serialize::serialize
