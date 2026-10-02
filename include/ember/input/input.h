@@ -27,6 +27,9 @@ namespace ember
 
 		[[nodiscard]] std::span<const Gamepad> gamepads() const noexcept { return m_gamepads; }
 
+		/// When the platform published this snapshot, on the clock its events are stamped with.
+		[[nodiscard]] u64 timestamp() const noexcept { return m_keyboard.m_frame_ns; }
+
 		[[nodiscard]] const Gamepad* gamepad(GamepadId id) const noexcept
 		{
 			if (!id.is_valid())
@@ -251,5 +254,36 @@ namespace ember
 		InputState m_state;
 		InputState m_last_state;
 		InputState m_next_state;
+	};
+
+	/**
+	 * A snapshot beside the one before it, which is what bindings read: an analog value has no
+	 * pressed or released of its own, so its edges come from comparing the two. Input is one, and
+	 * so are two frames' FrameParams::input, which is how a stage that only has its frames gets one.
+	 * Refers to the snapshots, never copies them.
+	 */
+	class InputView final
+	{
+	public:
+		InputView(const InputState& state, const InputState& last_state) noexcept
+			: m_state{&state}, m_last_state{&last_state}
+		{
+		}
+
+		InputView(const Input& input) noexcept : InputView{input.state(), input.last_state()} {}
+
+		[[nodiscard]] const InputState& state() const noexcept { return *m_state; }
+
+		[[nodiscard]] const InputState& last_state() const noexcept { return *m_last_state; }
+
+		[[nodiscard]] const Keyboard& keyboard() const noexcept { return m_state->keyboard(); }
+
+		[[nodiscard]] const Mouse& mouse() const noexcept { return m_state->mouse(); }
+
+		[[nodiscard]] std::span<const Gamepad> gamepads() const noexcept { return m_state->gamepads(); }
+
+	private:
+		const InputState* m_state;
+		const InputState* m_last_state;
 	};
 }

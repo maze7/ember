@@ -97,7 +97,7 @@ namespace ember
 	{
 		Key key = Key::Unknown;
 
-		[[nodiscard]] BindingState state(const Input& input, u32 /* device */) const noexcept
+		[[nodiscard]] BindingState state(InputView input, u32 /* device */) const noexcept
 		{
 			const Keyboard& keyboard = input.keyboard();
 			const bool down			 = keyboard.down(key);
@@ -117,7 +117,7 @@ namespace ember
 	{
 		MouseButton button = MouseButton::None;
 
-		[[nodiscard]] BindingState state(const Input& input, u32 /* device */) const noexcept
+		[[nodiscard]] BindingState state(InputView input, u32 /* device */) const noexcept
 		{
 			const Mouse& mouse = input.mouse();
 			const bool down	   = mouse.down(button);
@@ -151,7 +151,7 @@ namespace ember
 		/// Travel (pixels) at which the value saturates to 1.
 		f32 max = 25.0f;
 
-		[[nodiscard]] BindingState state(const Input& input, u32 /* device */) const noexcept
+		[[nodiscard]] BindingState state(InputView input, u32 /* device */) const noexcept
 		{
 			const f32 value	 = sample(input.state());
 			const f32 before = sample(input.last_state());
@@ -178,7 +178,7 @@ namespace ember
 	{
 		GamepadButton button = GamepadButton::A;
 
-		[[nodiscard]] BindingState state(const Input& input, u32 device) const noexcept
+		[[nodiscard]] BindingState state(InputView input, u32 device) const noexcept
 		{
 			EMBER_ASSERT(device < Input::MAX_GAMEPADS);
 			const Gamepad& gamepad = input.state().gamepads()[device];
@@ -209,7 +209,7 @@ namespace ember
 		/// Axis magnitude below which the binding reads 0.
 		f32 deadzone = 0.0f;
 
-		[[nodiscard]] BindingState state(const Input& input, u32 device) const noexcept
+		[[nodiscard]] BindingState state(InputView input, u32 device) const noexcept
 		{
 			EMBER_ASSERT(device < Input::MAX_GAMEPADS);
 			const Gamepad& gamepad = input.state().gamepads()[device];
@@ -250,7 +250,7 @@ namespace ember
 		Source source;
 
 		/// Samples the current state of this binding from the given Input.
-		[[nodiscard]] BindingState state(const Input& input, u32 device) const noexcept
+		[[nodiscard]] BindingState state(InputView input, u32 device) const noexcept
 		{
 			return std::visit([&](const auto& binding) { return binding.state(input, device); }, source);
 		}

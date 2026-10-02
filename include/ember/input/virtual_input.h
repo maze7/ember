@@ -60,9 +60,9 @@ namespace ember
 	private:
 		friend class VirtualInputs;
 
-		/// Folds the freshly published Input state into this virtual input.
+		/// Folds the frame's input into this virtual input.
 		/// Called once per frame by VirtualInputs::update.
-		virtual void update(const Input& input, VirtualTime time, BindingMask filters) noexcept = 0;
+		virtual void update(InputView input, VirtualTime time, BindingMask filters) noexcept = 0;
 
 		VirtualInputs* m_owner = nullptr;
 		String m_name;
@@ -74,9 +74,11 @@ namespace ember
 	 * filters. Foster folds this into Input itself; it lives one layer above
 	 * here so Input stays a pure fold over the platform event stream.
 	 *
-	 * Call update() exactly once per frame, right after Platform::pump_events,
-	 * with the platform's current time so virtual timestamps stay comparable
-	 * with input event timestamps.
+	 * Call update() exactly once per frame, before anything reads the inputs,
+	 * from the one stage that owns them: with Input right after
+	 * Platform::pump_events, or in App::update() with the frame's input beside
+	 * the previous frame's. Virtual time is the snapshot's publish time, so
+	 * virtual timestamps stay comparable with input event timestamps.
 	 */
 	class VirtualInputs final
 	{
@@ -103,11 +105,11 @@ namespace ember
 		/// Every registered virtual input, in registration order.
 		[[nodiscard]] std::span<VirtualInput* const> inputs() const noexcept { return m_inputs; }
 
-		/// Updates all active virtual inputs against the current Input state and
+		/// Updates all active virtual inputs against the current input state and
 		/// dispatches gamepad connect/disconnect notifications to devices.
-		void update(const Input& input, u64 now_ns) noexcept
+		void update(InputView input) noexcept
 		{
-			m_time = {.now_ns = now_ns, .previous_ns = m_time.now_ns};
+			m_time = {.now_ns = input.state().timestamp(), .previous_ns = m_time.now_ns};
 
 			notify_gamepad_changes(input);
 
@@ -132,7 +134,7 @@ namespace ember
 		void register_device(VirtualDevice* device) { m_devices.push_back(device); }
 		void unregister_device(VirtualDevice* device) noexcept { std::erase(m_devices, device); }
 
-		void notify_gamepad_changes(const Input& input) noexcept;
+		void notify_gamepad_changes(InputView input) noexcept;
 
 		Vector<VirtualInput*> m_inputs;
 		Vector<VirtualDevice*> m_devices;
@@ -231,7 +233,7 @@ namespace ember
 		}
 
 	private:
-		void update(const Input& input, VirtualTime time, BindingMask filters) noexcept override
+		void update(InputView input, VirtualTime time, BindingMask filters) noexcept override
 		{
 			const BindingState state = m_set.state(input, controller_index(), filters);
 
@@ -342,7 +344,7 @@ namespace ember
 		}
 
 	private:
-		void update(const Input& input, VirtualTime time, BindingMask filters) noexcept override
+		void update(InputView input, VirtualTime time, BindingMask filters) noexcept override
 		{
 			m_value		   = m_set.value(input, controller_index(), filters);
 			m_int_value	   = sign_of(m_value);
@@ -444,7 +446,7 @@ namespace ember
 		}
 
 	private:
-		void update(const Input& input, VirtualTime, BindingMask filters) noexcept override
+		void update(InputView input, VirtualTime, BindingMask filters) noexcept override
 		{
 			m_value		= m_set.value(input, controller_index(), filters);
 			m_int_value = {sign_of(m_value.x), sign_of(m_value.y)};
@@ -575,7 +577,7 @@ namespace ember
 	private:
 		friend class VirtualInputs;
 
-		void update(const Input& input, VirtualTime, BindingMask) noexcept override
+		void update(InputView input, VirtualTime, BindingMask) noexcept override
 		{
 			if (index_mode == IndexMode::AutomaticLatest)
 			{
@@ -632,7 +634,7 @@ namespace ember
 
 	inline VirtualInput::~VirtualInput() { m_owner->unregister_input(this); }
 
-	inline void VirtualInputs::notify_gamepad_changes(const Input& input) noexcept
+	inline void VirtualInputs::notify_gamepad_changes(InputView input) noexcept
 	{
 		for (u32 slot = 0; slot < InputState::MAX_GAMEPADS; ++slot)
 		{

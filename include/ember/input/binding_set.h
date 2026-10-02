@@ -129,7 +129,7 @@ namespace ember
 		}
 
 		/// Samples the combined state of all entries passing the filters.
-		[[nodiscard]] BindingState state(const Input& input, u32 device, BindingMask filters = 0) const noexcept
+		[[nodiscard]] BindingState state(InputView input, u32 device, BindingMask filters = 0) const noexcept
 		{
 			BindingState result{};
 
@@ -211,7 +211,7 @@ namespace ember
 		}
 
 		/// Current value of the axis in [-1, 1].
-		[[nodiscard]] f32 value(const Input& input, u32 device, BindingMask filters = 0) const noexcept
+		[[nodiscard]] f32 value(InputView input, u32 device, BindingMask filters = 0) const noexcept
 		{
 			f32 value = 0.0f;
 
@@ -232,7 +232,7 @@ namespace ember
 
 		/// Sign of a press that happened this frame, or 0 if none. Only bindings
 		/// freshly pressed this frame contribute.
-		[[nodiscard]] i32 pressed_sign(const Input& input, u32 device, BindingMask filters = 0) const noexcept
+		[[nodiscard]] i32 pressed_sign(InputView input, u32 device, BindingMask filters = 0) const noexcept
 		{
 			f32 value = 0.0f;
 
@@ -405,7 +405,7 @@ namespace ember
 		}
 
 		/// Current value of the stick; each component in [-1, 1], +Y = down.
-		[[nodiscard]] glm::vec2 value(const Input& input, u32 device, BindingMask filters = 0) const noexcept
+		[[nodiscard]] glm::vec2 value(InputView input, u32 device, BindingMask filters = 0) const noexcept
 		{
 			glm::vec2 value{0.0f, 0.0f};
 
