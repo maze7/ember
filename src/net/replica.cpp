@@ -5,45 +5,43 @@
 
 namespace ember::net
 {
-	Replica::Replica(const Schema& schema) noexcept
-		: m_schema(schema), m_pools(&memory::heap(MemoryTag::Network)), m_entities(&memory::heap(MemoryTag::Network)),
-		  m_events(&memory::heap(MemoryTag::Network)), m_staged_removals(&memory::heap(MemoryTag::Network)),
+	Replica::Replica(ecs::World& world, const ReplicaDef& def) noexcept
+		: m_world(world), m_schema(world, def.max_entities), m_pools(&memory::heap(MemoryTag::Network)),
+		  m_entities(&memory::heap(MemoryTag::Network)), m_staged_removals(&memory::heap(MemoryTag::Network)),
 		  m_staged(&memory::heap(MemoryTag::Network)), m_staged_values(&memory::heap(MemoryTag::Network))
 	{
-		// A pool per component type, empty until entities have them.
-		m_pools.reserve(schema.component_count());
-		for (u32 id = 0; id < schema.component_count(); ++id)
-		{
-			if (has_any(schema.component(static_cast<ComponentId>(id)).flags, ComponentFlags::Interpolated))
-				m_interpolated |= component_bit(static_cast<ComponentId>(id));
+		EMBER_ASSERT(world.role() == ecs::Role::Client && "a replica fills a client world");
 
-			Pool& pool = m_pools.emplace_back(Pool{.sparse	= Vector<u32>(&memory::heap(MemoryTag::Network)),
-												   .dense	= Vector<u32>(&memory::heap(MemoryTag::Network)),
-												   .values	= Vector<u8>(&memory::heap(MemoryTag::Network)),
-												   .samples = Vector<u8>(&memory::heap(MemoryTag::Network))});
-			pool.sparse.resize(schema.max_entities(), NONE);
+		entt::registry& registry = world.registry;
+		(void)registry.storage<NetId>();
+		(void)registry.storage<Owned>();
+
+		// A pool per sampled component type, empty until entities have them.
+		const ComponentMask sampled = m_schema.interpolated() | m_schema.predicted();
+		m_pools.reserve(m_schema.component_count());
+		for (u32 id = 0; id < m_schema.component_count(); ++id)
+		{
+			m_schema.component(static_cast<ComponentId>(id)).assure(registry);
+
+			Pool& pool = m_pools.emplace_back(Pool{.sparse = Vector<u32>(&memory::heap(MemoryTag::Network)),
+												   .dense  = Vector<u32>(&memory::heap(MemoryTag::Network)),
+												   .values = Vector<u8>(&memory::heap(MemoryTag::Network))});
+			if ((sampled & component_bit(static_cast<ComponentId>(id))) != 0)
+				pool.sparse.resize(m_schema.max_entities(), NONE);
 		}
 
-		m_entities.resize(schema.max_entities());
+		m_entities.resize(m_schema.max_entities());
 	}
 
 	void Replica::reset() noexcept
 	{
-		for (Entity& entity : m_entities)
-			entity = {};
-
-		for (Pool& pool : m_pools)
+		for (u32 index = 0; index < m_entities.size(); ++index)
 		{
-			std::fill(pool.sparse.begin(), pool.sparse.end(), NONE);
-			pool.dense.clear();
-			pool.values.clear();
-			pool.samples.clear();
+			if (m_entities[index].alive)
+				remove(index);
 		}
 
-		m_alive	 = 0;
 		m_latest = NO_TICK;
-		m_events.clear();
-		m_events_head = 0;
 	}
 
 	bool Replica::read(serialize::ReadStream& stream) noexcept
@@ -60,102 +58,99 @@ namespace ember::net
 		return true;
 	}
 
-	bool Replica::poll(ReplicaEvent& event) noexcept
+	void Replica::interpolate(f64 tick) noexcept
 	{
-		if (m_events_head == m_events.size())
-		{
-			m_events.clear();
-			m_events_head = 0;
-			return false;
-		}
+		entt::registry& registry = m_world.registry;
 
-		event = m_events[m_events_head++];
-		return true;
+		for (ComponentMask left = m_schema.interpolated(); left != 0;)
+		{
+			const ComponentId component	   = detail::take_lowest(left);
+			const ecs::ComponentInfo& info = m_schema.component(component);
+			const bool predicted		   = (m_schema.predicted() & component_bit(component)) != 0;
+
+			for (const u32 index : m_pools[component].dense)
+			{
+				const Slot& slot = m_entities[index];
+				if (predicted && slot.owned)
+					continue; // its owner's simulation draws it
+
+				void* out = info.get(registry, slot.entity);
+				if (out == nullptr || slot.samples == 0)
+					continue;
+
+				// The newest sample at or before tick: the one to draw from.
+				u32 at = 0;
+				while (at + 1 < slot.samples && static_cast<f64>(slot.ticks[place_of(slot, at + 1)]) <= tick)
+					++at;
+
+				const u8* from	   = value_of(index, component, place_of(slot, at));
+				const Tick start   = slot.ticks[place_of(slot, at)];
+				const bool between = at + 1 < slot.samples && static_cast<f64>(start) <= tick;
+				if (!between)
+				{
+					std::memcpy(out, from, info.size); // before the oldest or past the newest: hold it
+					continue;
+				}
+
+				const Tick end = slot.ticks[place_of(slot, at + 1)];
+				const f32 t	   = static_cast<f32>((tick - static_cast<f64>(start)) / static_cast<f64>(end - start));
+				info.interpolate(from, value_of(index, component, place_of(slot, at + 1)), t, out);
+			}
+		}
 	}
 
-	bool Replica::alive(NetId id) const noexcept
+	ecs::Entity Replica::entity(NetId id) const noexcept
 	{
 		const u32 index = id.index();
-		return id && index < m_entities.size() && m_entities[index].alive &&
-			   m_entities[index].generation == id.generation();
+		if (!id || index >= m_entities.size())
+			return ecs::NO_ENTITY;
+
+		const Slot& slot = m_entities[index];
+		return slot.alive && slot.generation == id.generation() ? slot.entity : ecs::NO_ENTITY;
 	}
 
-	PrefabId Replica::prefab(NetId id) const noexcept
+	Tick Replica::tick(ecs::Entity entity) const noexcept
 	{
-		EMBER_ASSERT(alive(id));
-		return m_entities[id.index()].prefab;
+		const entt::registry& registry = m_world.registry;
+		const NetId* id				   = registry.valid(entity) ? registry.try_get<NetId>(entity) : nullptr;
+		return id != nullptr && this->entity(*id) == entity ? m_entities[id->index()].tick : NO_TICK;
 	}
 
-	bool Replica::owned(NetId id) const noexcept { return alive(id) && m_entities[id.index()].owned; }
-
-	ComponentMask Replica::components(NetId id) const noexcept
+	const void* Replica::newest(ecs::Entity entity, entt::id_type type) const noexcept
 	{
-		return alive(id) ? m_entities[id.index()].components : 0;
-	}
+		const entt::registry& registry = m_world.registry;
+		const NetId* id				   = registry.valid(entity) ? registry.try_get<NetId>(entity) : nullptr;
+		if (id == nullptr || this->entity(*id) != entity)
+			return nullptr;
 
-	Tick Replica::tick(NetId id) const noexcept { return alive(id) ? m_entities[id.index()].tick : NO_TICK; }
-
-	bool Replica::get(NetId id, ComponentId component, void* out) const noexcept
-	{
-		if (!alive(id) || component >= m_pools.size())
-			return false;
-
-		const u8* value = value_of(id.index(), component);
-		if (value == nullptr)
-			return false;
-
-		std::memcpy(out, value, m_schema.component(component).size);
-		return true;
-	}
-
-	bool Replica::sample(NetId id, ComponentId component, f64 tick, void* from, void* to, f32& t) const noexcept
-	{
-		if (!alive(id) || component >= m_pools.size())
-			return false;
-
-		const u32 index	   = id.index();
-		const u8* newest   = value_of(index, component);
-		const u32 size	   = m_schema.component(component).size;
-		const bool sampled = (m_interpolated & component_bit(component)) != 0;
-		if (newest == nullptr)
-			return false;
-
-		EMBER_ASSERT(sampled && "sample() is for Interpolated components; get() reads the rest");
-		t = 0.0f;
-
-		const Entity& entity = m_entities[index];
-		if (!sampled || entity.samples == 0)
+		for (u32 component = 0; component < m_schema.component_count(); ++component)
 		{
-			std::memcpy(from, newest, size);
-			std::memcpy(to, newest, size);
-			return true;
+			const Pool& pool = m_pools[component];
+			if (m_schema.component(static_cast<ComponentId>(component)).type != type || pool.sparse.empty())
+				continue;
+
+			return pool.sparse[id->index()] != NONE ? value_of(id->index(), static_cast<ComponentId>(component), NEWEST)
+													: nullptr;
 		}
 
-		// The newest sample at or before tick: the one to draw from.
-		u32 at = 0;
-		while (at + 1 < entity.samples && static_cast<f64>(entity.ticks[place_of(entity, at + 1)]) <= tick)
-			++at;
-
-		std::memcpy(from, sample_of(index, component, place_of(entity, at)), size);
-
-		const Tick start   = entity.ticks[place_of(entity, at)];
-		const bool between = at + 1 < entity.samples && static_cast<f64>(start) <= tick;
-		if (!between)
-		{
-			std::memcpy(to, from, size); // before the oldest or past the newest: hold it
-			return true;
-		}
-
-		const Tick end = entity.ticks[place_of(entity, at + 1)];
-		std::memcpy(to, sample_of(index, component, place_of(entity, at + 1)), size);
-		t = static_cast<f32>((tick - static_cast<f64>(start)) / static_cast<f64>(end - start));
-		return true;
+		return nullptr;
 	}
 
 	ComponentMask Replica::seen_in_prefab(PrefabId prefab, bool owned) const noexcept
 	{
 		const PrefabInfo& info = m_schema.prefab(prefab);
 		return owned ? info.components : info.shared;
+	}
+
+	ComponentMask Replica::sampled(const Slot& slot) const noexcept
+	{
+		return m_schema.interpolated() | (slot.owned ? m_schema.predicted() : 0);
+	}
+
+	ComponentMask Replica::written(const Slot& slot) const noexcept
+	{
+		// What is drawn is written by interpolate(), and what is predicted by the owner's simulation.
+		return ~sampled(slot);
 	}
 
 	bool Replica::parse(serialize::ReadStream& stream, Tick& tick) noexcept
@@ -220,14 +215,14 @@ namespace ember::net
 			else
 			{
 				// Only a create brings an entity this client does not have.
-				const Entity& entity = m_entities[staged.index];
-				if (!entity.alive)
+				const Slot& slot = m_entities[staged.index];
+				if (!slot.alive)
 					return false;
 
-				staged.prefab	  = entity.prefab;
-				staged.generation = entity.generation;
-				staged.owned	  = entity.owned;
-				had				  = entity.components;
+				staged.prefab	  = slot.prefab;
+				staged.generation = slot.generation;
+				staged.owned	  = slot.owned;
+				had				  = slot.components;
 			}
 
 			u32 age = 0;
@@ -293,10 +288,10 @@ namespace ember::net
 
 				staged.carried |= component_bit(component);
 
-				const ComponentCodec& codec = m_schema.component(component);
-				const size_t at				= m_staged_values.size();
-				m_staged_values.resize(at + codec.size);
-				if (!codec.read(stream, m_staged_values.data() + at))
+				const ecs::ComponentInfo& info = m_schema.component(component);
+				const size_t at				   = m_staged_values.size();
+				m_staged_values.resize(at + info.size);
+				if (!info.read(stream, m_staged_values.data() + at))
 					return false;
 			}
 
@@ -313,181 +308,178 @@ namespace ember::net
 
 	void Replica::apply(Tick tick) noexcept
 	{
+		entt::registry& registry = m_world.registry;
+
 		for (const u32 index : m_staged_removals)
 		{
 			if (m_entities[index].alive)
-				remove(index, tick);
+				remove(index);
 		}
 
 		for (const Staged& staged : m_staged)
 		{
-			Entity& entity = m_entities[staged.index];
+			Slot& slot = m_entities[staged.index];
 
-			if (staged.create && (!entity.alive || entity.generation != staged.generation))
+			const bool fresh = staged.create && (!slot.alive || slot.generation != staged.generation);
+			if (fresh)
 			{
-				if (entity.alive)
-					remove(staged.index, tick); // only a broken server reuses an index this client still has
+				if (slot.alive)
+					remove(staged.index); // only a broken server reuses an index this client still has
 
-				spawn(staged, tick);
+				spawn(staged);
 			}
-			else if (!entity.alive)
+			else if (!slot.alive)
 			{
 				continue; // removed by this very section: only a broken server sends that
 			}
 
 			// Its components as the record has them: a lost one goes, a gained one arrives with its value.
-			const ComponentMask lost   = entity.components & ~staged.components;
-			const ComponentMask gained = staged.components & ~entity.components;
+			// The world's entity is the client's to lose, though it should not: then only the books are kept.
+			const bool present		   = registry.valid(slot.entity);
+			const ComponentMask keeps  = sampled(slot);
+			const ComponentMask lost   = slot.components & ~staged.components;
+			const ComponentMask gained = staged.components & ~slot.components;
 
 			for (ComponentMask left = lost; left != 0;)
-				erase(staged.index, detail::take_lowest(left));
-
-			for (ComponentMask left = gained; left != 0;)
 			{
 				const ComponentId component = detail::take_lowest(left);
-				insert(staged.index, component, m_schema.component(component).empty.data());
+				if (present)
+					m_schema.component(component).remove(registry, slot.entity);
+				if ((keeps & component_bit(component)) != 0)
+					erase(staged.index, component);
 			}
 
-			entity.components = staged.components;
+			slot.components = staged.components;
 
-			u32 at = staged.values;
+			// Values: into the world, but what is drawn or predicted, which the samples keep. A new
+			// entity or component starts from its value whatever it is.
+			const ComponentMask writes = fresh ? ~ComponentMask{0} : written(slot) | gained;
+			u32 at					   = staged.values;
 			for (ComponentMask left = staged.carried; left != 0;)
 			{
-				const ComponentId component = detail::take_lowest(left);
-				const u32 size				= m_schema.component(component).size;
-				std::memcpy(value_of(staged.index, component), m_staged_values.data() + at, size);
-				at += size;
-			}
+				const ComponentId component	   = detail::take_lowest(left);
+				const ecs::ComponentInfo& info = m_schema.component(component);
+				const u8* value				   = m_staged_values.data() + at;
+				at += info.size;
 
-			// A component gained part way through the entity's life is drawn at its value for as far
-			// back as the samples go, not slid in from a default it never had.
-			for (ComponentMask left = gained & m_interpolated; left != 0;)
-			{
-				const ComponentId component = detail::take_lowest(left);
-				const u32 size				= m_schema.component(component).size;
-				for (u32 place = 0; place < REPLICA_SAMPLES; ++place)
-					std::memcpy(sample_of(staged.index, component, place), value_of(staged.index, component), size);
+				if (present && (writes & component_bit(component)) != 0)
+					info.emplace(registry, slot.entity, value);
+
+				if ((keeps & component_bit(component)) == 0)
+					continue;
+
+				if ((gained & component_bit(component)) != 0)
+					insert(staged.index, component, value); // drawn at its value as far back as the samples go
+				else
+					std::memcpy(value_of(staged.index, component, NEWEST), value, info.size);
 			}
 
 			// A new state: sample it where it began, and when the state before it is known to have held
 			// until then, close that one off just before.
-			const ComponentMask sampled = entity.components & m_interpolated;
-			const bool newer =
-				entity.samples == 0 || staged.changed > entity.ticks[place_of(entity, entity.samples - 1u)];
-			if (sampled != 0 && staged.changed != entity.since && newer)
+			const ComponentMask samples = slot.components & keeps;
+			const bool newer = slot.samples == 0 || staged.changed > slot.ticks[place_of(slot, slot.samples - 1u)];
+			if (samples != 0 && staged.changed != slot.since && newer)
 			{
-				if (entity.samples > 0 && staged.previous == entity.since &&
-					staged.changed - 1 > entity.ticks[place_of(entity, entity.samples - 1u)])
+				if (slot.samples > 0 && staged.previous == slot.since &&
+					staged.changed - 1 > slot.ticks[place_of(slot, slot.samples - 1u)])
 				{
-					const u32 last	= place_of(entity, entity.samples - 1u);
-					const u32 place = push_sample(entity, staged.changed - 1);
-					for (ComponentMask left = sampled; left != 0;)
+					const u32 last	= place_of(slot, slot.samples - 1u);
+					const u32 place = push_sample(slot, staged.changed - 1);
+					for (ComponentMask left = samples; left != 0;)
 					{
 						const ComponentId component = detail::take_lowest(left);
-						std::memcpy(sample_of(staged.index, component, place), sample_of(staged.index, component, last),
+						std::memcpy(value_of(staged.index, component, place), value_of(staged.index, component, last),
 									m_schema.component(component).size);
 					}
 				}
 
-				const u32 place = push_sample(entity, staged.changed);
-				for (ComponentMask left = sampled; left != 0;)
+				const u32 place = push_sample(slot, staged.changed);
+				for (ComponentMask left = samples; left != 0;)
 				{
 					const ComponentId component = detail::take_lowest(left);
-					std::memcpy(sample_of(staged.index, component, place), value_of(staged.index, component),
+					std::memcpy(value_of(staged.index, component, place), value_of(staged.index, component, NEWEST),
 								m_schema.component(component).size);
 				}
 			}
 
-			if ((lost | gained | staged.carried) != 0)
-			{
-				m_events.push_back({.kind	 = ReplicaEventKind::Updated,
-									.id		 = NetId::make(staged.index, entity.generation),
-									.prefab	 = entity.prefab,
-									.owned	 = entity.owned,
-									.tick	 = tick,
-									.added	 = gained,
-									.removed = lost,
-									.written = staged.carried});
-			}
-
-			entity.since = staged.changed;
-			entity.tick	 = tick;
+			slot.since = staged.changed;
+			slot.tick  = tick;
 		}
 
 		m_latest = tick;
 	}
 
-	void Replica::spawn(const Staged& staged, Tick tick) noexcept
+	void Replica::spawn(const Staged& staged) noexcept
 	{
-		Entity& entity	  = m_entities[staged.index];
-		entity			  = {};
-		entity.key		  = staged.key;
-		entity.prefab	  = staged.prefab;
-		entity.generation = staged.generation;
-		entity.alive	  = true;
-		entity.owned	  = staged.owned;
+		entt::registry& registry  = m_world.registry;
+		const ecs::Prefab& prefab = m_world.prefabs()[staged.prefab];
 
-		// Its prefab's components at the prefab's values: a record carries only what differs from them.
-		entity.components = seen_in_prefab(staged.prefab, staged.owned);
-		for (ComponentMask left = entity.components; left != 0;)
+		Slot& slot		= m_entities[staged.index];
+		slot			= {};
+		slot.prefab		= staged.prefab;
+		slot.generation = staged.generation;
+		slot.alive		= true;
+		slot.owned		= staged.owned;
+
+		// The client's half of its prefab, and what the client predicts. Another seat's OwnerOnly
+		// components never come, so this client has none of them.
+		slot.entity = m_world.create(prefab, staged.owned);
+		if (!staged.owned)
+		{
+			for (ComponentMask left = m_schema.prefab(staged.prefab).components & m_schema.owner_only(); left != 0;)
+				m_schema.component(detail::take_lowest(left)).remove(registry, slot.entity);
+		}
+
+		registry.emplace<NetId>(slot.entity, NetId::make(staged.index, staged.generation));
+		if (staged.owned)
+			registry.emplace<Owned>(slot.entity, Owned{.key = staged.key});
+
+		// A record carries only what differs from the prefab's values.
+		slot.components = seen_in_prefab(staged.prefab, staged.owned);
+		for (ComponentMask left = slot.components & sampled(slot); left != 0;)
 		{
 			const ComponentId component = detail::take_lowest(left);
-			insert(staged.index, component, m_schema.prefab_value(staged.prefab, component).bytes.data());
+			insert(staged.index, component, prefab.find(m_schema.component(component).id)->value.data());
 		}
 
 		++m_alive;
-		m_events.push_back({.kind	= ReplicaEventKind::Created,
-							.id		= NetId::make(staged.index, staged.generation),
-							.prefab = staged.prefab,
-							.owned	= staged.owned,
-							.key	= staged.key,
-							.tick	= tick});
 	}
 
-	void Replica::remove(u32 index, Tick tick) noexcept
+	void Replica::remove(u32 index) noexcept
 	{
-		Entity& entity = m_entities[index];
-		for (ComponentMask left = entity.components; left != 0;)
+		Slot& slot = m_entities[index];
+		for (ComponentMask left = slot.components & sampled(slot); left != 0;)
 			erase(index, detail::take_lowest(left));
 
-		entity.components = 0;
-		entity.alive	  = false;
-		--m_alive;
+		if (m_world.registry.valid(slot.entity))
+			m_world.registry.destroy(slot.entity);
 
-		m_events.push_back({.kind	= ReplicaEventKind::Removed,
-							.id		= NetId::make(index, entity.generation),
-							.prefab = entity.prefab,
-							.owned	= entity.owned,
-							.tick	= tick});
+		slot.entity		= ecs::NO_ENTITY;
+		slot.components = 0;
+		slot.alive		= false;
+		--m_alive;
 	}
 
 	void Replica::insert(u32 index, ComponentId component, const void* value) noexcept
 	{
 		Pool& pool	   = m_pools[component];
 		const u32 size = m_schema.component(component).size;
-		EMBER_ASSERT(pool.sparse[index] == NONE);
+		EMBER_ASSERT(!pool.sparse.empty() && pool.sparse[index] == NONE);
 
-		const u32 at	   = static_cast<u32>(pool.dense.size());
-		pool.sparse[index] = at;
+		pool.sparse[index] = static_cast<u32>(pool.dense.size());
 		pool.dense.push_back(index);
+		pool.values.resize(pool.values.size() + static_cast<size_t>(NEWEST + 1) * size);
 
-		pool.values.resize(pool.values.size() + size);
-		std::memcpy(pool.values.data() + static_cast<size_t>(at) * size, value, size);
-
-		if ((m_interpolated & component_bit(component)) != 0)
-		{
-			pool.samples.resize(pool.samples.size() + static_cast<size_t>(REPLICA_SAMPLES) * size);
-			for (u32 place = 0; place < REPLICA_SAMPLES; ++place)
-				std::memcpy(sample_of(index, component, place), value, size);
-		}
+		for (u32 place = 0; place <= NEWEST; ++place)
+			std::memcpy(value_of(index, component, place), value, size);
 	}
 
 	void Replica::erase(u32 index, ComponentId component) noexcept
 	{
-		// The last value takes the place of the one that goes, so the pool stays packed.
-		Pool& pool	   = m_pools[component];
-		const u32 size = m_schema.component(component).size;
-		const u32 at   = pool.sparse[index];
+		// The last one takes the place of the one that goes, so the pool stays packed.
+		Pool& pool		  = m_pools[component];
+		const size_t span = static_cast<size_t>(NEWEST + 1) * m_schema.component(component).size;
+		const u32 at	  = pool.sparse[index];
 		EMBER_ASSERT(at != NONE);
 
 		const u32 last = static_cast<u32>(pool.dense.size() - 1);
@@ -495,65 +487,42 @@ namespace ember::net
 		{
 			pool.dense[at]				= pool.dense[last];
 			pool.sparse[pool.dense[at]] = at;
-			std::memcpy(pool.values.data() + static_cast<size_t>(at) * size,
-						pool.values.data() + static_cast<size_t>(last) * size, size);
-
-			if (!pool.samples.empty())
-			{
-				const size_t ring = static_cast<size_t>(REPLICA_SAMPLES) * size;
-				std::memcpy(pool.samples.data() + at * ring, pool.samples.data() + last * ring, ring);
-			}
+			std::memcpy(pool.values.data() + at * span, pool.values.data() + last * span, span);
 		}
 
 		pool.dense.pop_back();
-		pool.values.resize(pool.values.size() - size);
-		if (!pool.samples.empty())
-			pool.samples.resize(pool.samples.size() - static_cast<size_t>(REPLICA_SAMPLES) * size);
+		pool.values.resize(pool.values.size() - span);
 		pool.sparse[index] = NONE;
 	}
 
-	u8* Replica::value_of(u32 index, ComponentId component) noexcept
-	{
-		Pool& pool	 = m_pools[component];
-		const u32 at = pool.sparse[index];
-		return at == NONE ? nullptr : pool.values.data() + static_cast<size_t>(at) * m_schema.component(component).size;
-	}
-
-	const u8* Replica::value_of(u32 index, ComponentId component) const noexcept
-	{
-		const Pool& pool = m_pools[component];
-		const u32 at	 = pool.sparse[index];
-		return at == NONE ? nullptr : pool.values.data() + static_cast<size_t>(at) * m_schema.component(component).size;
-	}
-
-	u8* Replica::sample_of(u32 index, ComponentId component, u32 place) noexcept
+	u8* Replica::value_of(u32 index, ComponentId component, u32 place) noexcept
 	{
 		Pool& pool	   = m_pools[component];
 		const u32 size = m_schema.component(component).size;
-		return pool.samples.data() + (static_cast<size_t>(pool.sparse[index]) * REPLICA_SAMPLES + place) * size;
+		return pool.values.data() + (static_cast<size_t>(pool.sparse[index]) * (NEWEST + 1) + place) * size;
 	}
 
-	const u8* Replica::sample_of(u32 index, ComponentId component, u32 place) const noexcept
+	const u8* Replica::value_of(u32 index, ComponentId component, u32 place) const noexcept
 	{
 		const Pool& pool = m_pools[component];
 		const u32 size	 = m_schema.component(component).size;
-		return pool.samples.data() + (static_cast<size_t>(pool.sparse[index]) * REPLICA_SAMPLES + place) * size;
+		return pool.values.data() + (static_cast<size_t>(pool.sparse[index]) * (NEWEST + 1) + place) * size;
 	}
 
-	u32 Replica::place_of(const Entity& entity, u32 i) noexcept { return (entity.first + i) % REPLICA_SAMPLES; }
+	u32 Replica::place_of(const Slot& slot, u32 i) noexcept { return (slot.first + i) % REPLICA_SAMPLES; }
 
-	u32 Replica::push_sample(Entity& entity, Tick tick) noexcept
+	u32 Replica::push_sample(Slot& slot, Tick tick) noexcept
 	{
 		// The ring is full: the oldest makes way.
-		if (entity.samples == REPLICA_SAMPLES)
+		if (slot.samples == REPLICA_SAMPLES)
 		{
-			entity.first = static_cast<u8>((entity.first + 1) % REPLICA_SAMPLES);
-			--entity.samples;
+			slot.first = static_cast<u8>((slot.first + 1) % REPLICA_SAMPLES);
+			--slot.samples;
 		}
 
-		const u32 place		= place_of(entity, entity.samples);
-		entity.ticks[place] = tick;
-		++entity.samples;
+		const u32 place	  = place_of(slot, slot.samples);
+		slot.ticks[place] = tick;
+		++slot.samples;
 		return place;
 	}
 }

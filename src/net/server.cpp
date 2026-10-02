@@ -92,6 +92,10 @@ namespace ember::net
 	{
 		m_now = now;
 
+		// The world as the tick left it, once, for every client's packet.
+		if (m_def.replicator != nullptr && m_tick != NO_TICK)
+			m_def.replicator->update(m_tick);
+
 		for (Client& client : m_clients)
 		{
 			if (!client.playing)
@@ -109,12 +113,12 @@ namespace ember::net
 			serialize::WriteStream stream = packet_writer(buffer);
 			const Sequence sequence		  = client.connection.write_header(stream, now);
 			write_command_timing(stream, client.commands);
-			stream.Flush();
 
 			// The entity section, as the world stands after the tick: present or not.
 			stream.SerializeBits(m_def.replicator != nullptr ? 1u : 0u, 1);
 			if (m_def.replicator != nullptr)
 				m_def.replicator->write(slot_of(client), stream, sequence, m_tick);
+			stream.Flush();
 
 			const Span<const u8> bytes = written(buffer, stream);
 			m_transport.send(client.peer, bytes, Delivery::Unreliable, now);

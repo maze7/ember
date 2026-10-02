@@ -2,17 +2,12 @@
 
 #include <ember/core/bitmask.h>
 #include <ember/core/common.h>
-#include <ember/core/json.h>
 
-#include <glm/fwd.hpp>
-
-#include <limits>
 #include <string_view>
-#include <tuple>
 #include <type_traits>
 
 /**
- * Ember::Ecs is the engine's entity component system, build on top of EnTT. A game describes its
+ * Ember::Ecs is the engine's entity component system, built on top of EnTT. A game describes its
  * components with EMBER_COMPONENT and writes its systems as free functions; the engine keeps the worlds,
  * makes entities from prefabs and runs the systems.
  *
@@ -57,29 +52,12 @@ namespace ember::ecs
 		return homes != 0 && (homes & (homes - 1)) == 0;
 	}
 
-	/** One field of a component, as EMBER_COMPONENT lists it: for prefabs, the editor and the wire. */
-	template <class C, class F> struct Field
-	{
-		std::string_view name;
-		F C::* member = nullptr;
-	};
-
-	/** Everything EMBER_COMPONENT says about a type: its name, its kind, and its fields. */
-	template <class T, class Fields> struct ComponentDescription
+	/** Everything EMBER_COMPONENT says about a type: its name and its kind. */
+	template <class T> struct ComponentDescription
 	{
 		std::string_view name;
 		Kind kind = Kind::None;
-		Fields fields;
 	};
-
-	namespace detail
-	{
-		template <class T, class Fields>
-		consteval ComponentDescription<T, Fields> describe(std::string_view name, Kind kind, Fields fields) noexcept
-		{
-			return {name, kind, fields};
-		}
-	}
 
 	/** A type EMBER_COMPONENT describes. */
 	template <class T>
@@ -99,104 +77,37 @@ namespace ember::ecs
 
 	template <class T>
 	concept ReplicatedComponent = Component<T> && has_any(kind_of<T>, Kind::Replicated);
-
-	namespace detail
-	{
-		template <class> struct is_glm_vec : std::false_type
-		{
-		};
-
-		template <glm::length_t L, class T, glm::qualifier Q> struct is_glm_vec<glm::vec<L, T, Q>> : std::true_type
-		{
-		};
-
-		/**
-		 * A field from a prefab file: numbers, bools, enums by name and vectors as arrays. False leaves
-		 * the value alone: a missing value, a wrong type, a number out of the field's range, or a field
-		 * type prefabs cannot set.
-		 */
-		template <class F> [[nodiscard]] bool read_value(F& value, JsonValue json) noexcept
-		{
-			if constexpr (std::is_same_v<F, bool> || std::is_same_v<F, f32> || std::is_same_v<F, f64>)
-			{
-				return json.read(value);
-			}
-			else if constexpr (std::is_enum_v<F>)
-			{
-				return json.read_enum(value);
-			}
-			else if constexpr (std::is_integral_v<F>)
-			{
-				i64 wide = 0;
-				if (!json.read(wide))
-					return false;
-
-				if constexpr (std::is_signed_v<F>)
-				{
-					if (wide < static_cast<i64>(std::numeric_limits<F>::min()) ||
-						wide > static_cast<i64>(std::numeric_limits<F>::max()))
-						return false;
-				}
-				else if (wide < 0 || static_cast<u64>(wide) > static_cast<u64>(std::numeric_limits<F>::max()))
-				{
-					return false;
-				}
-
-				value = static_cast<F>(wide);
-				return true;
-			}
-			else if constexpr (is_glm_vec<F>::value)
-			{
-				f32 numbers[4] = {};
-				if (json.numbers(Span<f32>(numbers, F::length())) != static_cast<u32>(F::length()))
-					return false;
-
-				for (glm::length_t i = 0; i < F::length(); ++i)
-					value[i] = static_cast<typename F::value_type>(numbers[i]);
-				return true;
-			}
-			else
-			{
-				return false;
-			}
-		}
-	}
 }
 
-#define EMBER_ECS_PARENS ()
-#define EMBER_ECS_EXPAND(...) EMBER_ECS_EXPAND3(EMBER_ECS_EXPAND3(EMBER_ECS_EXPAND3(EMBER_ECS_EXPAND3(__VA_ARGS__))))
-#define EMBER_ECS_EXPAND3(...) EMBER_ECS_EXPAND2(EMBER_ECS_EXPAND2(EMBER_ECS_EXPAND2(EMBER_ECS_EXPAND2(__VA_ARGS__))))
-#define EMBER_ECS_EXPAND2(...) EMBER_ECS_EXPAND1(EMBER_ECS_EXPAND1(EMBER_ECS_EXPAND1(EMBER_ECS_EXPAND1(__VA_ARGS__))))
-#define EMBER_ECS_EXPAND1(...) __VA_ARGS__
-#define EMBER_ECS_FOR_EACH(macro, type, ...)                                                                           \
-	__VA_OPT__(EMBER_ECS_EXPAND(EMBER_ECS_FOR_EACH_HELPER(macro, type, __VA_ARGS__)))
-#define EMBER_ECS_FOR_EACH_HELPER(macro, type, first, ...)                                                             \
-	macro(type, first) __VA_OPT__(, EMBER_ECS_FOR_EACH_AGAIN EMBER_ECS_PARENS(macro, type, __VA_ARGS__))
-#define EMBER_ECS_FOR_EACH_AGAIN() EMBER_ECS_FOR_EACH_HELPER
-#define EMBER_ECS_FIELD(type, name)                                                                                    \
-	::ember::ecs::Field<type, decltype(type::name)> { #name, &type::name }
-
 /**
- * Says what a component is, once: where it lives (Sim, Server, Client), how it crosses the wire
- * (Replicated, Interpolated, Predicted, OwnerOnly) and its fields. Prefabs, the editor, the wire
- * and the compile time checks all read this. Put it after the struct, in the struct's namespace;
- * MSVC needs /Zc:preprocessor for the field list.
+ * Says what a component is, once: where it lives (Sim, Server, Client) and how it crosses the wire
+ * (Replicated, Interpolated, Predicted, OwnerOnly). Worlds, prefabs, the net layer and the compile
+ * time checks all read this. Put it after the struct, in the struct's namespace.
  *
  *     struct HealthComponent
  *     {
  *         u16 current = 50;
  *         u16 max     = 50;
+ *
+ *         template <class Stream> bool serialize(Stream& stream)
+ *         {
+ *             serialize_bits(stream, current, 16);
+ *             serialize_bits(stream, max, 16);
+ *             return true;
+ *         }
  *     };
- *     EMBER_COMPONENT(HealthComponent, Replicated, current, max);
+ *     EMBER_COMPONENT(HealthComponent, Replicated);
+ *
+ * A Replicated component says how it crosses the wire with serialize() (ember/net/serialize.h). An
+ * Interpolated one is drawn between two updates field by field, floats and float vectors moving and
+ * everything else held, unless it has its own static T interpolate(const T& from, const T& to, f32 t).
  */
-#define EMBER_COMPONENT(Type, kinds, ...)                                                                              \
+#define EMBER_COMPONENT(Type, kinds)                                                                                   \
 	[[nodiscard]] consteval auto ember_component(const Type*) noexcept                                                 \
 	{                                                                                                                  \
 		using enum ::ember::ecs::Kind;                                                                                 \
 		static_assert(std::is_trivially_copyable_v<Type>, #Type ": components are plain data");                        \
 		static_assert(::ember::ecs::one_home(::ember::ecs::normalize(kinds)),                                          \
 					  #Type ": exactly one of Sim, Server or Client, and Replicated or a net flag means Sim");         \
-		return ::ember::ecs::detail::describe<Type>(                                                                   \
-			#Type, ::ember::ecs::normalize(kinds),                                                                     \
-			std::make_tuple(EMBER_ECS_FOR_EACH(EMBER_ECS_FIELD, Type, __VA_ARGS__)));                                  \
+		return ::ember::ecs::ComponentDescription<Type>{#Type, ::ember::ecs::normalize(kinds)};                        \
 	}

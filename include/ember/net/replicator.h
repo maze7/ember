@@ -5,25 +5,24 @@
 
 namespace ember::net
 {
-	/** An entity no client controls. */
-	inline constexpr u8 NO_OWNER = 0xff;
-
 	struct ReplicatorDef
 	{
-		u8 max_viewers = 16;				   // seats: the server's max_clients at least
-		u32 max_bits   = MAX_PACKET_BYTES * 8; // entity bits per packet at most, besides what the packet has left
+		u8 max_viewers	 = 16;					 // seats: the server's max_clients at least
+		u32 max_bits	 = MAX_PACKET_BYTES * 8; // entity bits per packet at most, besides what the packet has left
+		u32 max_entities = 4096;				 // replicated entities alive at once: the same on every machine
 	};
 
 	/**
-	 * The server's half of replication: the replicated state of every entity, and what each viewer
-	 * (a seat) has of it.
+	 * The server's half of replication: the server world's replicated entities as the wire sees them,
+	 * and what each viewer (a seat) has of them.
 	 *
-	 * The game creates entities from prefabs, gives them components, sets them and takes them away as
-	 * it simulates, and destroys them. A new entity has its prefab's components at the prefab's values,
-	 * which every client knows already, so only what differs from the prefab travels. Every component is
-	 * kept as the bits its serialize() wrote, with the tick those bits last changed, so a value that
-	 * moves less than the wire can show is no change at all: the game may set what it wrote this tick
-	 * without checking whether it really changed.
+	 * The game plays its world as it would alone, and the replicator follows it. An entity spawned
+	 * from a prefab with a Replicated component replicates: it gets a NetId, its owner from the Owner
+	 * component it spawned with, and it is destroyed with its world entity. Its Replicated components
+	 * travel as they come, go and change, however they change: update() looks at every one each tick.
+	 * A new entity starts as its prefab, which every client knows already, so only what differs from
+	 * the prefab travels. Every component is kept as the bits its serialize() wrote, with the tick
+	 * those bits last changed, so a value that moves less than the wire can show is no change at all.
 	 *
 	 * For each viewer and entity the replicator keeps the newest tick of that entity the viewer is
 	 * known to have, learned from the connection's delivery notices. A record carries every component
@@ -34,64 +33,39 @@ namespace ember::net
 	 * to have arrived.
 	 *
 	 * Each packet takes removals first, then records by priority until its bit budget: an entity's
-	 * priority grows each packet it waits, by its prefab's priority times the game's relevance for
-	 * that viewer, so nothing starves. The entity a viewer owns goes into every one of its packets,
-	 * even unchanged, so the client always has a server state at a known tick to check its
-	 * prediction against.
+	 * priority grows each packet it waits, by its Priority times the game's relevance for that viewer,
+	 * so nothing starves. The entity a viewer owns goes into every one of its packets, even unchanged,
+	 * so the client always has a server state at a known tick to check its prediction against.
 	 *
 	 * A destroyed entity's index is reused only once every viewer that had it has had the removal
 	 * delivered, and then with the next generation: oldest free index first.
 	 *
-	 * Single threaded: the server's game thread drives it, and the server calls write() and
-	 * on_notice() for each seat.
+	 * Single threaded: the server's game thread drives it, between the world's runs. The server calls
+	 * update() once a tick, then write() and on_notice() for each seat.
 	 */
 	class Replicator final
 	{
 	public:
-		Replicator(const Schema& schema, const ReplicatorDef& def = {}) noexcept;
+		/** world is the server's, and outlives the replicator. What it has spawned already replicates too. */
+		explicit Replicator(ecs::World& world, const ReplicatorDef& def = {}) noexcept;
+		~Replicator() noexcept;
 
 		Replicator(const Replicator&)			 = delete;
 		Replicator& operator=(const Replicator&) = delete;
 
 		/**
-		 * A new entity during tick, with its prefab's components at the prefab's values. owner is the seat
-		 * that controls it, which alone receives its OwnerOnly components, for as long as that seat's
-		 * session lasts. key is the game's own tag, sent only to the owner, which matches an entity the
-		 * client predicted (a shot it fired) with the server's. NO_NET_ID when every index is taken.
+		 * The world as it stands at the end of tick: entities spawned and destroyed since, components
+		 * gained and lost, values changed. The server calls this before it writes the tick's packets.
 		 */
-		[[nodiscard]] NetId create(PrefabId prefab, Tick tick, u8 owner = NO_OWNER, u32 key = 0) noexcept;
+		void update(Tick tick) noexcept;
 
-		/** Ends an entity. Viewers that have it are told; ids for it are dead from here on. */
-		void destroy(NetId id) noexcept;
+		/** The world entity a NetId names; NO_ENTITY for a dead id. */
+		[[nodiscard]] ecs::Entity entity(NetId id) const noexcept;
 
-		/** Gives an entity a component during tick, at this value: a status effect, a shield. Sets it if it has one. */
-		void add(NetId id, ComponentId component, const void* value, Tick tick) noexcept;
+		/** A world entity's NetId: NO_NET_ID for one that does not replicate, or not yet. */
+		[[nodiscard]] NetId id(ecs::Entity entity) const noexcept;
 
-		/** Sets a component the entity has, during tick. Only a change on the wire counts as a change. */
-		void set(NetId id, ComponentId component, const void* value, Tick tick) noexcept;
-
-		/** Takes a component away from an entity during tick. */
-		void remove(NetId id, ComponentId component, Tick tick) noexcept;
-
-		template <class T> void add(NetId id, const T& value, Tick tick) noexcept { add(id, id_of<T>(), &value, tick); }
-		template <class T> void set(NetId id, const T& value, Tick tick) noexcept { set(id, id_of<T>(), &value, tick); }
-		template <class T> void remove(NetId id, Tick tick) noexcept { remove(id, id_of<T>(), tick); }
-
-		/**
-		 * A component as clients will decode it: the value at the wire's precision. A server that snaps
-		 * its own state to this each tick simulates exactly what its clients predict. False when the
-		 * entity is gone or has no such component.
-		 */
-		[[nodiscard]] bool get(NetId id, ComponentId component, void* out) const noexcept;
-
-		template <class T> [[nodiscard]] bool get(NetId id, T& out) const noexcept { return get(id, id_of<T>(), &out); }
-
-		/** The components a living entity has; none for a dead id. */
-		[[nodiscard]] ComponentMask components(NetId id) const noexcept;
-
-		[[nodiscard]] bool alive(NetId id) const noexcept;
-
-		/** Living entities. */
+		/** Replicated entities alive. */
 		[[nodiscard]] u32 entity_count() const noexcept { return m_alive; }
 
 		/** Seats it keeps a viewer for: def.max_viewers. */
@@ -149,13 +123,15 @@ namespace ember::net
 			}
 		};
 
-		struct Entity
+		/** One index of the entity table. */
+		struct Slot
 		{
-			Change all;							// every component: what its owner sees change
-			Change shared;						// the components everyone gets: what other viewers see change
-			Tick set_all			 = NO_TICK; // the last change to which components it has, as its owner sees them
-			Tick set_shared			 = NO_TICK; // the same, as every other viewer sees them
-			ComponentMask components = 0;		// what it has
+			ecs::Entity entity = ecs::NO_ENTITY; // the world's
+			Change all;							 // every component: what its owner sees change
+			Change shared;						 // the components everyone gets: what other viewers see change
+			Tick set_all			 = NO_TICK;	 // the last change to which components it has, as its owner sees them
+			Tick set_shared			 = NO_TICK;	 // the same, as every other viewer sees them
+			ComponentMask components = 0;		 // what it has
 			u32 key					 = 0;
 			PrefabId prefab			 = 0;
 			u16 generation			 = 1; // of the entity in the index, or of the next one
@@ -171,12 +147,18 @@ namespace ember::net
 			ComponentBits wire;
 		};
 
-		/** One component type's values, packed, for every entity that has one. */
+		/**
+		 * One component type's values, packed, for every entity that has one: the bits, and the bytes
+		 * they were written from, so a value nobody touched is never written again.
+		 */
 		struct Pool
 		{
+			const ecs::ComponentInfo* info	= nullptr;
+			const entt::sparse_set* storage = nullptr; // the world's
 			Vector<u32> sparse;	   // by entity index: its value's place in dense, NONE when it has none
 			Vector<u32> dense;	   // the entity index of each value
 			Vector<Stored> values; // beside dense
+			Vector<u8> bytes;	   // beside dense, info->size apiece
 		};
 
 		/** One viewer's side of one entity. */
@@ -226,37 +208,43 @@ namespace ember::net
 			u32 index	 = 0;
 		};
 
-		template <class T> [[nodiscard]] ComponentId id_of() const noexcept
-		{
-			const ComponentId id = m_schema.id_of<T>();
-			EMBER_ASSERT(id != NO_COMPONENT && "the schema has no such component");
-			return id;
-		}
-
 		[[nodiscard]] Stored* find(u32 index, ComponentId component) noexcept;
 		[[nodiscard]] const Stored* find(u32 index, ComponentId component) const noexcept;
-		Stored& insert(u32 index, ComponentId component) noexcept;
+
+		/** Gives an entity's slot a component, written from these bytes: its stored bits are the caller's. */
+		Stored& insert(u32 index, ComponentId component, const void* bytes) noexcept;
 		void erase(u32 index, ComponentId component) noexcept;
 
 		/** The bits a value writes; false when it writes more than MAX_COMPONENT_BITS. */
 		[[nodiscard]] bool encode(ComponentId component, const void* value, ComponentBits& out) noexcept;
 
-		/** What a viewer gets of an entity: all of it for the owner, less the OwnerOnly components for anyone else. */
-		[[nodiscard]] ComponentMask seen(const Entity& entity, bool owner) const noexcept;
-		[[nodiscard]] ComponentMask seen_in_prefab(const Entity& entity, bool owner) const noexcept;
+		void spawned(entt::registry& registry, ecs::Entity entity) noexcept;
 
-		[[nodiscard]] static const Change& change_for(const Entity& entity, bool owner) noexcept
+		/** A world entity's slot, as its prefab starts it. */
+		void create(ecs::Entity entity, Tick tick) noexcept;
+
+		/** The slot made the world entity's: the same Replicated components, at the same values. */
+		void match(u32 index, Tick tick) noexcept;
+
+		/** Ends a slot's entity: viewers that have it are told. */
+		void destroy(u32 index) noexcept;
+
+		/** What a viewer gets of an entity: all of it for the owner, less the OwnerOnly components for anyone else. */
+		[[nodiscard]] ComponentMask seen(const Slot& slot, bool owner) const noexcept;
+		[[nodiscard]] ComponentMask seen_in_prefab(const Slot& slot, bool owner) const noexcept;
+
+		[[nodiscard]] static const Change& change_for(const Slot& slot, bool owner) noexcept
 		{
-			return owner ? entity.all : entity.shared;
+			return owner ? slot.all : slot.shared;
 		}
 
-		[[nodiscard]] static Tick set_change_for(const Entity& entity, bool owner) noexcept
+		[[nodiscard]] static Tick set_change_for(const Slot& slot, bool owner) noexcept
 		{
-			return owner ? entity.set_all : entity.set_shared;
+			return owner ? slot.set_all : slot.set_shared;
 		}
 
 		/** Whether a record for a viewer tells the entity's components: they may differ from what it has. */
-		[[nodiscard]] bool tells_set(const Entity& entity, const Known& known, bool owner) const noexcept;
+		[[nodiscard]] bool tells_set(const Slot& slot, const Known& known, bool owner) const noexcept;
 
 		[[nodiscard]] u32 record_bits(u8 viewer, u32 index, const Known& known, Tick tick) const noexcept;
 		void write_record(serialize::WriteStream& stream, u8 viewer, u32 index, const Known& known, Tick tick) noexcept;
@@ -264,19 +252,22 @@ namespace ember::net
 		void release(u32 index) noexcept;
 		void free_index(u32 index) noexcept;
 
-		const Schema& m_schema;
+		ecs::World& m_world;
 		ReplicatorDef m_def;
+		Schema m_schema;
 
-		Vector<Entity> m_entities; // by index
-		Vector<Pool> m_pools;	   // by component id
-		Vector<Viewer> m_viewers;  // by seat
-		Vector<u32> m_free;		   // free indices, a ring: the oldest freed is reused first
+		Vector<Slot> m_entities;  // by index
+		Vector<Pool> m_pools;	  // by component id
+		Vector<Viewer> m_viewers; // by seat
+		Vector<u32> m_free;		  // free indices, a ring: the oldest freed is reused first
 		u32 m_free_head	 = 0;
 		u32 m_free_count = 0;
 		u32 m_high		 = 0; // one past the highest index ever used
 		u32 m_alive		 = 0;
 
-		// Scratch for write() and the setters.
+		Vector<ecs::Entity> m_spawned; // world entities spawned since the last update
+
+		// Scratch for write() and update().
 		Vector<Owed> m_owed;
 		Vector<u32> m_removals;
 		PacketBuffer m_scratch;

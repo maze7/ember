@@ -2,6 +2,7 @@
 
 #include <ember/containers/span.h>
 #include <ember/ecs/component.h>
+#include <ember/ecs/wire.h>
 #include <ember/memory/memory.h>
 
 #include <entt/entt.hpp>
@@ -24,13 +25,6 @@ namespace ember::ecs
 	/** Component types a game has at most. */
 	inline constexpr u32 MAX_COMPONENTS = 1024;
 
-	/** A field a prefab file can set. */
-	struct FieldInfo
-	{
-		std::string_view name;
-		bool (*read)(void* component, JsonValue json) noexcept = nullptr; // false leaves the component alone
-	};
-
 	/**
 	 * A component type at run time: what prefabs, tools and the net layer work with when they hold bytes
 	 * rather than C++ type.
@@ -44,18 +38,25 @@ namespace ember::ecs
 		entt::id_type type = 0; // the C++ type, as EnTT names it
 
 		Vector<u8> defaults; // T{}
-		Vector<FieldInfo> fields;
 
 		void (*assure)(entt::registry& registry) noexcept									 = nullptr;
 		void (*emplace)(entt::registry& registry, Entity entity, const void* value) noexcept = nullptr;
 		void (*remove)(entt::registry& registry, Entity entity) noexcept					 = nullptr;
 		const void* (*find)(const entt::registry& registry, Entity entity) noexcept = nullptr; // null when absent
+		void* (*get)(entt::registry& registry, Entity entity) noexcept = nullptr; // to write in place; null when absent
+
+		// A Replicated component's wire form, from its serialize(); null for the rest.
+		bool (*write)(serialize::WriteStream& stream, const void* value) noexcept = nullptr;
+		bool (*read)(serialize::ReadStream& stream, void* value) noexcept		  = nullptr;
+
+		// An Interpolated component between two samples, from its interpolate() or field by field; null for the rest.
+		void (*interpolate)(const void* from, const void* to, f32 t, void* out) noexcept = nullptr;
 	};
 
 	namespace detail
 	{
 		/** Somewhere for find() to point when a tag is present: tags have no bytes of their own. */
-		template <class T> inline const T TAG_VALUE{};
+		template <class T> inline T TAG_VALUE{};
 
 		/** Gives an entity a component form its byte, replacing one it has. */
 		template <class T> void emplace(entt::registry& registry, Entity entity, const void* value) noexcept
@@ -83,16 +84,12 @@ namespace ember::ecs
 				return registry.try_get<T>(entity);
 		}
 
-		template <class T, size_t I> [[nodiscard]] bool read_field(void* bytes, JsonValue json) noexcept
+		template <class T> [[nodiscard]] void* get(entt::registry& registry, Entity entity) noexcept
 		{
-			constexpr auto field = std::get<I>(description_of<T>.fields);
-			T component;
-			std::memcpy(&component, bytes, sizeof(T));
-			if (!read_value(component.*(field.member), json))
-				return false;
-
-			std::memcpy(bytes, &component, sizeof(T));
-			return true;
+			if constexpr (std::is_empty_v<T>)
+				return registry.all_of<T>(entity) ? &TAG_VALUE<T> : nullptr;
+			else
+				return registry.try_get<T>(entity);
 		}
 	}
 
@@ -105,6 +102,9 @@ namespace ember::ecs
 	{
 	public:
 		Components() noexcept { m_infos.reserve(MAX_COMPONENTS); }
+
+		Components(const Components&)			 = delete;
+		Components& operator=(const Components&) = delete;
 
 		/** Registers T, once; its id either way. */
 		template <Component T> ComponentId add() noexcept
@@ -126,12 +126,30 @@ namespace ember::ecs
 			info.defaults.resize(sizeof(T));
 			std::memcpy(info.defaults.data(), &empty, sizeof(T));
 
-			add_fields<T>(info, std::make_index_sequence<std::tuple_size_v<decltype(description_of<T>.fields)>>{});
-
 			info.assure	 = [](entt::registry& registry) noexcept { (void)registry.storage<T>(); };
 			info.emplace = &detail::emplace<T>;
 			info.remove	 = &detail::remove<T>;
 			info.find	 = &detail::find<T>;
+			info.get	 = &detail::get<T>;
+
+			if constexpr (ReplicatedComponent<T>)
+			{
+				static_assert(
+					Serializable<T> || std::is_empty_v<T>,
+					"a Replicated component crosses the wire with template <class Stream> bool serialize(Stream&)");
+				static_assert(sizeof(T) <= MAX_REPLICATED_BYTES,
+							  "a Replicated component is 64 bytes at most: split it");
+				info.write = &detail::write_component<T>;
+				info.read  = &detail::read_component<T>;
+			}
+
+			if constexpr (has_any(kind_of<T>, Kind::Interpolated))
+			{
+				static_assert(OwnInterpolate<T> || std::is_aggregate_v<T>,
+							  "an Interpolated component is a plain struct, or has static T interpolate(from, to, t)");
+				info.interpolate = &detail::interpolate_component<T>;
+			}
+
 			return info.id;
 		}
 
@@ -154,10 +172,6 @@ namespace ember::ecs
 		[[nodiscard]] u32 count() const noexcept { return static_cast<u32>(m_infos.size()); }
 
 	private:
-		template <class T, size_t... Is> static void add_fields(ComponentInfo& info, std::index_sequence<Is...>)
-		{
-			(info.fields.push_back({std::get<Is>(description_of<T>.fields).name, &detail::read_field<T, Is>}), ...);
-		}
 		Vector<ComponentInfo> m_infos{&memory::heap(MemoryTag::ECS)};
 	};
 }

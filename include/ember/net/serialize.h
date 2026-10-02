@@ -51,6 +51,48 @@
 
 #include <serialize.h>
 
+// serialize also has read_ and write_ macros, for types that read and write in separate functions.
+// The engine writes one serialize() per type and never uses them, and their plain names break other
+// libraries (fmt's write_int) in every file that includes both, so they go.
+#undef read_align
+#undef write_align
+#undef read_bits
+#undef write_bits
+#undef read_bool
+#undef write_bool
+#undef read_bytes
+#undef write_bytes
+#undef read_double
+#undef write_double
+#undef read_fixed
+#undef write_fixed
+#undef read_float
+#undef write_float
+#undef read_int
+#undef write_int
+#undef read_int128
+#undef write_int128
+#undef read_int64
+#undef write_int64
+#undef read_int_relative
+#undef write_int_relative
+#undef read_object
+#undef write_object
+#undef read_string
+#undef write_string
+#undef read_uint128
+#undef write_uint128
+#undef read_uint16
+#undef write_uint16
+#undef read_uint32
+#undef write_uint32
+#undef read_uint64
+#undef write_uint64
+#undef read_uint8
+#undef write_uint8
+#undef read_wstring
+#undef write_wstring
+
 /**
  * An enum whose values run from 0 to count - 1, in the bits that range needs. A value past the end
  * fails the read, so with the enum's Count as the count, a peer built with values this build does

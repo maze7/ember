@@ -21,7 +21,11 @@ add_subdirectory(containers)
 add_subdirectory(memory)
 add_subdirectory(math)
 add_subdirectory(jobs)
-add_subdirectory(assets)
+add_subdirectory(ecs)
+
+if(EMBER_ENABLE_ASSETS)
+	add_subdirectory(assets)
+endif()
 
 if(EMBER_ENABLE_APP)
 	add_subdirectory(app)

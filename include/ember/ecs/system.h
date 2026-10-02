@@ -430,28 +430,42 @@ namespace ember::ecs
 	};
 
 	/**
-	 * What a game is made of: its component types and its systems, gathered from its features in the
-	 * order they register them.
+	 * What a game is made of: its component types, its prefabs and its systems, in the order the
+	 * game's features register them. Every world is made from one, and every machine in a session
+	 * registers the same things in the same order: their order is how the wire names them.
 	 *
-	 *     void movement(Features& features)
+	 *     void movement(Registry& registry)
 	 *     {
-	 *         features.components<TransformComponent, MotionComponent>();
-	 *         features.simulate<motion_system>(Stage::Move);
+	 *         registry.components<TransformComponent, MotionComponent>();
+	 *         registry.prefabs(CRAWLER, ELITE_CRAWLER);
+	 *         registry.simulate<motion_system>(Stage::Move);
 	 *     }
 	 *
 	 * Stages are the game's own enum: Simulate runs them in the order of their values, and the
 	 * systems within each in the order they were registered. Give the enum EMBER_ENUM_NAMES and the
 	 * schedule shows its names.
 	 */
-	class Features final
+	class Registry final
 	{
 	public:
-		Features() noexcept = default;
+		Registry() noexcept = default;
 
-		Features(const Features&)			 = delete;
-		Features& operator=(const Features&) = delete;
+		Registry(const Registry&)			 = delete;
+		Registry& operator=(const Registry&) = delete;
 
 		template <Component... Ts> void components() noexcept { (m_components.add<Ts>(), ...); }
+
+		/** Prefabs (prefab.h), and every component they have. Each is a constant that lasts: spawns find it by address.
+		 */
+		template <class... Defs> void prefabs(Defs&&... definitions) noexcept
+		{
+			static_assert((std::is_lvalue_reference_v<Defs> && ...),
+						  "register prefab constants: inline constexpr auto CRAWLER = ecs::prefab(...)");
+			(add_definition(definitions), ...);
+		}
+
+		/** A prefab of bytes rather than a definition, as a prefab file makes: its components registered already. */
+		PrefabId add_prefab(Prefab prefab) noexcept { return m_prefabs.add(std::move(prefab)); }
 
 		/** A Simulate system: game rules. Everywhere runs it on the server, and on a client for what it predicts. */
 		template <auto System, class Stage>
@@ -475,8 +489,15 @@ namespace ember::ecs
 		}
 
 		[[nodiscard]] const Components& component_types() const noexcept { return m_components; }
+		[[nodiscard]] const Prefabs& prefab_types() const noexcept { return m_prefabs; }
 
 	private:
+		template <Component... Cs> void add_definition(const PrefabDef<Cs...>& definition) noexcept
+		{
+			components<Cs...>();
+			(void)m_prefabs.add(detail::make_prefab(m_components, definition));
+		}
+
 		template <Phase phase, auto System> SystemInfo& add(u8 stage, Where where) noexcept
 		{
 			using params = typename detail::FunctionTraits<decltype(System)>::params;
@@ -506,6 +527,7 @@ namespace ember::ecs
 		}
 
 		Components m_components;
+		Prefabs m_prefabs;
 		Vector<SystemInfo> m_systems{&memory::heap(MemoryTag::ECS)};
 	};
 }

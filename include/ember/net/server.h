@@ -17,7 +17,7 @@ namespace ember::net
 		f64 handshake_timeout	 = 5.0;		// seconds a connected peer has to say Hello
 		ConnectionDef connection = {};		// per client: the silence after which it is dropped
 		CommandQueueDef queue	 = {};		// per client: the tick length and how arrival times are smoothed
-		Replicator* replicator	 = nullptr; // the entities clients are sent, one viewer per seat; null disables.
+		Replicator* replicator	 = nullptr; // the server world's entities, one viewer per seat; null sends none
 	};
 
 	enum class ServerEventKind : u8
@@ -49,10 +49,10 @@ namespace ember::net
 	 *
 	 * Only a welcomed client's packets count.
 	 *
-	 * Ech tick the game polls with the tick it is about to simulate (packets in, events out), takes every seat's
+	 * Each tick the game polls with the tick it is about to simulate (packets in, events out), takes every seat's
 	 * command for that tick, simulates it, and calls send_packets: each client gets the connection header, the
-	 * report on how ealry its commands arrive, which steers its clock, and the entities the replicator owes it
-	 * as they stand after the tick.
+	 * report on how early its commands arrive, which steers its clock, and the entities the replicator owes it
+	 * as the world stands after the tick: send_packets() has the replicator look at it first.
 	 *
 	 * Single threaded: the server's game thread drives it. The transport must outlive it.
 	 */

@@ -17,7 +17,7 @@ namespace ember::net
 		f64 handshake_timeout	 = 5.0;		// seconds from connect() to the Welcome
 		ConnectionDef connection = {};		// the silence after which the server counts as gone
 		TimeDilationDef dilation = {};		// how the clock steers toward the server
-		Replica* replica		 = nullptr; // where the server's entities land; null ignores them
+		Replica* replica		 = nullptr; // puts the server's entities in the client world; null ignores them
 	};
 
 	enum class ClientState : u8

@@ -10,13 +10,28 @@ namespace ember::jobs
 
 namespace ember::ecs
 {
-	/** Which side of a session a world is. A host runs one of each. */
+	/** Which side of a session a world is. A host runs a server and a client; single player, one standalone. */
 	enum class Role : u8
 	{
-		Server, // the authority: it simulates everything
-		Client, // a player's machine: it predicts what it owns, and presents everything
+		Standalone, // no session: every component and every system, and it simulates everything
+		Server,		// the authority: it simulates everything, and presents nothing
+		Client,		// a player's machine: it predicts what it owns, and presents everything
 		Count
 	};
+
+	/** Whether a world of this role has components of this kind: a server no Client ones, a client no Server ones. */
+	[[nodiscard]] constexpr bool lives_in(Kind kind, Role role) noexcept
+	{
+		switch (role)
+		{
+			case Role::Server:
+				return !has_any(kind, Kind::Client);
+			case Role::Client:
+				return !has_any(kind, Kind::Server);
+			default:
+				return true;
+		}
+	}
 
 	/** The parts of a frame a world runs systems in. */
 	enum class Phase : u8
@@ -27,7 +42,10 @@ namespace ember::ecs
 		Count
 	};
 
-	/** Where a Simulate system runs. Everywhere is the server, and a client for what it predicts. */
+	/**
+	 * Where a Simulate system runs. Everywhere is the server, and a client for what it predicts. A
+	 * standalone world runs them all.
+	 */
 	enum class Where : u8
 	{
 		Everywhere,
@@ -68,7 +86,7 @@ namespace ember::ecs
 
 	class World;
 	class SystemContext;
-	class Features;
+	class Registry;
 	struct SystemInfo;
 
 	namespace detail
@@ -133,19 +151,27 @@ namespace ember::ecs
 		{
 		}
 
-		/** A prefab's entity, with these components set over the prefab's. */
+		/**
+		 * A prefab's entity, with these components set over the prefab's or added to them. Components
+		 * that do not live in this world are left out, so shared code may name them all.
+		 */
 		template <Component... Ts> Spawned spawn(const Prefab& prefab, const Ts&... overrides) noexcept;
+
+		template <Component... Cs, Component... Ts>
+		Spawned spawn(const PrefabDef<Cs...>& prefab, const Ts&... overrides) noexcept;
 
 		template <Component T> void add(Entity entity, const T& value) noexcept
 		{
-			push(stream(), &apply_add<T>,
-				 detail::AddPayload<T>{.target = {.entity = entity, .spawned = {}}, .value = value});
+			if (lives_here<T>())
+				push(stream(), &apply_add<T>,
+					 detail::AddPayload<T>{.target = {.entity = entity, .spawned = {}}, .value = value});
 		}
 
 		template <Component T> void add(Spawned spawned, const T& value) noexcept
 		{
-			push(stream(), &apply_add<T>,
-				 detail::AddPayload<T>{.target = {.entity = NO_ENTITY, .spawned = spawned}, .value = value});
+			if (lives_here<T>())
+				push(stream(), &apply_add<T>,
+					 detail::AddPayload<T>{.target = {.entity = NO_ENTITY, .spawned = spawned}, .value = value});
 		}
 
 		template <Component T> void remove(Entity entity) noexcept
@@ -169,6 +195,9 @@ namespace ember::ecs
 			std::memcpy(into.bytes.data() + at + sizeof(apply), &size, sizeof(size));
 			std::memcpy(into.bytes.data() + at + sizeof(apply) + sizeof(size), &payload, sizeof(Payload));
 		}
+
+		/** Whether T lives in this world: a component that does not is left out, as the world would. */
+		template <Component T> [[nodiscard]] bool lives_here() const noexcept;
 
 		/** The stretch these commands go to now. */
 		[[nodiscard]] u32 segment() noexcept;
@@ -241,22 +270,54 @@ namespace ember::ecs
 	};
 
 	/**
-	 * One machine's game: the server's, or a client's. Its own entities, resources and copy of the
-	 * rules: the systems the game's features registered, run phase by phase and stage by stage.
+	 * One machine's game: a standalone game's, the server's, or a client's. Its own entities, resources
+	 * and copy of the rules: the systems the game registered, run phase by phase and stage by stage.
 	 */
 	class World final
 	{
 	public:
-		/** features and prefabs must outlive the world. */
-		World(Role role, const Features& features, const Prefabs& prefabs) noexcept;
+		/** game must outlive the world, and is complete: nothing registers once a world is made from it. */
+		explicit World(const Registry& game, Role role = Role::Standalone) noexcept;
 		~World() noexcept;
 
 		World(const World&)			   = delete;
 		World& operator=(const World&) = delete;
 
 		[[nodiscard]] Role role() const noexcept { return m_role; }
-		[[nodiscard]] const Prefabs& prefabs() const noexcept { return m_prefabs; }
-		[[nodiscard]] const Components& components() const noexcept { return m_prefabs.components(); }
+		[[nodiscard]] const Components& components() const noexcept;
+		[[nodiscard]] const Prefabs& prefabs() const noexcept;
+
+		/** A registered prefab, from its definition. */
+		template <class... Cs> [[nodiscard]] const Prefab& prefab(const PrefabDef<Cs...>& definition) const noexcept
+		{
+			const Prefab* found = prefabs().find(definition);
+			EMBER_ASSERT(found != nullptr && "register the prefab first: registry.prefabs(...)");
+			return *found;
+		}
+
+		/**
+		 * A prefab's entity, now, with these components set over the prefab's or added to them: for
+		 * loading a level, tools and tests. Systems spawn with Commands.
+		 */
+		template <Component... Ts> Entity spawn(const Prefab& prefab, const Ts&... overrides) noexcept
+		{
+			const Entity entity = create(prefab, m_role != Role::Client);
+			(set<Ts>(entity, overrides), ...);
+			return entity;
+		}
+
+		template <Component... Cs, Component... Ts>
+		Entity spawn(const PrefabDef<Cs...>& definition, const Ts&... overrides) noexcept
+		{
+			return spawn(prefab(definition), overrides...);
+		}
+
+		/** Gives an entity a component, or a new value for one it has; nothing when T does not live here. */
+		template <Component T> void set(Entity entity, const T& value) noexcept
+		{
+			if (lives_in(kind_of<T>, m_role))
+				detail::emplace<T>(registry, entity, &value);
+		}
 
 		/** A resource: one value of its type for the whole world, which systems take as const T& or T&. */
 		template <class T, class... Args> T& add_resource(Args&&... args)
@@ -287,8 +348,12 @@ namespace ember::ecs
 		 */
 		void run(Phase phase) noexcept;
 
-		/** The prefab's components that live here: Sim and Server on a server, Sim and Client on a client. */
+		/** The prefab's components that live here: all of them standalone, less the Client ones on a server, less the
+		 * Server ones on a client. */
 		void instantiate(Entity entity, const Prefab& prefab) noexcept;
+
+		/** A prefab's entity, with what lives here, its PrefabRef, and Simulated when asked. */
+		Entity create(const Prefab& prefab, bool simulated) noexcept;
 
 		/** Commands from outside any system: tools, tests, the net layer. They land at apply_commands(). */
 		[[nodiscard]] Commands& commands() noexcept { return m_outside.commands(); }
@@ -338,7 +403,7 @@ namespace ember::ecs
 		[[nodiscard]] u64 random() noexcept;
 
 		Role m_role;
-		const Prefabs& m_prefabs;
+		const Registry& m_registry;
 		RunMode m_mode = RunMode::Serial;
 		u64 m_random   = 0;
 		SystemContext m_outside;
@@ -362,18 +427,23 @@ namespace ember::ecs
 				detail::CommandStream& from = context.segment(payload.spawned.segment);
 				EMBER_ASSERT(from.spawned.size() == payload.spawned.index);
 
-				const Entity entity = world.registry.create();
-				world.instantiate(entity, *payload.prefab);
-				world.registry.emplace<PrefabRef>(entity, PrefabRef{.id = payload.prefab->id});
-				if (payload.simulated)
-					world.registry.emplace<Simulated>(entity);
-
-				from.spawned.push_back(entity);
+				from.spawned.push_back(world.create(*payload.prefab, payload.simulated));
 			},
 			detail::SpawnPayload{.prefab = &prefab, .spawned = spawned, .simulated = m_context->simulates()});
 
 		(add(spawned, overrides), ...);
 		return spawned;
+	}
+
+	template <Component T> bool Commands::lives_here() const noexcept
+	{
+		return lives_in(kind_of<T>, m_context->world().role());
+	}
+
+	template <Component... Cs, Component... Ts>
+	Spawned Commands::spawn(const PrefabDef<Cs...>& prefab, const Ts&... overrides) noexcept
+	{
+		return spawn(m_context->world().prefab(prefab), overrides...);
 	}
 
 	template <class T> void Commands::apply_add(World& world, SystemContext& context, const u8* bytes) noexcept
@@ -383,7 +453,7 @@ namespace ember::ecs
 
 		const Entity entity = context.resolve(payload.target);
 		if (world.registry.valid(entity))
-			detail::emplace<T>(world.registry, entity, &payload.value);
+			world.set(entity, payload.value);
 	}
 
 	template <class T> void Commands::apply_remove(World& world, SystemContext& context, const u8* bytes) noexcept

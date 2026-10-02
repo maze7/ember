@@ -8,6 +8,7 @@ ember_add_test_suite(ember_net_tests net
 	valve_transport_tests.cpp
 	tick_ring_tests.cpp
 	time_dilation_tests.cpp
+	replication_tests.cpp
 )
 
 target_link_libraries(ember_net_tests PRIVATE Ember::Net)

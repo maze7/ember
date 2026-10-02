@@ -194,6 +194,8 @@ namespace ember::net
 			m_connection.reset(incoming.time);
 			m_commands.reset();
 			m_dilation.reset();
+			if (m_def.replica != nullptr)
+				m_def.replica->reset();
 
 			m_slot	= welcome.slot;
 			m_state = ClientState::Playing;

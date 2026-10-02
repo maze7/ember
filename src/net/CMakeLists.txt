@@ -1,5 +1,5 @@
 # Ember::Net, the netcode: wire format (serialize), connections, commands and the clock, transports
-# (Valve's networking sockets, loopback). The sockets library stays private: no header of it
+# (Valve's networking sockets, loopback), and the replication of Ember::Ecs worlds. The sockets library stays private: no header of it
 # reaches the engine's public include tree.
 ember_add_module(Net
 	SOURCES
@@ -15,6 +15,7 @@ ember_add_module(Net
 		replica.cpp
 	PUBLIC_DEPS
 		Ember::Core
+		Ember::Ecs
 		serialize::serialize
 	PRIVATE_DEPS
 		Valve::NetworkingSockets

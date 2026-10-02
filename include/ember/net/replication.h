@@ -1,30 +1,30 @@
 #pragma once
 
-#include <ember/containers/span.h>
 #include <ember/core/bitmask.h>
+#include <ember/ecs/world.h>
 #include <ember/net/serialize.h>
 #include <ember/net/tick.h>
 
 #include <array>
 #include <bit>
-#include <cstring>
-#include <type_traits>
 
 namespace ember::net
 {
-	/** Component types a schema holds at most: one bit each in ComponentMask */
+	/** Replicated component types a game has at most: one bit each in ComponentMask. */
 	inline constexpr u32 MAX_COMPONENT_TYPES = 64;
 
-	/** The largest replicated component: in memory, and on the wire. */
-	inline constexpr u32 MAX_COMPONENT_BYTES = 64;
-	inline constexpr u32 MAX_COMPONENT_BITS	 = 512;
+	/** The largest Replicated component on the wire. */
+	inline constexpr u32 MAX_COMPONENT_BITS = ecs::MAX_REPLICATED_BITS;
 
 	/**
 	 * A replicated entity's name on every machine in a session: its index in the server's entity
 	 * table and the generation of that index. A destroyed entity's index is only reused once every
 	 * client has let go of it, and then with the next generation, so an ID kept past its entity's
-	 * death (in a command, a message, the game's own tables) is told apart form the entity now in
+	 * death (in a command, a message, the game's own tables) is told apart from the entity now in
 	 * place.
+	 *
+	 * Every replicated entity has one as a component, on the server and on its clients: what a
+	 * command names an entity by.
 	 */
 	struct NetId
 	{
@@ -50,10 +50,44 @@ namespace ember::net
 			return true;
 		}
 	};
+	EMBER_COMPONENT(NetId, Sim);
 
 	inline constexpr NetId NO_NET_ID = {};
 
-	/** A component type's place in a schema. */
+	/** An entity no client controls. */
+	inline constexpr u8 NO_OWNER = 0xff;
+
+	/**
+	 * On the server: the seat that controls an entity, which alone receives its OwnerOnly components
+	 * and predicts it. Give it in the spawn, commands.spawn(PLAYER, net::Owner{.seat = seat}); it
+	 * holds for as long as that seat's session lasts.
+	 */
+	struct Owner
+	{
+		u8 seat = NO_OWNER;
+		u32 key = 0; // the game's tag, sent only to the owner: matches a spawn it predicted, a shot it fired
+	};
+	EMBER_COMPONENT(Owner, Server);
+
+	/** On a client: an entity this client controls, and so predicts: it is Simulated there. */
+	struct Owned
+	{
+		u32 key = 0; // the Owner key the server spawned it with
+	};
+	EMBER_COMPONENT(Owned, Client);
+
+	/**
+	 * On the server: how urgent an entity's updates are, times the game's relevance for each viewer.
+	 * 1 without one; a boss or a volley more, a crate less. Put it in a prefab, or change it as the
+	 * entity plays.
+	 */
+	struct Priority
+	{
+		f32 value = 1.0f;
+	};
+	EMBER_COMPONENT(Priority, Server);
+
+	/** A Replicated component type's place among a game's Replicated components. */
 	using ComponentId = u8;
 
 	inline constexpr ComponentId NO_COMPONENT = 0xff;
@@ -65,88 +99,8 @@ namespace ember::net
 
 	constexpr ComponentMask component_bit(ComponentId id) noexcept { return ComponentMask{1} << id; }
 
-	/** A prefab's place in a schema: what the game spawns from, a player, an enemy, etc. */
+	/** A prefab's place on the wire: its place in the game's registry. */
 	using PrefabId = u16;
-
-	enum class ComponentFlags : u8
-	{
-		None		 = 0,
-		Interpolated = 1 << 0, // clients keep timed samples of it, to draw it between server ticks
-		OwnerOnly	 = 1 << 1, // only the entity's owner receives it: ammo, cooldowns, private state.
-	};
-
-	EMBER_ENUM_BITWISE_OPS(ComponentFlags, u8);
-
-	/**
-	 * A component type as replication sees it: bytes, how they go on the wire, and how they are treated.
-	 * component_codec<T>() builds one from T's serialize(), as command_codec does for commands, so
-	 * replication itself never names a gameplay type.
-	 *
-	 * The server keeps every component as the bits its serialize() wrote and copies those bits into
-	 * each packet wherever the packet has got to, so a component must not align: no serialize_bytes,
-	 * serialize_string, or serialize_algn. Pack with serialize_bts, serialize_int, and the compressed
-	 * floats. Schema::add_component checks this once.
-	 */
-	struct ComponentCodec
-	{
-		u32 size			 = 0;		// sizeof the component: trivially copyable, at most MAX_COMPONENT_BYTES
-		const void* type	 = nullptr; // which type it was made for, so typed calls can check what they are given.
-		ComponentFlags flags = ComponentFlags::None;
-
-		bool (*write)(serialize::WriteStream& stream, const void* value) noexcept = nullptr;
-		bool (*read)(serialize::ReadStream& stream, void* value) noexcept		  = nullptr;
-
-		/** A default constructed component: a prefab's value for it when the prefab does not say. */
-		std::array<u8, MAX_COMPONENT_BYTES> empty = {};
-	};
-
-	namespace detail
-	{
-		/** One address per component type: what ComponentCodec::type points at. */
-		template <class T> inline constexpr char COMPONENT_TYPE = 0;
-
-		/** A component copied out of storage, which is bytes, into a value of its own type. */
-		template <class T> [[nodiscard]] T load_component(const void* bytes) noexcept
-		{
-			T value{};
-			std::memcpy(&value, bytes, sizeof(T));
-			return value;
-		}
-	}
-
-	template <class T>
-	[[nodiscard]] ComponentCodec component_codec(ComponentFlags flags = ComponentFlags::None) noexcept
-	{
-		static_assert(std::is_trivially_copyable_v<T> && std::is_default_constructible_v<T>,
-					  "components are plain values: copied as bytes, default constructed until set");
-		static_assert(sizeof(T) <= MAX_COMPONENT_BYTES, "components are small: split a large one");
-
-		ComponentCodec codec;
-		codec.size	= sizeof(T);
-		codec.type	= &detail::COMPONENT_TYPE<T>;
-		codec.flags = flags;
-
-		const T empty{};
-		std::memcpy(codec.empty.data(), &empty, sizeof(T));
-
-		codec.write = [](serialize::WriteStream& stream, const void* value) noexcept
-		{
-			T copy = detail::load_component<T>(value);
-			return copy.serialize(stream);
-		};
-
-		codec.read = [](serialize::ReadStream& stream, void* value) noexcept
-		{
-			T copy{};
-			if (!copy.serialize(stream))
-				return false;
-
-			std::memcpy(value, &copy, sizeof(T));
-			return true;
-		};
-
-		return codec;
-	}
 
 	/** A component's wire form: the bits its serialize() wrote, ready to copy into a packet. */
 	struct ComponentBits
@@ -155,98 +109,69 @@ namespace ember::net
 		alignas(8) std::array<u8, MAX_COMPONENT_BITS / 8 + 8> bytes = {}; // + 8: the bit reader's slack
 	};
 
-	/** One replicated component of a prefab, as the game's prefab file sets it. */
-	struct PrefabComponent
-	{
-		ComponentId component = 0;
-		const void* value	  = nullptr; // a value of the component's type; null for its default
-	};
-
-	/**
-	 * A prefab as replication sees it: the replicated components an entity made from it starts with,
-	 * and how urgent its updates are. Both ends of a session know every prefab and its values, so a
-	 * create names the prefab and carries only what differs from it.
-	 */
+	/** A prefab as replication sees it: the Replicated components an entity made from it starts with. */
 	struct PrefabInfo
 	{
-		ComponentMask components = 0;	 // what a new entity has
-		ComponentMask shared	 = 0;	 // what a viewer that does not own it gets: less the OwnerOnly ones
-		f32 priority			 = 1.0f; // multiplies the game's relevance: a volley or a boss outranks a crate
-		u32 first				 = 0;	 // its first value in the schema; one per component, in id order
-	};
-
-	/** A prefab's value for one of its components: as clients decode it, and the bits that decode to it. */
-	struct PrefabValue
-	{
-		ComponentBits wire;
-		std::array<u8, MAX_COMPONENT_BYTES> bytes = {};
+		ComponentMask components = 0; // what a new entity has
+		ComponentMask shared	 = 0; // what a viewer that does not own it gets: less the OwnerOnly ones
+		u32 first				 = 0; // its first wire value in the schema; one per component, in id order
 	};
 
 	/**
-	 * What both ends of a session replicate: the component types, the prefabs entities are made from,
-	 * and how many entities exist at once. The server and its clients build the same schema, in the
-	 * same order, from shared game code and the same prefab files; a change to it is a change to the
-	 * game's protocol version, which the handshake checks.
+	 * What both ends of a session replicate, read from the world's registry: its Replicated
+	 * components in the order they were registered, its prefabs, and how many entities exist at once.
+	 * The server and its clients register the same things in the same order from shared game code, so
+	 * they build the same schema; a change to it is a change to the game's protocol version, which
+	 * the handshake checks. Replicator and Replica each build their own.
+	 *
+	 * The server keeps every component as the bits its serialize() wrote and copies those bits into
+	 * each packet wherever the packet has got to, so a component must not align: no serialize_bytes,
+	 * serialize_string or serialize_align. The schema checks this once.
 	 */
 	class Schema final
 	{
 	public:
 		/** max_entities sets the width of every entity index on the wire, so both ends must agree on it. */
-		explicit Schema(u32 max_entities = 4096) noexcept;
+		Schema(const ecs::World& world, u32 max_entities) noexcept;
 
-		/** A component type; ids follow the order of registration. */
-		template <class T> ComponentId add_component(ComponentFlags flags = ComponentFlags::None) noexcept
-		{
-			return add_component(component_codec<T>(flags));
-		}
+		Schema(const Schema&)			 = delete;
+		Schema& operator=(const Schema&) = delete;
 
-		ComponentId add_component(const ComponentCodec& codec) noexcept;
+		[[nodiscard]] u32 max_entities() const noexcept { return m_max_entities; }
+		[[nodiscard]] u32 component_count() const noexcept { return static_cast<u32>(m_components.size()); }
+		[[nodiscard]] u32 prefab_count() const noexcept { return static_cast<u32>(m_prefabs.size()); }
 
-		/**
-		 * A prefab: the replicated components an entity made from it starts with, at these values, in
-		 * any order. Ids follow the order of registration. Each value is kept as clients decode it,
-		 * so the server's copy and every client's agree to the bit.
-		 */
-		PrefabId add_prefab(Span<const PrefabComponent> components, f32 priority = 1.0f) noexcept;
+		[[nodiscard]] const ecs::ComponentInfo& component(ComponentId id) const noexcept { return *m_components[id]; }
+		[[nodiscard]] const PrefabInfo& prefab(PrefabId id) const noexcept { return m_prefabs[id]; }
 
-		/** T's component id; NO_COMPONENT when T was never added. */
-		template <class T> ComponentId id_of() const noexcept
-		{
-			for (u32 id = 0; id < m_components.size(); ++id)
-			{
-				if (m_components[id].type == &detail::COMPONENT_TYPE<T>)
-					return static_cast<ComponentId>(id);
-			}
+		/** A prefab's value for one of its components, as the bits it writes. */
+		[[nodiscard]] const ComponentBits& prefab_wire(PrefabId id, ComponentId component) const noexcept;
 
-			return NO_COMPONENT;
-		}
+		/** Whether entities made from a prefab replicate: whether it has a Replicated component. */
+		[[nodiscard]] bool replicated(PrefabId id) const noexcept { return m_prefabs[id].components != 0; }
 
-		u32 max_entities() const noexcept { return m_max_entities; }
-		u32 component_count() const noexcept { return static_cast<u32>(m_components.size()); }
-		u32 prefab_count() const noexcept { return static_cast<u32>(m_prefabs.size()); }
-
-		const ComponentCodec& component(ComponentId id) const noexcept { return m_components[id]; }
-		const PrefabInfo& prefab(PrefabId id) const noexcept { return m_prefabs[id]; }
-
-		/** A prefab's value for one of its components. */
-		const PrefabValue& prefab_value(PrefabId id, ComponentId component) const noexcept;
-
-		/** The component types only an entity's owner receives. */
+		/** The component types only an entity's owner receives, those clients draw, those owners predict. */
 		[[nodiscard]] ComponentMask owner_only() const noexcept { return m_owner_only; }
+		[[nodiscard]] ComponentMask interpolated() const noexcept { return m_interpolated; }
+		[[nodiscard]] ComponentMask predicted() const noexcept { return m_predicted; }
 
 		/** Bits on the wire of an entity index, a prefab id and a component id. */
 		[[nodiscard]] u32 index_bits() const noexcept { return m_index_bits; }
-		[[nodiscard]] u32 prefab_bits() const noexcept;
-		[[nodiscard]] u32 component_bits() const noexcept;
+		[[nodiscard]] u32 prefab_bits() const noexcept { return m_prefab_bits; }
+		[[nodiscard]] u32 component_bits() const noexcept { return m_component_bits; }
 
 	private:
-		u32 m_max_entities		   = 0;
-		u32 m_index_bits		   = 0;
-		ComponentMask m_owner_only = 0;
+		u32 m_max_entities			 = 0;
+		u32 m_index_bits			 = 0;
+		u32 m_prefab_bits			 = 0;
+		u32 m_component_bits		 = 0;
+		ComponentMask m_owner_only	 = 0;
+		ComponentMask m_interpolated = 0;
+		ComponentMask m_predicted	 = 0;
 
-		Vector<ComponentCodec> m_components;
+		Vector<const ecs::ComponentInfo*> m_components; // by net id
 		Vector<PrefabInfo> m_prefabs;
-		Vector<PrefabValue> m_values; // every prefab's, a run per prefab
+		Vector<ComponentBits> m_wires; // every prefab's values, a run per prefab
 	};
 
 	/**

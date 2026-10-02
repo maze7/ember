@@ -163,10 +163,21 @@ endif()
 
 add_subdirectory(yyjson)
 
-# Ember::Net's dependencies. serialize (Glenn Fiedler) is the wire format: one header, public,
-# because game types describe themselves with its macros. The transport is Valve's networking
-# sockets, private to Ember::Net as SDL is to Ember::Platform, as Valve::NetworkingSockets: one of two
-# libraries with one API.
+# Ember::Ecs builds on EnTT, and reads components' fields with Boost.PFR (header only, vendored).
+add_subdirectory(entt)
+add_subdirectory(pfr)
+
+# serialize (Glenn Fiedler) is the wire format: one header, public, because game types describe
+# themselves with its macros. Every build has it: Ember::Ecs gives Replicated components their wire
+# forms whether or not this build has the netcode.
+add_library(serialize INTERFACE)
+add_library(serialize::serialize ALIAS serialize)
+target_include_directories(serialize SYSTEM INTERFACE
+	"$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/serialize>"
+)
+
+# Ember::Net's transport is Valve's networking sockets, private to Ember::Net as SDL is to
+# Ember::Platform, as Valve::NetworkingSockets: one of two libraries with one API.
 #
 #   GameNetworkingSockets   open source, built here, static, without its examples, tests and tools.
 #                           Needs OpenSSL and protobuf from the system (Fedora: dnf install
@@ -175,12 +186,6 @@ add_subdirectory(yyjson)
 #                           Steam's relay network and connections by Steam ID. The SDK comes from
 #                           partner.steamgames.com/downloads; STEAMWORKS_SDK is its sdk folder.
 if(EMBER_ENABLE_NET)
-	add_library(serialize INTERFACE)
-	add_library(serialize::serialize ALIAS serialize)
-	target_include_directories(serialize SYSTEM INTERFACE
-		"$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/serialize>"
-	)
-
 	add_library(networking_sockets INTERFACE)
 	add_library(Valve::NetworkingSockets ALIAS networking_sockets)
 
@@ -226,5 +231,3 @@ if(EMBER_ENABLE_NET)
 		target_link_libraries(networking_sockets INTERFACE GameNetworkingSockets::static)
 	endif()
 endif()
-
-add_subdirectory(entt)

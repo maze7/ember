@@ -17,7 +17,15 @@ namespace ember::ecs
 
 		[[nodiscard]] bool runs_here(const SystemInfo& system, Role role) noexcept
 		{
-			return system.where == Where::Everywhere || (system.where == Where::Server) == (role == Role::Server);
+			switch (system.where)
+			{
+				case Where::Server:
+					return role != Role::Client;
+				case Where::Client:
+					return role != Role::Server;
+				default:
+					return true;
+			}
 		}
 
 		/** What two systems both touch, one of them writing it: why the later one waits. */
@@ -68,7 +76,7 @@ namespace ember::ecs
 
 	SystemContext::SystemContext(World& world, const SystemInfo* system) noexcept
 		: m_world(world), m_commands(*this), m_name(system != nullptr ? system->name.data() : "commands"),
-		  m_simulates(system != nullptr ? system->phase == Phase::Simulate : world.role() == Role::Server),
+		  m_simulates(system != nullptr ? system->phase == Phase::Simulate : world.role() != Role::Client),
 		  m_structural(system == nullptr || system->structural)
 	{
 	}
@@ -219,10 +227,9 @@ namespace ember::ecs
 		m_used = 0;
 	}
 
-	World::World(Role role, const Features& features, const Prefabs& prefabs) noexcept
-		: m_role(role), m_prefabs(prefabs), m_outside(*this, nullptr)
+	World::World(const Registry& game, Role role) noexcept : m_role(role), m_registry(game), m_outside(*this, nullptr)
 	{
-		EMBER_ASSERT(&prefabs.components() == &features.component_types() && "prefabs read the features' components");
+		EMBER_ASSERT(role < Role::Count);
 
 		// Every storage exists before anything runs: EnTT makes one on first use, and two systems running
 		// at once must never both be first.
@@ -235,7 +242,7 @@ namespace ember::ecs
 		for (u32 phase = 0; phase < static_cast<u32>(Phase::Count); ++phase)
 		{
 			Vector<Stage>& stages = m_stages[phase];
-			for (const SystemInfo& system : features.systems())
+			for (const SystemInfo& system : m_registry.systems())
 			{
 				if (static_cast<u32>(system.phase) != phase || !runs_here(system, role))
 					continue;
@@ -275,6 +282,10 @@ namespace ember::ecs
 	}
 
 	World::~World() noexcept = default;
+
+	const Components& World::components() const noexcept { return m_registry.component_types(); }
+
+	const Prefabs& World::prefabs() const noexcept { return m_registry.prefab_types(); }
 
 	void World::plan(Stage& stage) noexcept
 	{
@@ -414,11 +425,19 @@ namespace ember::ecs
 		for (const PrefabComponent& component : prefab.components)
 		{
 			const ComponentInfo& info = types[component.id];
-			const bool here =
-				m_role == Role::Server ? !has_any(info.kind, Kind::Client) : !has_any(info.kind, Kind::Server);
-			if (here)
+			if (lives_in(info.kind, m_role))
 				info.emplace(registry, entity, component.value.data());
 		}
+	}
+
+	Entity World::create(const Prefab& prefab, bool simulated) noexcept
+	{
+		const Entity entity = registry.create();
+		instantiate(entity, prefab);
+		registry.emplace<PrefabRef>(entity, PrefabRef{.id = prefab.id});
+		if (simulated)
+			registry.emplace<Simulated>(entity);
+		return entity;
 	}
 
 	String World::describe(Phase phase) const
