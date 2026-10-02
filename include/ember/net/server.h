@@ -3,19 +3,21 @@
 #include <ember/net/command_stream.h>
 #include <ember/net/connection.h>
 #include <ember/net/messages.h>
+#include <ember/net/replicator.h>
 #include <ember/net/transport.h>
 
 namespace ember::net
 {
 	struct ServerDef
 	{
-		CommandCodec commands	 = {};	// the game's command type: command_codec<T>()
-		u32 game_protocol		 = 0;	// the game's wire version: a client with another is refused
-		u8 max_clients			 = 16;	// seats; a client that finds none is refused as ServerFull
-		u8 max_greeting			 = 16;	// peers connected but not yet welcomed, at most: more are Rejected
-		f64 handshake_timeout	 = 5.0; // seconds a connected peer has to say Hello
-		ConnectionDef connection = {};	// per client: the silence after which it is dropped
-		CommandQueueDef queue	 = {};	// per client: the tick length and how arrival times are smoothed
+		CommandCodec commands	 = {};		// the game's command type: command_codec<T>()
+		u32 game_protocol		 = 0;		// the game's wire version: a client with another is refused
+		u8 max_clients			 = 16;		// seats; a client that finds none is refused as ServerFull
+		u8 max_greeting			 = 16;		// peers connected but not yet welcomed, at most: more are Rejected
+		f64 handshake_timeout	 = 5.0;		// seconds a connected peer has to say Hello
+		ConnectionDef connection = {};		// per client: the silence after which it is dropped
+		CommandQueueDef queue	 = {};		// per client: the tick length and how arrival times are smoothed
+		Replicator* replicator	 = nullptr; // the entities clients are sent, one viewer per seat; null disables.
 	};
 
 	enum class ServerEventKind : u8
@@ -48,8 +50,9 @@ namespace ember::net
 	 * Only a welcomed client's packets count.
 	 *
 	 * Ech tick the game polls with the tick it is about to simulate (packets in, events out), takes every seat's
-	 * command for that tick, simulates it, and calls send_packets: each client gets the connection header and the
-	 * report on how early its commands arrive, which steers its clock.
+	 * command for that tick, simulates it, and calls send_packets: each client gets the connection header, the
+	 * report on how ealry its commands arrive, which steers its clock, and the entities the replicator owes it
+	 * as they stand after the tick.
 	 *
 	 * Single threaded: the server's game thread drives it. The transport must outlive it.
 	 */

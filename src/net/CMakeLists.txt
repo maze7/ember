@@ -10,6 +10,9 @@ ember_add_module(Net
 		time_dilation.cpp
 		client.cpp
 		server.cpp
+		replication.cpp
+		replicator.cpp
+		replica.cpp
 	PUBLIC_DEPS
 		Ember::Core
 		serialize::serialize

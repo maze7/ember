@@ -3,6 +3,7 @@
 #include <ember/net/command_stream.h>
 #include <ember/net/connection.h>
 #include <ember/net/messages.h>
+#include <ember/net/replica.h>
 #include <ember/net/time_dilation.h>
 #include <ember/net/transport.h>
 
@@ -13,9 +14,10 @@ namespace ember::net
 		CommandCodec commands	 = {}; // the game's command type: command_codec<T>()
 		u32 game_protocol		 = 0;  // the game's wire version: a server with another refuses it
 		f64 tick_seconds		 = 1.0 / 60.0;
-		f64 handshake_timeout	 = 5.0; // seconds from connect() to the Welcome
-		ConnectionDef connection = {};	// the silence after which the server counts as gone
-		TimeDilationDef dilation = {};	// how the clock steers toward the server
+		f64 handshake_timeout	 = 5.0;		// seconds from connect() to the Welcome
+		ConnectionDef connection = {};		// the silence after which the server counts as gone
+		TimeDilationDef dilation = {};		// how the clock steers toward the server
+		Replica* replica		 = nullptr; // where the server's entities land; null ignores them
 	};
 
 	enum class ClientState : u8

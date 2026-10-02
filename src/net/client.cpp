@@ -163,6 +163,15 @@ namespace ember::net
 		if (!read_command_timing(stream, timing, present))
 			return;
 
+		// The entity section, which the replica takes whole or not at all.
+		u32 entities = 0;
+		if (!stream.SerializeBits(entities, 1))
+			return;
+
+		if (entities != 0 && m_def.replica != nullptr && !m_def.replica->read(stream))
+			return;
+
+		// All of it decoded: act on it, and let the server know it arrived.
 		if (present)
 			m_dilation.report(timing);
 

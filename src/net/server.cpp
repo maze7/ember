@@ -16,6 +16,8 @@ namespace ember::net
 		  m_greeting(&memory::heap(MemoryTag::Network))
 	{
 		EMBER_ASSERT(def.max_clients > 0);
+		EMBER_ASSERT((def.replicator == nullptr || def.replicator->viewer_count() >= def.max_clients) &&
+					 "the replicator needs a viewer for every seat: ReplicatorDef::max_viewers");
 
 		// Every seat exists from the start, so a client's state never moves.
 		m_clients.reserve(def.max_clients);
@@ -95,17 +97,24 @@ namespace ember::net
 			if (!client.playing)
 				continue;
 
-			// Nothing the server sends yet cares which of its packets arrived.
+			// The replicator learns which of its records arrived
 			PacketNotice notice;
 			while (client.connection.take_notice(notice))
 			{
+				if (m_def.replicator != nullptr)
+					m_def.replicator->on_notice(slot_of(client), notice);
 			}
 
 			PacketBuffer buffer;
 			serialize::WriteStream stream = packet_writer(buffer);
-			(void)client.connection.write_header(stream, now);
+			const Sequence sequence		  = client.connection.write_header(stream, now);
 			write_command_timing(stream, client.commands);
 			stream.Flush();
+
+			// The entity section, as the world stands after the tick: present or not.
+			stream.SerializeBits(m_def.replicator != nullptr ? 1u : 0u, 1);
+			if (m_def.replicator != nullptr)
+				m_def.replicator->write(slot_of(client), stream, sequence, m_tick);
 
 			const Span<const u8> bytes = written(buffer, stream);
 			m_transport.send(client.peer, bytes, Delivery::Unreliable, now);
@@ -276,6 +285,9 @@ namespace ember::net
 		client.connection.reset(now);
 		client.commands.reset();
 
+		if (m_def.replicator != nullptr)
+			m_def.replicator->add_viewer(slot_of(client));
+
 		const f64 held	= std::round((now - hello_arrival) / HELD_UNIT);
 		Message message = {.kind	= MessageKind::Welcome,
 						   .welcome = {.slot		= slot_of(client),
@@ -300,6 +312,9 @@ namespace ember::net
 
 	void Server::leave(Client& client) noexcept
 	{
+		if (m_def.replicator != nullptr)
+			m_def.replicator->remove_viewer(slot_of(client));
+
 		client.playing = false;
 		client.peer	   = NO_PEER;
 	}
