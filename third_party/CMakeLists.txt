@@ -226,3 +226,5 @@ if(EMBER_ENABLE_NET)
 		target_link_libraries(networking_sockets INTERFACE GameNetworkingSockets::static)
 	endif()
 endif()
+
+add_subdirectory(entt)

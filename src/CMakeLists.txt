@@ -15,6 +15,7 @@ add_subdirectory(core)
 add_subdirectory(memory)
 add_subdirectory(sync)
 add_subdirectory(jobs)
+add_subdirectory(ecs)
 
 if(WIN32)
 	target_compile_definitions(ember_core PUBLIC EMBER_PLATFORM_WINDOWS)
@@ -82,6 +83,7 @@ endif()
 target_link_libraries(ember INTERFACE
 	Ember::Core
 	Ember::Jobs
+	Ember::Ecs
 	$<$<BOOL:${EMBER_ENABLE_PLATFORM}>:Ember::Platform>
 	$<$<BOOL:${EMBER_ENABLE_IMGUI}>:Ember::ImGui>
 	$<$<BOOL:${EMBER_ENABLE_AUDIO}>:Ember::Audio>
