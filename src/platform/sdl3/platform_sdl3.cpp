@@ -801,6 +801,12 @@ namespace ember
 
 		SDL_PropertiesID props = SDL_CreateProperties();
 		SDL_DisplayID display  = SDL_GetPrimaryDisplay();
+
+		// Sizes are in points, which the display's scale grows: no bigger than the display's usable area.
+		glm::ivec2 size = def.size;
+		if (SDL_Rect usable; SDL_GetDisplayUsableBounds(display, &usable))
+			size = glm::min(size, glm::ivec2(usable.w, usable.h));
+
 		SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, def.title);
 		SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, def.size.x);
 		SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, def.size.y);
