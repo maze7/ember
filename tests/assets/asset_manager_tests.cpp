@@ -7,12 +7,12 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <string>
 #include <thread>
 #include <vector>
-#include <algorithm>
 
 #if defined(EMBER_PLATFORM_WINDOWS)
 	#include <process.h>
@@ -182,6 +182,20 @@ namespace
 	};
 
 	static_assert(ReadsOwnFiles<SelfReadAsset> && !ReadsOwnFiles<BytesAsset>);
+
+	/// A game's own type, which it registers in its init(): after the engine's loads have begun.
+	struct NoteAsset
+	{
+		std::string text;
+
+		static bool load(AssetLoad& load, NoteAsset& out) noexcept
+		{
+			out.text = std::string(text_of(load.bytes()));
+			return !out.text.empty();
+		}
+
+		static void unload(AssetServices&, NoteAsset&) noexcept {}
+	};
 
 	/// A manager over a scratch directory of this process's own, with the job system's IO thread
 	/// and a headless device under it. The watcher is off here so the tests drive notify_changed()
@@ -501,6 +515,33 @@ namespace
 		EXPECT_EQ(stats.assets, COUNT);
 		EXPECT_EQ(stats.loading, 0u);
 		EXPECT_EQ(stats.failed, 0u);
+	}
+
+	TEST_F(AssetManagerTest, ATypeRegisteredWhileLoadsRunLoadsAndLeavesThemBe)
+	{
+		// Loads in flight, as the material library's are by the time an app's init() runs.
+		constexpr u32 COUNT = 32;
+
+		std::vector<AssetRef<BytesAsset>> early;
+
+		for (u32 i = 0; i < COUNT; ++i)
+		{
+			const std::string name = "early" + std::to_string(i) + ".bin";
+			write(name.c_str(), 1000 + i, static_cast<u8>(i));
+			early.push_back(m_assets.load<BytesAsset>(name));
+		}
+
+		m_assets.register_type<NoteAsset>("note");
+		write_text("a.note", "registered late");
+		const AssetRef<NoteAsset> note = m_assets.load<NoteAsset>("a.note");
+
+		m_assets.wait_idle();
+
+		ASSERT_TRUE(note);
+		EXPECT_EQ(note->text, "registered late");
+
+		for (u32 i = 0; i < COUNT; ++i)
+			EXPECT_TRUE(matches(early[i], 1000 + i, static_cast<u8>(i))) << "asset " << i;
 	}
 
 	TEST_F(AssetManagerTest, ATypeThatPublishesOnTheOwnerThreadIsSeenOnlyOnceThePumpHasPublishedIt)

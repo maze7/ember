@@ -28,8 +28,8 @@ namespace ember::anim
 	};
 
 	/**
-	 * Registers both with the asset manager: once, before its first load. The runtime does it for an
-	 * app; a tool or a test that makes its own manager calls it.
+	 * Registers both with the asset manager: once, before anything loads a sheet or a rig. The runtime
+	 * does it for an app; a tool or a test that makes its own manager calls it.
 	 */
 	void register_types(AssetManager& assets) noexcept;
 

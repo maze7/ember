@@ -48,13 +48,12 @@ namespace ember
 	}
 
 	AssetManager::AssetManager() noexcept
-		: m_root(&memory::heap(MemoryTag::Assets)), m_types(&memory::heap(MemoryTag::Assets)),
-		  m_mounts(&memory::heap(MemoryTag::Assets)), m_slots(MemoryTag::Assets),
-		  m_by_id(&memory::heap(MemoryTag::Assets)), m_file_dependencies(&memory::heap(MemoryTag::Assets)),
-		  m_fresh(&memory::heap(MemoryTag::Assets)), m_refresh(&memory::heap(MemoryTag::Assets)),
-		  m_retired(&memory::heap(MemoryTag::Assets)), m_due(&memory::heap(MemoryTag::Assets)),
-		  m_requests(MemoryTag::Assets), m_unreferenced(MemoryTag::Assets), m_changes(MemoryTag::Assets),
-		  m_pending(&memory::heap(MemoryTag::Assets))
+		: m_root(&memory::heap(MemoryTag::Assets)), m_mounts(&memory::heap(MemoryTag::Assets)),
+		  m_slots(MemoryTag::Assets), m_by_id(&memory::heap(MemoryTag::Assets)),
+		  m_file_dependencies(&memory::heap(MemoryTag::Assets)), m_fresh(&memory::heap(MemoryTag::Assets)),
+		  m_refresh(&memory::heap(MemoryTag::Assets)), m_retired(&memory::heap(MemoryTag::Assets)),
+		  m_due(&memory::heap(MemoryTag::Assets)), m_requests(MemoryTag::Assets), m_unreferenced(MemoryTag::Assets),
+		  m_changes(MemoryTag::Assets), m_pending(&memory::heap(MemoryTag::Assets))
 	{
 	}
 
@@ -89,7 +88,6 @@ namespace ember
 		m_requests.init(std::bit_ceil(def.max_assets));
 		m_unreferenced.init(std::bit_ceil(def.max_assets));
 		m_changes.init(std::bit_ceil(def.max_changes));
-		m_types.reserve(32);
 
 		register_type<TextureAsset>("texture");
 
@@ -179,18 +177,18 @@ namespace ember
 		m_refresh.clear();
 		m_pending.clear();
 		m_mounts.clear();
-		m_types.clear();
-		m_gpu  = nullptr;
-		m_heap = nullptr;
+		m_type_count = 0;
+		m_gpu		 = nullptr;
+		m_heap		 = nullptr;
 	}
 
 	u16 AssetManager::add_type(const Type& type) noexcept
 	{
-		EMBER_ASSERT(m_types.size() < NO_TYPE);
-		EMBER_ASSERT(m_slots.empty() && "register every type before the first load");
+		// Loads of the types before it may be running: each holds its own entry, which stays put.
+		EMBER_ASSERT(m_type_count < MAX_TYPES && "more asset types than MAX_TYPES");
 
-		m_types.push_back(type);
-		return static_cast<u16>(m_types.size() - 1);
+		m_types[m_type_count] = type;
+		return m_type_count++;
 	}
 
 	void AssetManager::mount(StringView prefix, StringView directory) noexcept

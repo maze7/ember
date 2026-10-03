@@ -81,8 +81,8 @@ namespace ember
 		m_assets = memory::make_unique<AssetManager>(MemoryTag::Assets);
 		m_assets->init(*m_gpu, config.assets);
 
-		// Every type before the first load, and with hot reload on, the material library below loads
-		// at once: the manager registered textures, and the animation files' types go in here.
+		// The engine's own types come registered, as the manager's textures and the material library's
+		// types do. A game registers its own in its init().
 		anim::register_types(*m_assets);
 
 		// Materials are assets that load into the renderer's registry, which they reach through this.

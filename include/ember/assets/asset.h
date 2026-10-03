@@ -12,6 +12,7 @@
 #include <ember/memory/pmr/heap.h>
 #include <ember/sync/spin_mutex.h>
 
+#include <array>
 #include <atomic>
 #include <type_traits>
 #include <utility>
@@ -391,7 +392,8 @@ namespace ember
 	 * THREADING
 	 *   load(): any thread. References: copy, drop, read from any thread; wait as the type allows.
 	 *   notify_changed(): any thread, the watcher's included.
-	 *   register_type(), mount(): the owner thread, before the first load.
+	 *   register_type(): the owner thread, before anything loads the type.
+	 *   mount(): the owner thread, before the first load.
 	 *   pump(), wait_idle(), shutdown(): the owner thread, between frames.
 	 */
 	class AssetManager final
@@ -405,7 +407,7 @@ namespace ember
 
 		/**
 		 * Once per object, after the file thread and the device are up. Registers the engine's
-		 * own types. The game registers its own before its first load.
+		 * own types. A game registers its own any time before it loads one: in its init(), say.
 		 */
 		void init(gpu::Device& gpu, const AssetManagerDef& def = {}) noexcept;
 
@@ -416,7 +418,8 @@ namespace ember
 		void shutdown() noexcept;
 
 		/**
-		 * Once per type, before its first load(). Types are process wide: one manager at a time.
+		 * Once per type, before anything loads it; loads of other types may already be running.
+		 * Types are process wide: one manager at a time.
 		 * `context` is what its loads and hooks reach through context<C>(): the system its payloads
 		 * belong to, which must outlive every payload of the type.
 		 */
@@ -520,6 +523,9 @@ namespace ember
 		friend void detail::wait(detail::AssetSlot& slot) noexcept;
 
 		static constexpr u16 NO_TYPE = 0xFFFF;
+
+		/// The most types a manager holds: the engine's handful and a game's own.
+		static constexpr u16 MAX_TYPES = 64;
 
 		/**
 		 * Pumps a retired payload waits before it is unloaded. Two covers a bare pointer that
@@ -657,8 +663,13 @@ namespace ember
 		String m_root;
 		u64 m_reload_delay_ns = 0;
 
-		// Fixed once loads begin, so slots and loaders read them by index without the lock.
-		Vector<Type> m_types;
+		// Slots, loaders and waiters read a type by index without the lock, and a loader holds on to
+		// one for a whole load, so the table grows in place and never moves: a type added while
+		// loads run disturbs none of them.
+		std::array<Type, MAX_TYPES> m_types = {};
+		u16 m_type_count					= 0;
+
+		// Fixed once loads begin: every request resolves its path through them without the lock.
 		Vector<Mount> m_mounts;
 
 		/// Slots, the path index, the dependency lists, pending payloads and the retire list move
