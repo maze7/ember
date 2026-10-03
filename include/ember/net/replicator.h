@@ -37,6 +37,10 @@ namespace ember::net
 	 * so nothing starves. The entity a viewer owns goes into every one of its packets, even unchanged,
 	 * so the client always has a server state at a known tick to check its prediction against.
 	 *
+	 * A Predicted component is snapped to wire precision in the world as it is written: the server goes
+	 * on from the very value its clients decode, so an owner that snaps its prediction the same way
+	 * (Prediction) can match the server to the bit.
+	 *
 	 * A destroyed entity's index is reused only once every viewer that had it has had the removal
 	 * delivered, and then with the next generation: oldest free index first.
 	 *
@@ -223,8 +227,14 @@ namespace ember::net
 		/** A world entity's slot, as its prefab starts it. */
 		void create(ecs::Entity entity, Tick tick) noexcept;
 
-		/** The slot made the world entity's: the same Replicated components, at the same values. */
-		void match(u32 index, Tick tick) noexcept;
+		/**
+		 * The slot made the world entity's: the same Replicated components, at the same values. every
+		 * looks at every value, not only those whose bytes changed since: a new slot's first match.
+		 */
+		void match(u32 index, Tick tick, bool every = false) noexcept;
+
+		/** A Predicted value becomes what its owner decodes from these bits: in the world, and in the slot. */
+		void snap(u32 index, ComponentId component, const ComponentBits& wire) noexcept;
 
 		/** Ends a slot's entity: viewers that have it are told. */
 		void destroy(u32 index) noexcept;

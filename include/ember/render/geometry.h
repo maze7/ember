@@ -29,6 +29,17 @@ namespace ember::render
 	};
 
 	/**
+	 * The atlas cell a quad shows, packed for its vertex colour, where material.slang's atlas_frame()
+	 * reads it back as the frame sample_pixel keeps to: the column, the row in two bytes, then the
+	 * size in cells, all in steps of the atlas's grid. Every vertex of the quad carries the same value.
+	 * A size of 255 is the default white, which means no cell.
+	 */
+	[[nodiscard]] constexpr u32 pack_atlas_cell(u32 column, u32 row, u32 cells) noexcept
+	{
+		return (column & 0xFFu) | (row & 0xFFFFu) << 8 | (cells & 0xFFu) << 24;
+	}
+
+	/**
 	 * One geometry as GPU passes see it, mirrored in shaders. Indices are stored
 	 * rebased to pool-global vertex ids, so draws never carry a base vertex and
 	 * SV_VertexID addresses the shared streams directly; first_vertex and vertex_count

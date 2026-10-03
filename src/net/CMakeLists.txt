@@ -13,6 +13,7 @@ ember_add_module(Net
 		replication.cpp
 		replicator.cpp
 		replica.cpp
+		prediction.cpp
 	PUBLIC_DEPS
 		Ember::Core
 		Ember::Ecs

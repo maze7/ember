@@ -7,7 +7,7 @@ import material;
 [Queue("cutout")] [Cull("back")] [Shading("pixel")]
 struct Sprite : IMaterial
 {
-	[Filter("point")] Texture2DRef albedo;
+	Texture2DRef albedo;
 	[Color] [Default("1 1 1 1")] float4 tint;
 	[Range(0, 1)] [Default("0.5")] float cutoff;
 
@@ -25,7 +25,7 @@ struct Sprite : IMaterial
 	{
 		let data  = instance<Instance>(s);
 		let uv    = lerp(data.frame.xy, data.frame.zw, s.uv);
-		let texel = albedo.sample(uv) * tint;
+		let texel = albedo.sample_pixel(uv, data.frame) * tint;
 
 		if (texel.a < cutoff)
 			discard;

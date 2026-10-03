@@ -71,10 +71,12 @@ import frame;
 /// sRGB texture is bound here, because the hardware would decode it and bend every value.
 [__AttributeUsage(_AttributeTargets.Var)] public struct LinearAttribute {};
 
+/// Straight alpha to premultiplied, for blending texels without a bright or dark fringe.
+float4 premultiplied(float4 c) { return float4(c.rgb * c.a, c.a); }
+
 // A bindless texture and sampler pair: 8 bytes in the record, written by the engine. Sampling uses
 // the divergent accessors because records vary per draw inside one multi-draw and a wave can hold
 // pixels from several draws; on a uniform index that costs one pass of a scalarisation loop.
-
 public struct Texture2DRef
 {
 	internal uint texture;
@@ -88,6 +90,33 @@ public struct Texture2DRef
 
 	/// One texel, unfiltered: pixel art that must not blend, lookup tables.
 	float4 load(int2 texel, int level = 0) { return texture_2d_nu(texture).Load(int3(texel, level)); }
+
+	/// Pixel art at any angle or position: inside a texel, the texel; across each texel edge, a blend
+	/// one screen pixel wide. A turning sprite reads as crisp squares with smooth edges instead of
+	/// crawling stairs, and art on the pixel grid comes out exactly as load() gives it. It reads the
+	/// four texels round the nearest corner and blends them premultiplied, so it wants no filtering
+	/// sampler and no premultiplied texture, and a clear texel never bleeds its colour in. `frame`
+	/// (min uv, then max uv) is the cell of the sheet the art lives in, which the blend never leaves.
+	/// Needs screen derivatives, so fragment stages only. Straight alpha out, as sample() gives.
+	float4 sample_pixel(float2 uv, float4 frame = float4(0.0, 0.0, 1.0, 1.0))
+	{
+		const float2 size   = this.size();
+		const float2 texel  = uv * size;
+		const float2 corner = floor(texel + 0.5);                      // the texel corner nearest uv
+		const float2 half   = max(fwidth(texel) * 0.5, 1e-4);          // half a screen pixel, in texels
+		const float2 t      = smoothstep(-half, half, texel - corner); // 0 the texel before, 1 after
+
+		// Rounded: a frame edge at 32 texels can arrive as 31.99998.
+		const int2 lo = int2(round(frame.xy * size));
+		const int2 hi = int2(round(frame.zw * size)) - 1;
+		const int2 a  = clamp(int2(corner) - 1, lo, hi);
+		const int2 b  = clamp(int2(corner), lo, hi);
+
+		const float4 c = lerp(lerp(premultiplied(load(a)), premultiplied(load(int2(b.x, a.y))), t.x),
+							  lerp(premultiplied(load(int2(a.x, b.y))), premultiplied(load(b)), t.x), t.y);
+
+		return float4(c.rgb / max(c.a, 1e-6), c.a);
+	}
 
 	/// Texels across the given level.
 	float2 size(uint level = 0)
@@ -226,6 +255,21 @@ public void snap_to_texels(SurfaceInput s, Texture2DRef grid, float2 uv, inout S
 	const float2 step = float2(dv.y * delta.x - dv.x * delta.y, du.x * delta.y - du.y * delta.x) / det;
 
 	out.shading_position = s.position + ddx(s.position) * step.x + ddy(s.position) * step.y;
+}
+
+/// The frame sample_pixel keeps to on a mesh of atlas quads, read from the vertex colour, where the
+/// mesh packed it with pack_atlas_cell(): the cell of the sheet this quad shows, so a texel blends
+/// with the art beside it on the quad and never with the next cell over on the sheet. `cell` is the
+/// atlas grid's step in texels. White, the vertex colour's default, packs no cell: the whole sheet.
+public float4 atlas_frame(SurfaceInput s, Texture2DRef atlas, float cell)
+{
+	const float4 packed = round(s.color * 255.0);
+
+	if (packed.a == 255.0)
+		return float4(0.0, 0.0, 1.0, 1.0);
+
+	const float2 min = float2(packed.r, packed.g + packed.b * 256.0) * cell;
+	return float4(min, min + packed.a * cell) / atlas.size().xyxy;
 }
 
 /// An RGB normal map texel to a tangent-space direction.

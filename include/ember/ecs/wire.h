@@ -58,7 +58,7 @@ namespace ember::ecs
 			else if constexpr (std::is_floating_point_v<F>)
 				return from + (to - from) * static_cast<F>(t);
 			else if constexpr (is_float_vec<F>)
-				return glm::mix(from, to, static_cast<typename F::value_type>(t));
+				return from + (to - from) * static_cast<typename F::value_type>(t);
 			else if constexpr (is_quat<F>)
 				return glm::slerp(from, to, static_cast<typename F::value_type>(t));
 			else if constexpr (std::is_aggregate_v<F> && !std::is_array_v<F> && !std::is_empty_v<F>)

@@ -84,6 +84,12 @@ namespace ember::net
 			return value != nullptr;
 		}
 
+		/** The same, for code that holds a ComponentInfo rather than the type: null when there is none. */
+		[[nodiscard]] const void* server_value(ecs::Entity entity, const ecs::ComponentInfo& component) const noexcept
+		{
+			return newest(entity, component.type);
+		}
+
 		/** The newest server tick a section described; NO_TICK before the first. */
 		[[nodiscard]] Tick latest_tick() const noexcept { return m_latest; }
 

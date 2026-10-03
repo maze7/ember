@@ -200,10 +200,10 @@ namespace ember::net
 		++m_alive;
 
 		// What the spawn set over the prefab: the slot's first changes.
-		match(index, tick);
+		match(index, tick, true);
 	}
 
-	void Replicator::match(u32 index, Tick tick) noexcept
+	void Replicator::match(u32 index, Tick tick, bool every) noexcept
 	{
 		Slot& slot				 = m_entities[index];
 		entt::registry& registry = m_world.registry;
@@ -235,6 +235,10 @@ namespace ember::net
 					erase(index, component); // too large for the wire: the assert said so
 					has &= ~component_bit(component);
 				}
+				else if ((m_schema.predicted() & component_bit(component)) != 0)
+				{
+					snap(index, component, stored.wire);
+				}
 			}
 
 			// A different set of components is a change of state, for whoever gets the ones that changed.
@@ -257,7 +261,8 @@ namespace ember::net
 			const u32 at				= pool.sparse[index];
 			const void* value			= pool.info->find(registry, slot.entity);
 			u8* bytes					= pool.bytes.data() + static_cast<size_t>(at) * size;
-			if (std::memcmp(bytes, value, size) == 0)
+
+			if (!every && std::memcmp(bytes, value, size) == 0)
 				continue;
 
 			std::memcpy(bytes, value, size);
@@ -265,6 +270,9 @@ namespace ember::net
 			ComponentBits wire;
 			if (!encode(component, value, wire))
 				continue;
+
+			if ((m_schema.predicted() & component_bit(component)) != 0)
+				snap(index, component, wire);
 
 			// The writer leaves the bits past the last one clear, so equal values have equal bytes.
 			Stored& stored = pool.values[at];
@@ -280,6 +288,19 @@ namespace ember::net
 			if ((m_schema.owner_only() & component_bit(component)) == 0)
 				slot.shared.at(tick);
 		}
+	}
+
+	void Replicator::snap(u32 index, ComponentId component, const ComponentBits& wire) noexcept
+	{
+		Pool& pool	= m_pools[component];
+		void* value = pool.info->get(m_world.registry, m_entities[index].entity);
+
+		serialize::ReadStream reader(wire.bytes.data(), static_cast<int>((wire.bits + 7) / 8));
+		[[maybe_unused]] const bool read = pool.info->read(reader, value);
+		EMBER_ASSERT(read && "a component's own bits do not read back");
+
+		std::memcpy(pool.bytes.data() + static_cast<size_t>(pool.sparse[index]) * pool.info->size, value,
+					pool.info->size);
 	}
 
 	void Replicator::destroy(u32 index) noexcept
