@@ -107,6 +107,7 @@ namespace ember::anim
 		Vector<Named<u16>> names; // "walk_1", and "walk" for its sequence's first frame
 		Vector<Named<Sequence>> sequences;
 		Vector<Named<glm::vec2>> points;
+		bool casts_shadow = true;
 	};
 
 	// --- .anim -----------------------------------------------------------------------------------

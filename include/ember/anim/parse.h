@@ -27,7 +27,8 @@ namespace ember::anim
 	 *       "cell": [24, 24],               // cells numbered across, then down
 	 *       "pivot": [12, 20],              // in each cell, where it stands
 	 *       "points": { "hand": [12, 12] }, // in each cell, measured as the pivot is
-	 *       "sprites": { "idle": [0, 1] }   // idle_0 and idle_1, and idle for the first
+	 *       "sprites": { "idle": [0, 1] },  // idle_0 and idle_1, and idle for the first
+	 *       "shadow": false                 // casts none: true unless it says
 	 *   }
 	 */
 	[[nodiscard]] bool parse_sheet(StringView text, const Image& image, Sheet& out, String& error) noexcept;

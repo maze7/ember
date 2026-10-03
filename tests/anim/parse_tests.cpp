@@ -33,6 +33,11 @@ TEST(AnimParse, SheetCutsCellsAcrossThenDown)
 	EXPECT_EQ(*find(cut.names, name("idle")), 0) << "a sequence's name is its first frame";
 	EXPECT_EQ(find(cut.sequences, name("idle"))->count, 2);
 	EXPECT_EQ(*find(cut.points, name("hand")), glm::vec2(12.0f, 12.0f));
+
+	EXPECT_TRUE(cut.casts_shadow) << "a sheet casts a shadow unless it says";
+
+	const Sheet light = sheet(R"({ "image": "unused.png", "cell": [24, 24], "shadow": false })", canvas);
+	EXPECT_FALSE(light.casts_shadow);
 }
 
 TEST(AnimParse, SheetRefusesCellsPastItsImage)

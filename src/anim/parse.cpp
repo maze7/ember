@@ -380,6 +380,8 @@ namespace ember::anim
 		out.extent			  = image.extent;
 		const glm::vec2 pivot = read_vec2(root["pivot"], cell * 0.5f);
 
+		(void)root["shadow"].read(out.casts_shadow);
+
 		for (const auto [point, at] : root["points"].members())
 			out.points.push_back({name(point), read_vec2(at, {})});
 
