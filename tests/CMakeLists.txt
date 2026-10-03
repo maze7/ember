@@ -25,6 +25,7 @@ add_subdirectory(ecs)
 
 if(EMBER_ENABLE_ASSETS)
 	add_subdirectory(assets)
+	add_subdirectory(anim)
 endif()
 
 if(EMBER_ENABLE_APP)

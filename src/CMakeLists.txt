@@ -62,6 +62,7 @@ endif()
 
 if (EMBER_ENABLE_ASSETS)
 	add_subdirectory(assets)
+	add_subdirectory(anim)
 endif()
 
 if (EMBER_ENABLE_AUDIO)
@@ -92,5 +93,6 @@ target_link_libraries(ember INTERFACE
 	$<$<BOOL:${EMBER_ENABLE_GRAPHICS}>:Ember::Render>
 	$<$<BOOL:${EMBER_ENABLE_GRAPHICS}>:Ember::Material>
 	$<$<BOOL:${EMBER_ENABLE_ASSETS}>:Ember::Assets>
+	$<$<BOOL:${EMBER_ENABLE_ASSETS}>:Ember::Anim>
 	$<$<BOOL:${EMBER_ENABLE_NET}>:Ember::Net>
 )

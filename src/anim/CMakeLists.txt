@@ -1,0 +1,15 @@
+ember_add_module(Anim
+	SOURCES
+		ease.cpp
+		parse.cpp
+		sample.cpp
+		library.cpp
+		systems.cpp
+	PUBLIC_DEPS
+		Ember::Core
+		Ember::Ecs
+		Ember::Assets
+	PRIVATE_DEPS
+		Ember::Jobs
+		Stb::Stb
+)
