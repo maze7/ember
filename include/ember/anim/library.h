@@ -27,7 +27,10 @@ namespace ember::anim
 		static void unload(AssetServices& services, RigAsset& asset) noexcept;
 	};
 
-	/** Registers both with the asset manager: once, before its first load. */
+	/**
+	 * Registers both with the asset manager: once, before its first load. The runtime does it for an
+	 * app; a tool or a test that makes its own manager calls it.
+	 */
 	void register_types(AssetManager& assets) noexcept;
 
 	/**

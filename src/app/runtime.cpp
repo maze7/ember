@@ -1,3 +1,4 @@
+#include <ember/anim/library.h>
 #include <ember/app/runtime.h>
 #include <ember/core/logger.h>
 #include <ember/core/profile.h>
@@ -79,6 +80,10 @@ namespace ember
 
 		m_assets = memory::make_unique<AssetManager>(MemoryTag::Assets);
 		m_assets->init(*m_gpu, config.assets);
+
+		// Every type before the first load, and with hot reload on, the material library below loads
+		// at once: the manager registered textures, and the animation files' types go in here.
+		anim::register_types(*m_assets);
 
 		// Materials are assets that load into the renderer's registry, which they reach through this.
 		m_materials = memory::make_unique<MaterialAssets>(MemoryTag::Assets);

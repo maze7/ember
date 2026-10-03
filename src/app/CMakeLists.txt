@@ -15,6 +15,7 @@ ember_add_module(App
 		Ember::Jobs
 	PRIVATE_DEPS
 		Ember::ImGui
+		Ember::Anim
 )
 
 if(WIN32)
