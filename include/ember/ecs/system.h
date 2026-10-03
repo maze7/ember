@@ -326,6 +326,10 @@ namespace ember::ecs
 				}
 			}
 
+			// A template's arguments are not its name: "sync<&Position::value>" is "sync".
+			if (const size_t angle = full.find('<'); angle != std::string_view::npos)
+				full = full.substr(0, angle);
+
 			if (const size_t space = full.rfind(' '); space != std::string_view::npos)
 				full = full.substr(space + 1);
 			if (const size_t colon = full.rfind(':'); colon != std::string_view::npos)
