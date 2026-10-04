@@ -88,7 +88,11 @@ namespace ember::net
 		return sequence;
 	}
 
-	void Connection::count_sent(u32 bytes, f64 now) noexcept { m_send_meter.add(bytes, now, m_stats.send_rate); }
+	void Connection::count_sent(u32 bytes, f64 now) noexcept
+	{
+		m_stats.bytes_sent += bytes;
+		m_send_meter.add(bytes, now, m_stats.send_rate);
+	}
 
 	Connection::Arrival Connection::read_header(serialize::ReadStream& stream, Sequence& sequence, f64 arrival) noexcept
 	{
@@ -130,6 +134,13 @@ namespace ember::net
 			m_received_bits =
 				shift > 32 ? 0u
 						   : static_cast<u32>((static_cast<u64>(m_received_bits) << shift) | (u64{1} << (shift - 1)));
+
+			// Whatever it passed over will never be applied, in order or not at all: lost, to this end, as
+			// the peer will count it once the acks say so. Each counts toward the loss as one packet would.
+			const u32 skipped = static_cast<u32>(shift - 1);
+			m_stats.packets_skipped += skipped;
+			m_stats.receive_loss =
+				1.0f - (1.0f - m_stats.receive_loss) * std::pow(1.0f - LOSS_SMOOTHING, static_cast<f32>(skipped));
 		}
 
 		m_has_received	= true;
@@ -138,6 +149,8 @@ namespace ember::net
 		m_last_heard	= std::max(m_last_heard, arrival);
 
 		++m_stats.packets_received;
+		m_stats.bytes_received += bytes;
+		m_stats.receive_loss *= 1.0f - LOSS_SMOOTHING;
 		m_receive_meter.add(bytes, arrival, m_stats.receive_rate);
 	}
 

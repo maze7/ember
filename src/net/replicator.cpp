@@ -387,7 +387,8 @@ namespace ember::net
 			known = {};
 		}
 
-		viewer.active = false;
+		viewer.active  = false;
+		viewer.section = {};
 		viewer.packets.clear();
 		viewer.entries.clear();
 		viewer.packets_head = 0;
@@ -460,6 +461,7 @@ namespace ember::net
 			room -= m_schema.index_bits();
 			++removals;
 		}
+		const u32 owed_removals = static_cast<u32>(m_removals.size());
 		m_removals.resize(removals);
 
 		// Then records by priority, while they fit. The most urgent may use the whole packet, so an
@@ -490,6 +492,7 @@ namespace ember::net
 				m_owed[records++] = m_owed[i];
 			}
 		}
+		const u32 owed_records = static_cast<u32>(m_owed.size());
 		m_owed.resize(records);
 
 		// The section.
@@ -526,6 +529,10 @@ namespace ember::net
 		}
 
 		viewer.packets.push_back({.sequence = sequence, .tick = tick, .count = removals + records});
+		viewer.section = {.records	= records,
+						  .removals = removals,
+						  .waiting	= owed_records - records + owed_removals - removals,
+						  .bits		= static_cast<u32>(stream.GetBitsProcessed()) - used};
 	}
 
 	void Replicator::on_notice(u8 seat, const PacketNotice& notice) noexcept

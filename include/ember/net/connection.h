@@ -29,6 +29,7 @@ namespace ember::net
 		f64 rtt_min		 = 0.0;	 // lowest sample in the last ten seconds: the path without queueing
 		f64 rtt_latest	 = 0.0;	 // the newest sample
 		f32 loss		 = 0.0f; // fraction of sent packets lost, smoothed over roughly the last hundred
+		f32 receive_loss = 0.0f; // fraction of the peer's packets never applied here, smoothed the same way
 		f32 send_rate	 = 0.0f; // bytes per second, updated as packets flow
 		f32 receive_rate = 0.0f;
 
@@ -36,8 +37,11 @@ namespace ember::net
 		u64 packets_received  = 0; // applied, so acked
 		u64 packets_delivered = 0;
 		u64 packets_lost	  = 0;
+		u64 packets_skipped	  = 0; // the peer's, never applied: lost on the way, or overtaken and then stale
 		u64 packets_stale	  = 0; // late or repeated arrivals, dropped unread
 		u64 packets_malformed = 0; // headers that did not decode
+		u64 bytes_sent		  = 0;
+		u64 bytes_received	  = 0; // in applied packets
 	};
 
 	/**

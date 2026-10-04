@@ -12,6 +12,15 @@ namespace ember::net
 		u32 max_entities = 4096;				 // replicated entities alive at once: the same on every machine
 	};
 
+	/** What the replicator put in a viewer's latest packet, and what it left for a later one. */
+	struct SectionStats
+	{
+		u32 records	 = 0; // entities written
+		u32 removals = 0;
+		u32 waiting	 = 0; // records and removals owed that did not fit: they wait for a later packet
+		u32 bits	 = 0; // the section's size
+	};
+
 	/**
 	 * The server's half of replication: the server world's replicated entities as the wire sees them,
 	 * and what each viewer (a seat) has of them.
@@ -105,6 +114,9 @@ namespace ember::net
 
 		/** What became of a packet write() filled for the viewer. The server calls this. */
 		void on_notice(u8 viewer, const PacketNotice& notice) noexcept;
+
+		/** What write() last put in the viewer's packet, and what it left waiting. */
+		[[nodiscard]] const SectionStats& section(u8 viewer) const noexcept { return m_viewers[viewer].section; }
 
 	private:
 		static constexpr u32 NONE = ~0u;
@@ -200,7 +212,8 @@ namespace ember::net
 		struct Viewer
 		{
 			bool active = false;
-			Vector<Known> known; // by entity index
+			Vector<Known> known;	   // by entity index
+			SectionStats section = {}; // the latest write()
 
 			// Packets awaiting their notices, oldest first, and their entries; each queue is read from
 			// its head and compacted now and then.

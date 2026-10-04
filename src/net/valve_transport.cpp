@@ -340,24 +340,47 @@ namespace ember::net
 
 	bool is_initialized() noexcept { return s_sockets.load(std::memory_order_acquire) != nullptr; }
 
-	void simulate(const LinkConditions& conditions) noexcept
+	void simulate(const LinkConditions& send, const LinkConditions& receive) noexcept
 	{
 		if (!is_initialized())
 			return;
 
-		const auto ms	   = [](f64 seconds) { return static_cast<int32>(std::lround(seconds * 1000.0)); };
-		const int32 jitter = ms(conditions.jitter);
+		const auto ms = [](f64 seconds) { return static_cast<int32>(std::lround(seconds * 1000.0)); };
+
+		// The library keeps a setting of each kind for each way: the same settings, twice.
+		struct Way
+		{
+			const LinkConditions& conditions;
+			ESteamNetworkingConfigValue lag, loss, jitter_avg, jitter_max, jitter_pct, duplicate, reorder;
+		};
+
+		const Way ways[] = {
+			{send, k_ESteamNetworkingConfig_FakePacketLag_Send, k_ESteamNetworkingConfig_FakePacketLoss_Send,
+			 k_ESteamNetworkingConfig_FakePacketJitter_Send_Avg, k_ESteamNetworkingConfig_FakePacketJitter_Send_Max,
+			 k_ESteamNetworkingConfig_FakePacketJitter_Send_Pct, k_ESteamNetworkingConfig_FakePacketDup_Send,
+			 k_ESteamNetworkingConfig_FakePacketReorder_Send},
+			{receive, k_ESteamNetworkingConfig_FakePacketLag_Recv, k_ESteamNetworkingConfig_FakePacketLoss_Recv,
+			 k_ESteamNetworkingConfig_FakePacketJitter_Recv_Avg, k_ESteamNetworkingConfig_FakePacketJitter_Recv_Max,
+			 k_ESteamNetworkingConfig_FakePacketJitter_Recv_Pct, k_ESteamNetworkingConfig_FakePacketDup_Recv,
+			 k_ESteamNetworkingConfig_FakePacketReorder_Recv},
+		};
 
 		ISteamNetworkingUtils& utils = *SteamNetworkingUtils();
-		utils.SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_FakePacketLag_Send, ms(conditions.latency));
-		utils.SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketLoss_Send, conditions.loss * 100.0f);
-		utils.SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketJitter_Send_Avg, jitter * 0.5f);
-		utils.SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketJitter_Send_Max, static_cast<f32>(jitter));
-		utils.SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketJitter_Send_Pct, jitter > 0 ? 100.0f : 0.0f);
-		utils.SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketDup_Send, conditions.duplicate * 100.0f);
+		for (const Way& way : ways)
+		{
+			const int32 jitter = ms(way.conditions.jitter);
+			utils.SetGlobalConfigValueInt32(way.lag, ms(way.conditions.latency));
+			utils.SetGlobalConfigValueFloat(way.loss, way.conditions.loss * 100.0f);
+			utils.SetGlobalConfigValueFloat(way.jitter_avg, jitter * 0.5f);
+			utils.SetGlobalConfigValueFloat(way.jitter_max, static_cast<f32>(jitter));
+			utils.SetGlobalConfigValueFloat(way.jitter_pct, jitter > 0 ? 100.0f : 0.0f);
+			utils.SetGlobalConfigValueFloat(way.duplicate, way.conditions.duplicate * 100.0f);
+			utils.SetGlobalConfigValueFloat(way.reorder, way.conditions.reorder ? 10.0f : 0.0f);
+		}
+
+		// How late a duplicate or a reordered datagram comes is one setting for both ways: the larger jitter.
+		const int32 jitter = ms(std::max(send.jitter, receive.jitter));
 		utils.SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_FakePacketDup_TimeMax, jitter);
-		utils.SetGlobalConfigValueFloat(k_ESteamNetworkingConfig_FakePacketReorder_Send,
-										conditions.reorder ? 10.0f : 0.0f);
 		utils.SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_FakePacketReorder_Time, std::max(jitter, 1));
 	}
 

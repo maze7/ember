@@ -229,6 +229,58 @@ TEST_F(Human, FacingWestMirrors)
 	EXPECT_EQ(*pose.point("body.heel"), glm::vec2(3.0f, 1.0f)) << "the heel trails, now to the east";
 }
 
+TEST_F(Human, ALeanTipsItAboutItsFeetWhicheverWayItFaces)
+{
+	const f32 lean	= glm::radians(10.0f);
+	const Pose flat = at(0.0);
+	m_animator.lean = lean;
+
+	const Pose east = at(0.0);
+	EXPECT_NEAR(part(east, BODY)->angle, lean, 1e-6f) << "clockwise on the screen";
+	EXPECT_NEAR(part(east, SWORD)->angle - part(flat, SWORD)->angle, lean, 1e-5f) << "and what it holds with it";
+	const glm::vec2 hand = *east.point("body.hand");
+	EXPECT_NEAR(hand.x, 8.0f * std::sin(lean), 1e-4f) << "8 above the feet, tipped toward the east";
+	EXPECT_NEAR(hand.y, -8.0f * std::cos(lean), 1e-4f);
+
+	m_animator.face({-1.0f, 0.0f});
+	const Pose west = at(0.0);
+	EXPECT_TRUE(part(west, BODY)->mirror);
+	EXPECT_NEAR(part(west, BODY)->angle, lean, 1e-6f) << "facing west, still clockwise on the screen";
+	EXPECT_NEAR(west.point("body.hand")->x, hand.x, 1e-4f);
+}
+
+TEST_F(Human, AHoldStandsWhatPlayedStillThenPlaysItOnLater)
+{
+	m_animator.overlay("dash", 0.0); // a squash from 0, springing back over 866 ms
+	m_animator.play("walk");		 // a foot at 0, 200 and 400 ms into it
+	const auto squash = [&](f64 now) { return part(at(now), BODY)->scale.x; };
+	const f32 at_100  = squash(0.1);
+	const f32 at_250  = squash(0.25);
+
+	m_animator.hold(0.1, 0.2);
+	EXPECT_EQ(squash(0.15), at_100) << "held where it was when the hold began";
+	EXPECT_EQ(squash(0.2), at_100);
+	EXPECT_NEAR(squash(0.35), at_250, 1e-6f) << "then on from there, a tenth of a second late";
+
+	// The walk's foot at 200 ms lands at 300, and once.
+	u32 steps  = 0;
+	f64 landed = 0.0;
+	for (u32 frame = 1; frame <= 26; ++frame)
+	{
+		if (at(frame / 60.0).fired("step"))
+		{
+			++steps;
+			landed = frame / 60.0;
+		}
+	}
+	EXPECT_EQ(steps, 1u);
+	EXPECT_NEAR(landed, 0.3, 1.0 / 60.0);
+
+	// What begins as the hold does, the blow's own flash, is not held.
+	m_animator.overlay("dash", 0.1);
+	EXPECT_NEAR(squash(0.15), 1.0f + 0.6f * std::exp(-8.0f * 0.05f), 1e-3f);
+}
+
 TEST_F(Human, MountedRigsSortAboveTheirSocketBehind)
 {
 	m_animator.set("aim", -PI / 2.0f); // up: the blade rests above the hand

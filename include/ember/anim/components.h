@@ -113,9 +113,9 @@ namespace ember::anim
 
 	/**
 	 * What gameplay asks of an entity's animation: a clip for its rig and for each rig mounted in it,
-	 * overlays over them, the inputs its rigs read, and which way it faces. Asking for what already
-	 * plays changes nothing, so a Present system says what should play from sim state alone, every
-	 * frame, and remembers nothing.
+	 * overlays over them, the inputs its rigs read, which way it faces, how far it leans and when a
+	 * hitstop holds it. Asking for what already plays changes nothing, so a Present system says what
+	 * should play from sim state alone, every frame, and remembers nothing.
 	 */
 	struct Animator
 	{
@@ -159,6 +159,9 @@ namespace ember::anim
 		Input inputs[INPUTS]		  = {};
 		u8 input_count				  = 0;
 		glm::vec2 facing			  = {1.0f, 0.0f};
+		f32 lean	   = 0.0f; // radians, clockwise on screen whichever way it faces: tipped about its origin
+		f64 held_from  = 0.0;  // a hitstop, on the animation clock: see hold()
+		f64 held_until = 0.0;
 
 		/** The entity's own rig plays a clip. */
 		void play(StringView clip, Play how = {}) noexcept { start(playhead(0), name(clip), how); }
@@ -197,6 +200,17 @@ namespace ember::anim
 		{
 			if (direction.x != 0.0f || direction.y != 0.0f)
 				facing = direction;
+		}
+
+		/**
+		 * A hitstop: from `from` until `until` on the animation clock, what it plays that began before
+		 * `from` stands still, and then plays on from where it stood, as much later as it was held. What
+		 * begins at `from` or after plays as it would: a flash for the blow. A later hold takes its place.
+		 */
+		void hold(f64 from, f64 until) noexcept
+		{
+			held_from  = from;
+			held_until = until;
 		}
 
 		/** A number the rigs read: the aim a weapon turns to, in radians, clockwise on screen. */

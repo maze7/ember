@@ -101,6 +101,8 @@ namespace ember::net
 		f32 loss	  = 0.0f;  // chance an unreliable datagram vanishes
 		f32 duplicate = 0.0f;  // chance an unreliable datagram arrives twice
 		bool reorder  = false; // let datagrams overtake each other; off, they arrive in the order sent
+
+		bool operator==(const LinkConditions&) const noexcept = default;
 	};
 
 	/** What a Transport can tell about one connection's path. Zero when it cannot say. */

@@ -1063,6 +1063,45 @@ namespace
 		EXPECT_GT(enraged, boss_records * 3);
 	}
 
+	TEST(Replication, ASectionTellsWhatItCarriedAndWhatWaits)
+	{
+		const Game game;
+		Link link(game, 1, {.max_bits = 600});
+
+		std::vector<Entity> enemies;
+		for (u32 i = 0; i < 80; ++i)
+			enemies.push_back(link.spawn(ENEMY));
+
+		link.step();
+		const SectionStats created = link.server().section(0);
+		EXPECT_EQ(created.bits, link.viewer().bits.back()) << "the whole section";
+		EXPECT_GT(created.records, 0u);
+		EXPECT_EQ(created.records + created.waiting, 80u) << "every new entity is owed: what did not fit waits";
+		EXPECT_GT(created.waiting, 0u);
+		EXPECT_EQ(created.removals, 0u);
+
+		// Delivered and unchanged, nothing is owed.
+		link.settle(20);
+		EXPECT_EQ(link.server().section(0).records, 0u);
+		EXPECT_EQ(link.server().section(0).waiting, 0u);
+		EXPECT_EQ(link.server().section(0).bits, EMPTY_SECTION);
+
+		// Removals wait their turn too.
+		for (const Entity enemy : enemies)
+			link.destroy(enemy);
+		link.step();
+
+		const SectionStats removed = link.server().section(0);
+		EXPECT_EQ(removed.records, 0u);
+		EXPECT_GT(removed.removals, 0u);
+		EXPECT_GT(removed.waiting, 0u) << "80 removals do not fit in 600 bits";
+		EXPECT_EQ(removed.removals + removed.waiting, 80u);
+
+		// A viewer's next session starts from nothing.
+		link.server().remove_viewer(0);
+		EXPECT_EQ(link.server().section(0).bits, 0u);
+	}
+
 	TEST(Replication, RelevanceTakesAnEntityOutOfOneViewersWorldAndBack)
 	{
 		const Game game;
@@ -1857,6 +1896,16 @@ namespace
 
 			EXPECT_GT(viewing.replica.latest_tick(), 100u);
 		}
+	}
+
+	TEST(Replication, ASectionsSizeIsItsOwnWhereverInThePacketItStarts)
+	{
+		const Game game;
+		Session session(game, 1);
+		session.run(0.5);
+
+		EXPECT_EQ(session.replicator().section(0).bits, EMPTY_SECTION)
+			<< "the connection header and the timing report ahead of it are the server's";
 	}
 
 	TEST(Replication, ARejoiningClientStartsFromAnEmptyWorld)

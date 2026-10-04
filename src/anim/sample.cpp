@@ -23,10 +23,19 @@ namespace ember::anim
 			return {v.x * c - v.y * s, v.x * s + v.y * c};
 		}
 
-		/** Milliseconds since a clip was asked to start, at its speed. */
-		[[nodiscard]] f32 elapsed(const Animator::Played& played, f64 time) noexcept
+		/** The clock as what began at `since` sees it: still for as long as a hitstop it was caught in held it. */
+		[[nodiscard]] f64 held(const Animator& animator, f64 since, f64 time) noexcept
 		{
-			return static_cast<f32>((time - played.since) * 1000.0) * played.speed;
+			const f64 from = animator.held_from;
+			if (since >= from || animator.held_until <= from)
+				return time;
+			return time - std::clamp(time - from, 0.0, animator.held_until - from);
+		}
+
+		/** Milliseconds since a clip was asked to start, at its speed, less what a hitstop held it. */
+		[[nodiscard]] f32 elapsed(const Animator& animator, const Animator::Played& played, f64 time) noexcept
+		{
+			return static_cast<f32>((held(animator, played.since, time) - played.since) * 1000.0) * played.speed;
 		}
 
 		/** Where in a clip `ms` falls: wrapped when it loops, held at its ends when not. */
@@ -209,8 +218,10 @@ namespace ember::anim
 				m_pose.event_count = 0;
 				m_pose.sound_count = 0;
 
+				// Leaning clockwise on the screen is leaning the other way in a mirrored rig.
+				const f32 lean = m_mirror ? -m_animator.lean : m_animator.lean;
 				if (const Rig* rig = m_source.rig(m_animator.rig_id))
-					sample_rig(*rig, m_animator.rig_id, 0, {}, 0.0f);
+					sample_rig(*rig, m_animator.rig_id, 0, {.angle = lean}, 0.0f);
 
 				std::copy_n(m_animator.inputs, m_animator.input_count, m_pose.inputs);
 				m_pose.input_count = m_animator.input_count;
@@ -367,8 +378,9 @@ namespace ember::anim
 				if (clip.events.empty() || length <= 0.0f)
 					return;
 
-				const f32 now	   = into(clip, played, length, m_now);
-				const f32 previous = clip.input != 0 ? sampled(clip, length, now) : elapsed(played, m_previous);
+				const f32 now = into(clip, played, length, m_now);
+				const f32 previous =
+					clip.input != 0 ? sampled(clip, length, now) : elapsed(m_animator, played, m_previous);
 
 				for (const Event& event : clip.events)
 				{
@@ -392,7 +404,8 @@ namespace ember::anim
 			/** How far into a clip, in ms: on the clock since it began, or as far through as the input playing it. */
 			[[nodiscard]] f32 into(const Clip& clip, const Animator::Played& played, f32 length, f64 time) const noexcept
 			{
-				return clip.input != 0 ? m_animator.input(clip.input) * (length / clip.span) : elapsed(played, time);
+				return clip.input != 0 ? m_animator.input(clip.input) * (length / clip.span)
+									   : elapsed(m_animator, played, time);
 			}
 
 			/**
@@ -460,9 +473,10 @@ namespace ember::anim
 
 					// On the clock, or as far through its seconds as the clock is, when it was asked to last them.
 					const f32 length = length_of(*clip, nullptr);
+					const f64 now	 = held(m_animator, played.since, m_now);
 					const f32 t		 = played.seconds > 0.0f
-										   ? static_cast<f32>((m_now - played.since) / played.seconds) * length
-										   : elapsed(played, m_now);
+										   ? static_cast<f32>((now - played.since) / played.seconds) * length
+										   : elapsed(m_animator, played, m_now);
 					if (t < 0.0f || t > length)
 						continue;
 

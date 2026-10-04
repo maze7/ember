@@ -256,6 +256,72 @@ namespace
 		EXPECT_GT(stats.receive_rate, 0.0f);
 	}
 
+	TEST(Connection, TheReceiverMeasuresTheLossItSees)
+	{
+		TestLink link({.latency = 0.02, .loss = 0.1f}, 7);
+		link.run(5000);
+
+		// What one end lost is what the other never applied: the same packets, seen from either side, but
+		// for the last round trip's, which the receiver knows of before the acks reach the sender.
+		for (const auto& [sender, receiver] : {std::pair{&link.a, &link.b}, std::pair{&link.b, &link.a}})
+		{
+			const ConnectionStats& sent		= sender->connection.stats();
+			const ConnectionStats& received = receiver->connection.stats();
+
+			EXPECT_GE(received.packets_skipped, sent.packets_lost);
+			EXPECT_LE(received.packets_skipped, sent.packets_lost + 8);
+			EXPECT_NEAR(received.receive_loss, sent.loss, 0.03);
+			EXPECT_NEAR(static_cast<f64>(received.packets_skipped) /
+							static_cast<f64>(received.packets_skipped + received.packets_received),
+						0.1, 0.015);
+		}
+	}
+
+	TEST(Connection, PacketsNeverAppliedAreSkippedAndBytesAreCounted)
+	{
+		Connection sender;
+		Connection receiver;
+
+		std::array<PacketBuffer, 6> packets{};
+		std::array<u32, 6> sizes{};
+		u64 sent = 0;
+		for (u32 i = 0; i < 6; ++i)
+		{
+			serialize::WriteStream stream = packet_writer(packets[i]);
+			EXPECT_EQ(sender.write_header(stream, 0.0), i);
+			stream.Flush();
+			sizes[i] = static_cast<u32>(stream.GetBytesProcessed());
+			sender.count_sent(sizes[i], 0.0);
+			sent += sizes[i];
+		}
+
+		const auto deliver = [&](u32 i)
+		{
+			Sequence sequence = 0;
+			const Connection::Arrival arrival =
+				arrive(receiver, Span<const u8>(packets[i].bytes.data(), sizes[i]), sequence);
+
+			if (arrival == Connection::Arrival::Fresh)
+				receiver.acknowledge(sequence, sizes[i], 1.0);
+
+			return arrival;
+		};
+
+		EXPECT_EQ(deliver(0), Connection::Arrival::Fresh);
+		EXPECT_EQ(deliver(2), Connection::Arrival::Fresh);
+		EXPECT_EQ(deliver(1), Connection::Arrival::Stale) << "passed over, then late";
+		EXPECT_EQ(deliver(5), Connection::Arrival::Fresh);
+
+		const ConnectionStats& stats = receiver.stats();
+		EXPECT_EQ(stats.packets_received, 3u);
+		EXPECT_EQ(stats.packets_skipped, 3u) << "1, 3 and 4: never applied, whether they came late or not at all";
+		EXPECT_EQ(stats.packets_stale, 1u);
+		EXPECT_GT(stats.receive_loss, 0.0f);
+		EXPECT_LT(stats.receive_loss, 0.1f) << "three in six, smoothed over a hundred";
+		EXPECT_EQ(stats.bytes_received, u64{sizes[0]} + sizes[2] + sizes[5]) << "applied packets only";
+		EXPECT_EQ(sender.stats().bytes_sent, sent);
+	}
+
 	TEST(Connection, LateAndRepeatedPacketsAreStale)
 	{
 		Connection sender;

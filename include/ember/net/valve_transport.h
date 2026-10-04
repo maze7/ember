@@ -19,12 +19,15 @@ namespace ember::net
 
 	/**
 	 * Simulated weather for every connection in the process that goes through a socket: connections
-	 * over IP and through Steam's relayss, and connect_local() through the network. The library applies
-	 * it at its UDP layer to everything every end sends, so an in-process session gets it both ways and
-	 * its round-trip is twice the latency. Its jitter is exponential where the loopback's is uniform:
-	 * jitter here is its cap and half of it the mean. For development; default conditions turn it off.
+	 * over IP and through Steam's relays, and connect_local() through the network. The library applies
+	 * it at its UDP layer: `send` to every datagram the process sends, `receive` to every one it
+	 * receives. Both ends of an in-process session send, so `send` alone gives it the weather both ways
+	 * and its round trip is twice the latency; a client of a server elsewhere needs both for the same.
+	 * Its jitter is exponential where the loopback's is uniform: jitter here is its cap and half of it
+	 * the mean. Its loss takes the library's own datagrams too, whose reliable messages it sends again.
+	 * For development; default conditions turn it off.
 	 */
-	void simulate(const LinkConditions& conditions) noexcept;
+	void simulate(const LinkConditions& send, const LinkConditions& receive = {}) noexcept;
 
 	/**
 	 * The transport games use: Valve's networking sockets, which bring the connection handshake,
