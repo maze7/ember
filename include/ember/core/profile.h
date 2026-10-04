@@ -39,6 +39,7 @@ namespace ember
 	inline constexpr u32 PROFILE_COLOR_IO		= 0x3949ab;
 	inline constexpr u32 PROFILE_COLOR_NETWORK	= 0x1e88e5;
 	inline constexpr u32 PROFILE_COLOR_WAIT		= 0xb71c1c; // stalls, lock waits, sleeps
+	inline constexpr u32 PROFILE_COLOR_IDLE		= 0x424242; // workers between jobs, spinning for work
 }
 
 	/// Frame boundaries. Call EMBER_PROFILE_FRAME() once per frame, after present.
@@ -64,7 +65,7 @@ namespace ember
 	#define EMBER_PROFILE_THREAD(name) ::tracy::SetThreadName(name)
 
 	/// Stored zones. The name is a literal; RENAME attaches runtime text, copied by the profiler.
-	#define EMBER_PROFILE_ZONE_BEGIN(zone, name)                                                                        \
+	#define EMBER_PROFILE_ZONE_BEGIN(zone, name)                                                                       \
 		do                                                                                                             \
 		{                                                                                                              \
 			TracyCZoneN(___ember_stored_zone, name, 1);                                                                \
@@ -72,6 +73,7 @@ namespace ember
 		} while (0)
 	#define EMBER_PROFILE_ZONE_END(zone) TracyCZoneEnd(zone)
 	#define EMBER_PROFILE_ZONE_RENAME(zone, txt, size) TracyCZoneName(zone, txt, size)
+	#define EMBER_PROFILE_ZONE_COLOR(zone, color) TracyCZoneColor(zone, color)
 
 	/// Fibers. ENTER on every resume with the fiber's persistent name, LEAVE before switching
 	/// away; zones opened inside then belong to the fiber rather than the thread, and a
@@ -121,16 +123,17 @@ namespace ember
 	#define EMBER_PROFILE_ALLOC_N(ptr, size, name) TracyAllocN(ptr, size, name)
 	#define EMBER_PROFILE_FREE_N(ptr, name) TracyFreeN(ptr, name)
 #else
-	namespace ember
+namespace ember
+{
+	struct ProfileZone
 	{
-		struct ProfileZone
-		{
-		};
-	}
+	};
+}
 
 	#define EMBER_PROFILE_ZONE_BEGIN(zone, name) ((void)0)
 	#define EMBER_PROFILE_ZONE_END(zone) ((void)0)
 	#define EMBER_PROFILE_ZONE_RENAME(zone, txt, size) ((void)0)
+	#define EMBER_PROFILE_ZONE_COLOR(zone, color) ((void)0))
 	#define EMBER_PROFILE_FRAME() ((void)0)
 	#define EMBER_PROFILE_FRAME_N(name) ((void)0)
 	#define EMBER_PROFILE_FRAME_START(name) ((void)0)

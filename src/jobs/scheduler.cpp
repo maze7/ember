@@ -61,6 +61,11 @@ namespace ember::jobs
 
 			const char* label = fiber->job_name != nullptr ? fiber->job_name : "idle";
 			EMBER_PROFILE_ZONE_RENAME(worker.segment, label, std::strlen(label));
+
+			if (fiber->job_name == nullptr)
+			{
+				EMBER_PROFILE_ZONE_COLOR(worker.segment, PROFILE_COLOR_IDLE);
+			}
 #else
 			(void)worker;
 #endif
