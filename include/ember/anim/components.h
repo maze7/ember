@@ -122,9 +122,10 @@ namespace ember::anim
 		/** A clip as it was asked for. */
 		struct Played
 		{
-			Name clip = 0;
-			f64 since = 0.0;
-			f32 speed = 1.0f;
+			Name clip	= 0;
+			f64 since	= 0.0;
+			f32 speed	= 1.0f;
+			f32 seconds = 0.0f; // an overlay's: how long its whole clip plays for, or 0 for the clip's own length
 		};
 
 		/** What one rig plays: the entity's own, slot 0, or the rig mounted in a slot. */
@@ -171,22 +172,24 @@ namespace ember::anim
 		/**
 		 * A clip over what the entity's rig plays, from `since` until it ends: offsets and turns add,
 		 * scales multiply, flashes take the brighter. Ask with when it last began; one that has run
-		 * its course draws nothing.
+		 * its course draws nothing. Given `seconds`, the whole clip plays over that long instead of its
+		 * own length: a squash as long as the dash it is drawn for, however that is tuned.
 		 */
-		void overlay(StringView clip, f64 since) noexcept
+		void overlay(StringView clip, f64 since, f32 seconds = 0.0f) noexcept
 		{
 			const Name key = name(clip);
 			for (u32 i = 0; i < overlay_count; ++i)
 			{
 				if (overlays[i].clip == key)
 				{
-					overlays[i].since = since;
+					overlays[i].since	= since;
+					overlays[i].seconds = seconds;
 					return;
 				}
 			}
 
 			if (overlay_count < OVERLAYS)
-				overlays[overlay_count++] = {.clip = key, .since = since};
+				overlays[overlay_count++] = {.clip = key, .since = since, .seconds = seconds};
 		}
 
 		/** Which way the entity faces. A rig drawn facing east draws west as its mirror image. */

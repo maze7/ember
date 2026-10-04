@@ -455,8 +455,15 @@ namespace ember::anim
 				{
 					const Animator::Played& played = m_animator.overlays[o];
 					const Clip* clip			   = rig.clip(played.clip);
-					const f32 t					   = elapsed(played, m_now);
-					if (clip == nullptr || t < 0.0f || t > length_of(*clip, nullptr))
+					if (clip == nullptr)
+						continue;
+
+					// On the clock, or as far through its seconds as the clock is, when it was asked to last them.
+					const f32 length = length_of(*clip, nullptr);
+					const f32 t		 = played.seconds > 0.0f
+										   ? static_cast<f32>((m_now - played.since) / played.seconds) * length
+										   : elapsed(played, m_now);
+					if (t < 0.0f || t > length)
 						continue;
 
 					for (const Track& track : clip->tracks)

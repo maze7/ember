@@ -195,6 +195,23 @@ TEST_F(Human, OverlaysCombineThenRunOut)
 	EXPECT_EQ(body->position, glm::vec2(0.0f));
 }
 
+TEST_F(Human, AnOverlayAskedForSecondsPlaysItsWholeClipOverThem)
+{
+	// The squash's 866 ms over the 150 of the dash it is drawn for.
+	m_animator.overlay("dash", 1.0, 0.15f);
+	EXPECT_FLOAT_EQ(part(at(1.0), BODY)->scale.x, 1.6f);
+
+	const Pose halfway = at(1.075);
+	EXPECT_NEAR(part(halfway, BODY)->scale.x, 1.0f + 0.6f * std::exp(-8.0f * 0.433f), 1e-3f)
+		<< "half way through its seconds, half way through its clip";
+
+	EXPECT_EQ(part(at(1.151), BODY)->scale, glm::vec2(1.0f)) << "it runs out with them";
+
+	// Asked again without them, it plays at its own length.
+	m_animator.overlay("dash", 1.0);
+	EXPECT_NEAR(part(at(1.25), BODY)->scale.x, 1.0f + 0.6f * std::exp(-8.0f * 0.25f), 1e-3f);
+}
+
 TEST_F(Human, SquashKeepsTheHandWhereGame2HadIt)
 {
 	m_animator.overlay("dash", 0.0);
