@@ -37,8 +37,9 @@ namespace
 
 	struct SdlWindow
 	{
-		SDL_Window* handle = nullptr;
-		ember::u32 id	   = 0;
+		SDL_Window* handle		 = nullptr;
+		ember::u32 id			 = 0;
+		ember::CursorMode cursor = ember::CursorMode::Normal; // the mode it was last given
 
 		SdlWindow() noexcept = default;
 
@@ -54,7 +55,7 @@ namespace
 		SdlWindow& operator=(const SdlWindow&) = delete;
 
 		SdlWindow(SdlWindow&& other) noexcept
-			: handle(std::exchange(other.handle, nullptr)), id(std::exchange(other.id, 0))
+			: handle(std::exchange(other.handle, nullptr)), id(std::exchange(other.id, 0)), cursor(other.cursor)
 		{
 		}
 
@@ -971,6 +972,12 @@ namespace ember
 			EMBER_ASSERT(false && "Invalid WindowHandle");
 			return;
 		}
+
+		// Told once: a caller asks for the mode it wants every frame, and only a change reaches SDL.
+		if (window->cursor == mode)
+			return;
+
+		window->cursor = mode;
 
 		switch (mode)
 		{

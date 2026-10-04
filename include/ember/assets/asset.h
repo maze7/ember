@@ -87,7 +87,7 @@ namespace ember
 	 * the payload names on the GPU keeps its handle, so code that reads through the reference or stored a
 	 * handle it gave out is never stale and never asked to check. Copying a reference is cheap and any
 	 * thread may copy or drop one. The pointer it hands out is stable for the asset's life; the  bytes
-	 * behind a payload's pointers can be replaced at a pump and are freed a couple of frames later, so
+	 * behind a payload's pointers can be replaced at a pump and are freed at the pump after, so
 	 * read them through the reference, not from a copy kept across frames.
 	 */
 	template <class T> class AssetRef
@@ -304,8 +304,8 @@ namespace ember
 	 *
 	 * load() fills a default constructed T, on the first load and on every reload alike, so it
 	 * never knows which it is. reload() runs between frames with both in hand and makes `live`
-	 * become `fresh`, leaving in `fresh` whatever is now spent; the manager unloads `fresh` a few
-	 * frames later. A type without reload() is swapped, which is right whenever the payload is
+	 * become `fresh`, leaving in `fresh` whatever is now spent; the manager unloads `fresh` a frame
+	 * later. A type without reload() is swapped, which is right whenever the payload is
 	 * plain data. A type that hands out GPU handles keeps them instead: it moves the new object
 	 * behind the old handle (Device::replace_texture) so nothing that stored the handle changes.
 	 *
@@ -370,7 +370,7 @@ namespace ember
 	 * with one release store of the payload pointer, so a reference sees a whole payload or none.
 	 * A reload builds a fresh payload the same way and hands it to pump(), which folds it into the
 	 * live one between frames, when no stage is running, through the type's reload(); what that
-	 * leaves behind is unloaded a couple of pumps later, once any pointer a frame copied out of
+	 * leaves behind is unloaded a pump later, once any pointer a frame copied out of
 	 * the old contents has gone by. GPU objects keep their handles across a reload: the device
 	 * moves the new object behind the old handle. Nothing that consumed the asset takes part.
 	 *
@@ -528,11 +528,11 @@ namespace ember
 		static constexpr u16 MAX_TYPES = 64;
 
 		/**
-		 * Pumps a retired payload waits before it is unloaded. Two covers a bare pointer that
-		 * travelled through frame memory, where no AssetRef can live: the update that took it
-		 * and the render that update published it to, which runs one frame later.
+		 * Pumps a retired payload waits before it is unloaded. One covers a bare pointer a frame's
+		 * stages took out of it, where no AssetRef can live: whatever is retired while a frame is
+		 * under way, or at the pump before it, is still there when that frame ends.
 		 */
-		static constexpr u64 RETIRE_GRACE = 2;
+		static constexpr u64 RETIRE_GRACE = 1;
 
 		struct Type
 		{

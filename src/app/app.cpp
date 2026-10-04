@@ -59,10 +59,4 @@ namespace ember
 		EMBER_ASSERT(m_runtime != nullptr);
 		return *m_runtime->m_assets;
 	}
-
-	bool App::is_frame_complete(u64 index) const noexcept
-	{
-		EMBER_ASSERT(m_runtime != nullptr);
-		return m_runtime->is_frame_complete(index);
-	}
 }

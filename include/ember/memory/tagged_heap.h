@@ -8,17 +8,15 @@
 namespace ember
 {
 	/**
-	 * The engine's memory lifetimes: the kind half of every frame tag. The sequence half is the frame
-	 * number, so one tag names one lifetime of one frame and nothing  else ever reuses  it. Allocators
-	 * are per lifetime, not per stage: a stage that produces for a later stage allocates from that
-	 * lifetime's arena and the consumer frees the tag when it is done.
+	 * The engine's memory lifetimes: the kind half of every tag it frees by. The sequence half counts
+	 * the lifetime's turns, the frame number for a frame's memory, so one tag names one turn of one
+	 * lifetime and nothing else ever reuses it. An allocator is per lifetime: whoever begins a turn
+	 * frees its tag once the last thing that reads it is done.
 	 */
 	enum class MemoryLifetime : u8
 	{
-		None = 0,	   // the kind of NO_TAG; never a lifetime
-		SimScratch,	   // dies when the frame's game stage has been joined
-		SimToRender,   // written by the game stage, read by the render stage of the same frame
-		RenderScratch, // dies when the frame's render stage has submitted
+		None = 0, // the kind of NO_TAG; never a lifetime
+		Frame,	  // a frame's memory: dies once the frame has been submitted
 	};
 
 	/** Names the lifetime a block belongs to. Everything allocated under one tag is freed together */

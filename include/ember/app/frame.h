@@ -7,7 +7,6 @@
 #include <ember/memory/pmr/arena.h>
 
 #include <array>
-#include <utility>
 
 namespace ember
 {
@@ -18,12 +17,9 @@ namespace ember
 	 * are numbered from 1 and the runtime keeps the last FrameRing::CAPACITY of them, so a stage
 	 * can look back at what an earlier frame saw and measured through App::frame().
 	 *
-	 * The arenas are the frame's memory lifetimes, freed by tag, never per allocation. Each
-	 * stage allocates only from th eone it owns:
-	 *
-	 *   sim_scratch     update() only.                     Gone once update() returns.
-	 *   sim_to_render   update() writes, render() reads.   Gone once the frame has been rendered.
-	 *   render_scratch  render() only.                     Gone once the frame has been submitted.
+	 * scratch is the frame's memory, freed by tag once the frame has been submitted, never per
+	 * allocation: what a stage builds along the way, and what update() leaves for render(), lives
+	 * there exactly as long as the frame does.
 	 */
 	struct FrameParams
 	{
@@ -35,22 +31,12 @@ namespace ember
 		InputState input = {};
 
 		/**
-		 * The window's drawable size when the frame began, zero while minimized. What update()
-		 * sizes its views by; render() gets the backbuffer's actual extent below.
+		 * What the frame is drawn on, taken before update() runs: null, its extent zero, when the
+		 * frame has no drawable, a minimized window's, and render() is skipped. The extent is the
+		 * size both stages size their views by.
 		 */
-		Extent2D window_extent = {};
-
-		TextureHandle backbuffer   = {}; // null when the frame has no drawable and render() is skipped.
+		TextureHandle backbuffer   = {};
 		Extent2D backbuffer_extent = {};
-
-		/** update()'s hand-off to render(), set by publish() and read through payload(). */
-		const void* published = nullptr;
-
-		/**
-		 * The frame's GPU work once end_frame() has handed it over; zero until then and for
-		 * frames that never reached the GPU. App::is_frame_complete() reads it.
-		 */
-		gpu::FrameSubmission gpu = {};
 
 		/**
 		 * Stage timestamps in steady clock nanoseconds: compare them with each other, not the wall clock.
@@ -61,31 +47,11 @@ namespace ember
 		u64 render_begin_ns = 0;
 		u64 render_end_ns	= 0;
 
-		Arena& sim_scratch;	   // MemoryLifetime::SimScratch
-		Arena& sim_to_render;  // MemoryLifetime::SimToRender
-		Arena& render_scratch; // MemoryLifetime::RenderScratch
+		Arena& scratch; // MemoryLifetime::Frame
 
 		/** Milliseconds a stage took, zero while it runs or when it did not run. */
 		[[nodiscard]] f32 update_ms() const noexcept { return stage_ms(update_begin_ns, update_end_ns); }
 		[[nodiscard]] f32 render_ms() const noexcept { return stage_ms(render_begin_ns, render_end_ns); }
-
-		/**
-		 * Builds the object render() reads as the result of this frame's update(), in sim_to_render
-		 * memory so it lives exactly as long as the frame needs it. Any type the app likes, as long
-		 * as it is trivially destructible: the tag frees it and nothing runs a destructor.
-		 * Publishing again replaces the earlier object.
-		 */
-		template <class T, class... Args> T& publish(Args&&... args) noexcept
-		{
-			static_assert(std::is_trivially_destructible_v<T>, "frame memory is freed by tag, never destroyed");
-
-			T* object = new (sim_to_render.allocate_fast(sizeof(T), alignof(T))) T{std::forward<Args>(args)...};
-			published = object;
-			return *object;
-		}
-
-		/** What update() published, as the type it published it as; null when it published nothing. */
-		template <class T> [[nodiscard]] const T* payload() const noexcept { return static_cast<const T*>(published); }
 
 	private:
 		[[nodiscard]] static f32 stage_ms(u64 begin_ns, u64 end_ns) noexcept
@@ -106,17 +72,9 @@ namespace ember
 	public:
 		static constexpr u32 CAPACITY = 16;
 
-		/** Every slot names the same three arenas: allocators are per lifetime, tags are per frame. */
-		FrameRing(Arena& sim_scratch, Arena& sim_to_render, Arena& render_scratch) noexcept
-			: m_frames(
-				  [&](u32)
-				  {
-					  return FrameParams{
-						  .sim_scratch	  = sim_scratch,
-						  .sim_to_render  = sim_to_render,
-						  .render_scratch = render_scratch,
-					  };
-				  })
+		/** Every slot names the same arena: the allocator is the lifetime's, the tag is the frame's. */
+		explicit FrameRing(Arena& scratch) noexcept
+			: m_frames([&](u32) { return FrameParams{.scratch = scratch}; })
 		{
 		}
 
@@ -137,15 +95,12 @@ namespace ember
 			frame.frame_slot		= 0;
 			frame.dt				= dt;
 			frame.input				= input;
-			frame.window_extent		= {};
 			frame.backbuffer		= {};
 			frame.backbuffer_extent = {};
-			frame.gpu				= {};
 			frame.update_begin_ns	= 0;
 			frame.update_end_ns		= 0;
 			frame.render_begin_ns	= 0;
 			frame.render_end_ns		= 0;
-			frame.published			= nullptr;
 
 			return frame;
 		}

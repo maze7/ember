@@ -43,7 +43,13 @@ namespace ember
 
 		void set_window_title(WindowHandle handle, const char* title) noexcept;
 		void set_window_size(WindowHandle handle, u32 width, u32 height) noexcept;
+
+		/**
+		 * Shows, hides or captures the cursor over a window. The window remembers the mode it was
+		 * last given and asking for it again does nothing, so a caller says what it wants every frame.
+		 */
 		void set_cursor_mode(WindowHandle window, CursorMode mode) noexcept;
+
 		Extent2D window_pixel_size(WindowHandle handle) const noexcept;
 
 		CursorHandle create_system_cursor(SystemCursor cursor) noexcept;

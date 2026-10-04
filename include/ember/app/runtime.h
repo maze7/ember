@@ -37,7 +37,7 @@ namespace ember
 	class Runtime final
 	{
 	public:
-		Runtime() noexcept : m_frames(m_sim_scratch, m_sim_to_render, m_render_scratch) {}
+		Runtime() noexcept : m_frames(m_scratch) {}
 		~Runtime() noexcept;
 
 		// Runtime is the main engine orchestrator, it should not be copied or moved.
@@ -83,9 +83,6 @@ namespace ember
 	private:
 		friend class App;
 
-		/** Returns true if the given frame has completed and been presented. */
-		bool is_frame_complete(u64 index) const noexcept;
-
 		enum class State : u8
 		{
 			Empty,
@@ -109,14 +106,12 @@ namespace ember
 		Input m_input;
 
 		/**
-		 * The frame lifetimes, one arena on the shared heap. The loop names them after  the
-		 * frame and frees  them by tag; the context hand them to the app. See MemoryLifetime.
+		 * The frame's memory: one arena on the shared heap, which the loop begins under each
+		 * frame's tag and frees by it once the frame has been submitted. See MemoryLifetime.
 		 */
-		Arena m_sim_scratch;
-		Arena m_sim_to_render;
-		Arena m_render_scratch;
+		Arena m_scratch;
 
-		/// The last FrameRing::CAPACITY frames. The loop begins one per frame, after the arenas
+		/// The last FrameRing::CAPACITY frames. The loop begins one per frame, after the arena
 		/// it names, and the app reads them through frame().
 		FrameRing m_frames;
 

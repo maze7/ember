@@ -39,8 +39,9 @@ namespace ember
 	 * A frame is two stages, run one after the other on the owner thread, which holds the
 	 * platform and the device: update() moves the game on, then render() draws it. update()
 	 * runs every frame; render() only when there is something to draw on, so a game goes on
-	 * behind a minimized window. What update() leaves for render() can ride the frame, in
-	 * memory that lives exactly as long (FrameParams::publish), or stay in the app.
+	 * behind a minimized window. Either stage may use the platform, the device and the UI, on
+	 * this thread only: a job a stage kicks has none of them. What update() leaves for
+	 * render() stays in the app, or in the frame's memory when it should die with the frame.
 	 */
 	class App
 	{
@@ -76,13 +77,6 @@ namespace ember
 		 * earlier stage saw and measured. Null for a frame older than that or not begun yet.
 		 */
 		[[nodiscard]] const FrameParams* frame(u64 index) const noexcept;
-
-		/**
-		 * True once the GPU has retired everything frame index submitted, or the frame is older
-		 * than the ring remembers. False for the current frame and every frame after it. Data the
-		 * GPU reads for a frame must stay put until this says so.
-		 */
-		[[nodiscard]] bool is_frame_complete(u64 index) const noexcept;
 
 		/**
 		 * Asks the loop to stop: any stage, any thread. The frame under way finishes like any

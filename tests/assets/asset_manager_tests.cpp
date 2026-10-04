@@ -373,8 +373,6 @@ namespace
 		// The old bytes wait out the grace, for a pointer a frame may have copied.
 		EXPECT_EQ(BytesAsset::unloads.load(), 0u);
 		pump();
-		EXPECT_EQ(BytesAsset::unloads.load(), 0u);
-		pump();
 		EXPECT_EQ(BytesAsset::unloads.load(), 1u);
 		EXPECT_TRUE(matches(ref, 200, 9));
 	}
@@ -424,7 +422,6 @@ namespace
 		pump(); // the slot goes; the payload waits out the grace
 		EXPECT_EQ(m_assets.stats().assets, 0u);
 		EXPECT_EQ(BytesAsset::unloads.load(), 0u);
-		pump();
 		pump();
 		EXPECT_EQ(BytesAsset::unloads.load(), 1u);
 

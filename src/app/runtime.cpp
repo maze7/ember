@@ -42,15 +42,9 @@ namespace ember
 		if (!memory::initialize(config.memory))
 			return rollback(RuntimeError::MemoryInitFailed);
 
-		// The frame lifetimes, one arena each on the shared heap. Sequence 0 is the boot frame:
-		// whatever initialization allocates from them lives until the first frame begins.
-		{
-			TaggedHeap& heap = memory::tagged_heap();
-
-			m_sim_scratch.init(heap, "game_scratch");
-			m_sim_to_render.init(heap, "game_to_render");
-			m_render_scratch.init(heap, "render_scratch");
-		}
+		// The frame's memory, on the shared heap. It is closed between frames: nothing allocates
+		// from it before the first frame begins.
+		m_scratch.init(memory::tagged_heap(), "frame");
 
 		jobs::initialize(config.jobs);
 
@@ -142,12 +136,10 @@ namespace ember
 		}
 
 		// Worker teardown may still touch engine allocators, so stop the scheduler before
-		// releasing the memory system. The lifetimes go between the two: each arena frees
+		// releasing the memory system. The frame's memory goes between the two: the arena frees
 		// whatever tag it still holds, and the heap asserts on blocks still owned.
 		jobs::shutdown();
-		m_render_scratch.shutdown();
-		m_sim_to_render.shutdown();
-		m_sim_scratch.shutdown();
+		m_scratch.shutdown();
 		m_input.clear();
 		memory::shutdown();
 
@@ -218,24 +210,20 @@ namespace ember
 	 * One frame from start to finish, on this thread, the owner of the platform and the device:
 	 *
 	 *   wait      for the GPU and the display; the GPU's frame is open from here to the submit
-	 *   sample    input, time and the window's size
-	 *   update()  the game moves on and publishes what to draw
+	 *   sample    input and time
+	 *   update()  the game moves on
 	 *   render()  draws it
 	 *   submit    and the frame's memory goes
 	 *
-	 * Each lifetime is begun under the frame's tag where its stage starts and freed once its last
-	 * reader is done:
-	 *
-	 *   sim_scratch     begun before update(), freed when it returns
-	 *   sim_to_render   begun before update(), closed when it returns, freed after the submit
-	 *   render_scratch  begun before render(), freed after the submit
+	 * The frame's memory is begun under the frame's tag before update() and freed after the submit,
+	 * so whatever either stage builds in it lives exactly as long as the frame.
 	 */
 	void Runtime::run_frame(App& app) noexcept
 	{
 		TaggedHeap& heap = memory::tagged_heap();
 
 		// The frame's number is its identity: the ring slot it takes and the sequence half of its
-		// three lifetime tags. Boot was 0, so the first frame is 1.
+		// memory's tag. Boot was 0, so the first frame is 1.
 		const u64 index = m_frame_index + 1;
 
 		// Between frames: assets nobody holds go, finished reloads fold into their payloads, and
@@ -278,10 +266,9 @@ namespace ember
 		m_previous_frame = tick;
 
 		// The frame begins: its slot takes the number, a copy of the input the pump just published,
-		// the window's size, and what it will be drawn on when there is something to draw on.
-		FrameParams& frame	= m_frames.begin(index, dt, m_input.state());
-		frame.window_extent = m_platform->window_pixel_size(m_window);
-		m_frame_index		= index;
+		// and what it will be drawn on when there is something to draw on.
+		FrameParams& frame = m_frames.begin(index, dt, m_input.state());
+		m_frame_index	   = index;
 
 		if (!backbuffer.is_null())
 		{
@@ -290,8 +277,7 @@ namespace ember
 			frame.backbuffer_extent = m_gpu->swapchain_extent(m_swapchain);
 		}
 
-		m_sim_scratch.begin(heap_tag(MemoryLifetime::SimScratch, index));
-		m_sim_to_render.begin(heap_tag(MemoryLifetime::SimToRender, index));
+		m_scratch.begin(heap_tag(MemoryLifetime::Frame, index));
 
 		{
 			EMBER_PROFILE_SCOPE_C("update", PROFILE_COLOR_GAMEPLAY);
@@ -300,15 +286,8 @@ namespace ember
 			frame.update_end_ns = now_ns();
 		}
 
-		// update() has returned: its scratch dies here, and its packet closes but stays alive
-		// until the frame has been submitted.
-		heap.free(m_sim_scratch.end());
-		const HeapTag packet = m_sim_to_render.end();
-
 		if (!backbuffer.is_null())
 		{
-			m_render_scratch.begin(heap_tag(MemoryLifetime::RenderScratch, index));
-
 			// Stamped after the waits for the GPU and the display, so render time is work, not waiting.
 			EMBER_PROFILE_SCOPE_C("render", PROFILE_COLOR_RENDER);
 			frame.render_begin_ns = now_ns();
@@ -316,39 +295,18 @@ namespace ember
 			frame.render_end_ns = now_ns();
 		}
 
-		// The GPU frame closes on every path that opened it. What it submitted is the frame's GPU
-		// work, which is_frame_complete() asks after. Every copy out of the frame's memory has
-		// been recorded by now, so the render scratch and the packet both die here.
+		// The GPU frame closes on every path that opened it. Every copy out of the frame's memory
+		// has been recorded by now, so that memory dies here.
 		if (drawable)
-			frame.gpu = m_gpu->end_frame();
+			(void)m_gpu->end_frame();
 
-		if (!backbuffer.is_null())
-			heap.free(m_render_scratch.end());
-
-		heap.free(packet);
+		heap.free(m_scratch.end());
 
 		if (m_gpu->device_lost())
 		{
 			EMBER_ERROR("GPU device lost");
 			request_quit(1);
 		}
-	}
-
-	bool Runtime::is_frame_complete(u64 index) const noexcept
-	{
-		// The newest frame is still under way, its gpu field yet to be written; every frame
-		// before it finished on this thread before the newest began.
-		if (index >= m_frames.current_index())
-			return false;
-
-		// Older than the ring: the device keeps at most frames_in_flight frames pending and the
-		// ring is longer than that, so a frame it has forgotten retired long ago.
-		const FrameParams* frame = m_frames.find(index);
-		if (frame == nullptr)
-			return true;
-
-		// A frame that never reached the GPU carries a zero submission, which reads complete.
-		return m_gpu->is_complete(frame->gpu);
 	}
 
 	void Runtime::request_quit(int exit_code) noexcept

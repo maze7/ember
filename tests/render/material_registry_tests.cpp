@@ -147,7 +147,7 @@ namespace
 			m_registry.init(m_device, {.max_types = 8, .max_materials = 64, .initial_records = 2});
 
 			m_scratch.init(memory::tagged_heap(), "materials.test");
-			m_scratch.begin(heap_tag(MemoryLifetime::RenderScratch, 1));
+			m_scratch.begin(heap_tag(MemoryLifetime::Frame, 1));
 		}
 
 		void TearDown() override

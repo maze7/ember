@@ -6,22 +6,24 @@
 
 #include <atomic>
 #include <cstring>
+#include <new>
 
 using namespace ember;
 
 /*
- * Runtime::run_frame's ordering, run headless with the real arenas and the real job system: a
- * frame updates, fanning out into jobs that write its packet, then renders from that packet
- * alone, and every lifetime is begun and freed exactly where the loop does it.
+ * Runtime::run_frame's ordering, run headless with the real arena and the real job system: a
+ * frame updates, fanning out into jobs that build what it will draw, then renders from that, and
+ * the frame's memory is begun and freed exactly where the loop does it.
  */
 namespace
 {
 	constexpr u32 WORKERS = 4;
 	constexpr u32 PARTS	  = 8;	// jobs an update fans out into
-	constexpr u32 WORDS	  = 61; // what each writes into the packet
+	constexpr u32 WORDS	  = 61; // what each builds for render
 	constexpr u64 FRAMES  = 96;
 
-	struct Payload
+	/// What update() leaves for render(), in the frame's memory.
+	struct Packet
 	{
 		u64 frame		  = 0;
 		u32* parts[PARTS] = {};
@@ -39,55 +41,50 @@ namespace
 		void SetUp() override
 		{
 			jobs::initialize({.worker_count = WORKERS});
-			sim_scratch.init(heap, "sim_scratch");
-			sim_to_render.init(heap, "sim_to_render");
-			render_scratch.init(heap, "render_scratch");
+			scratch.init(heap, "frame");
 			before = heap.blocks_in_use();
 		}
 
 		void TearDown() override
 		{
-			render_scratch.shutdown();
-			sim_to_render.shutdown();
-			sim_scratch.shutdown();
+			scratch.shutdown();
 			jobs::shutdown();
 			EXPECT_EQ(heap.blocks_in_use(), before) << "the pipeline leaked blocks";
 		}
 
-		[[nodiscard]] u32 owned(MemoryLifetime kind, u64 index) const noexcept
+		[[nodiscard]] u32 owned(u64 index) const noexcept
 		{
-			return heap.blocks_owned(heap_tag(kind, index));
+			return heap.blocks_owned(heap_tag(MemoryLifetime::Frame, index));
 		}
 
 		TaggedHeap& heap = memory::tagged_heap();
-		Arena sim_scratch;
-		Arena sim_to_render;
-		Arena render_scratch;
-		FrameRing ring{sim_scratch, sim_to_render, render_scratch};
+		Arena scratch;
+		FrameRing ring{scratch};
 		InputState input;
 		u32 before = 0;
 	};
 }
 
-TEST_F(FramePipeline, AFramesLifetimesDieWhereItsStagesEnd)
+TEST_F(FramePipeline, AFramesMemoryLivesUntilItsSubmit)
 {
 	u32 mismatches = 0;
 
 	for (u64 index = 1; index <= FRAMES; ++index)
 	{
 		FrameParams& frame = ring.begin(index, 0.016f, input);
+		const HeapTag tag  = heap_tag(MemoryLifetime::Frame, index);
 
-		sim_scratch.begin(heap_tag(MemoryLifetime::SimScratch, index));
-		sim_to_render.begin(heap_tag(MemoryLifetime::SimToRender, index));
+		scratch.begin(tag);
 
-		// update(): scribble in scratch, then build the packet in jobs, each writing its own part
-		// from whichever worker runs it.
+		// update(): scribble, then build the packet in jobs, each writing its own part from
+		// whichever worker runs it.
+		Packet* packet = nullptr;
 		{
-			auto* junk = static_cast<u8*>(frame.sim_scratch.allocate_fast(3000));
+			auto* junk = static_cast<u8*>(frame.scratch.allocate_fast(3000));
 			std::memset(junk, 0xAB, 3000);
 
-			Payload& out = frame.publish<Payload>();
-			out.frame	 = index;
+			packet		  = new (frame.scratch.allocate_fast(sizeof(Packet), alignof(Packet))) Packet{};
+			packet->frame = index;
 
 			std::atomic<u32> checksum{0};
 
@@ -95,7 +92,7 @@ TEST_F(FramePipeline, AFramesLifetimesDieWhereItsStagesEnd)
 			{
 				for (u32 part = range.begin; part < range.end; ++part)
 				{
-					auto* words = static_cast<u32*>(frame.sim_to_render.allocate_fast(WORDS * sizeof(u32), alignof(u32)));
+					auto* words = static_cast<u32*>(frame.scratch.allocate_fast(WORDS * sizeof(u32), alignof(u32)));
 					u32 sum		= 0;
 
 					for (u32 i = 0; i < WORDS; ++i)
@@ -104,37 +101,28 @@ TEST_F(FramePipeline, AFramesLifetimesDieWhereItsStagesEnd)
 						sum += words[i];
 					}
 
-					out.parts[part] = words;
+					packet->parts[part] = words;
 					checksum.fetch_add(sum, std::memory_order_relaxed);
 				}
 			};
 
 			jobs::parallel_for({.count = PARTS, .grain = 1, .name = "build part"}, build);
-			out.checksum = checksum.load();
-
-			EXPECT_TRUE(frame.sim_to_render.owns(&out));
-			EXPECT_FALSE(frame.sim_scratch.owns(&out));
+			packet->checksum = checksum.load();
 		}
 
-		// update() has returned: its scratch dies, its packet closes but stays alive.
-		heap.free(sim_scratch.end());
-		const HeapTag packet = sim_to_render.end();
+		// update() has returned, and what it built is still there for render().
+		EXPECT_GT(owned(index), 0u);
+		EXPECT_EQ(heap.tag_of(packet), tag);
 
-		EXPECT_EQ(owned(MemoryLifetime::SimScratch, index), 0u);
-		EXPECT_GT(owned(MemoryLifetime::SimToRender, index), 0u) << "the packet outlives its update";
-
-		// render(): from the payload alone.
+		// render(): from the packet, building beside it.
 		{
-			render_scratch.begin(heap_tag(MemoryLifetime::RenderScratch, index));
-
-			const Payload& in = *frame.payload<Payload>();
-			mismatches += in.frame != index;
+			mismatches += packet->frame != index;
 
 			u32 checksum = 0;
 			for (u32 part = 0; part < PARTS; ++part)
 			{
-				auto* copy = static_cast<u32*>(frame.render_scratch.allocate_fast(WORDS * sizeof(u32), alignof(u32)));
-				std::memcpy(copy, in.parts[part], WORDS * sizeof(u32));
+				auto* copy = static_cast<u32*>(frame.scratch.allocate_fast(WORDS * sizeof(u32), alignof(u32)));
+				std::memcpy(copy, packet->parts[part], WORDS * sizeof(u32));
 
 				for (u32 i = 0; i < WORDS; ++i)
 				{
@@ -142,21 +130,18 @@ TEST_F(FramePipeline, AFramesLifetimesDieWhereItsStagesEnd)
 					checksum += copy[i];
 				}
 
-				mismatches += heap.tag_of(in.parts[part]) != packet;
+				mismatches += heap.tag_of(packet->parts[part]) != tag;
 			}
 
-			mismatches += checksum != in.checksum;
-			frame.gpu = {.value = index};
+			mismatches += checksum != packet->checksum;
 		}
 
-		// The submit: the render scratch and the packet die together.
-		heap.free(render_scratch.end());
-		heap.free(packet);
+		// The submit: the frame's memory dies, all of it at once.
+		heap.free(scratch.end());
 
-		EXPECT_EQ(owned(MemoryLifetime::RenderScratch, index), 0u);
-		EXPECT_EQ(owned(MemoryLifetime::SimToRender, index), 0u);
+		EXPECT_EQ(owned(index), 0u);
+		EXPECT_EQ(heap.blocks_in_use(), before);
 	}
 
-	EXPECT_EQ(mismatches, 0u) << "a render read a payload that was not its frame's";
-	EXPECT_EQ(heap.blocks_in_use(), before);
+	EXPECT_EQ(mismatches, 0u) << "a render read what was not its frame's";
 }

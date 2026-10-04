@@ -14,12 +14,10 @@ namespace
 	class FrameRingTest : public ::testing::Test
 	{
 	protected:
-		Arena sim_scratch;
-		Arena sim_to_render;
-		Arena render_scratch;
+		Arena scratch;
 		InputState input;
 
-		FrameRing ring{sim_scratch, sim_to_render, render_scratch};
+		FrameRing ring{scratch};
 
 		/// Begins frames [from, to], each stamped with dt = its own index so lookups can be checked.
 		void begin_through(u64 from, u64 to)
@@ -76,9 +74,6 @@ TEST_F(FrameRingTest, BeginResetsWhatTheLastTenantLeft)
 	first.frame_slot		= 2;
 	first.backbuffer		= TextureHandle{.index = 7, .generation = 3};
 	first.backbuffer_extent = {1280, 720};
-	first.gpu				= {.value = 42};
-	first.window_extent		= {1280, 720};
-	first.published			= nullptr;
 	first.update_begin_ns	= 100;
 	first.update_end_ns		= 200;
 	first.render_begin_ns	= 300;
@@ -92,17 +87,14 @@ TEST_F(FrameRingTest, BeginResetsWhatTheLastTenantLeft)
 	EXPECT_EQ(again.frame_slot, 0u);
 	EXPECT_TRUE(again.backbuffer.is_null());
 	EXPECT_EQ(again.backbuffer_extent.width, 0u);
-	EXPECT_EQ(again.gpu.value, 0u);
 	EXPECT_EQ(again.update_begin_ns, 0u);
 	EXPECT_EQ(again.update_end_ns, 0u);
 	EXPECT_EQ(again.render_begin_ns, 0u);
 	EXPECT_EQ(again.render_end_ns, 0u);
 	EXPECT_EQ(again.dt, 0.033f);
-	EXPECT_EQ(again.window_extent.width, 0u);
-	EXPECT_EQ(again.published, nullptr);
 }
 
-TEST_F(FrameRingTest, EveryFrameNamesTheSameThreeArenas)
+TEST_F(FrameRingTest, EveryFrameNamesTheSameArena)
 {
 	begin_through(1, FrameRing::CAPACITY + 3);
 
@@ -110,9 +102,7 @@ TEST_F(FrameRingTest, EveryFrameNamesTheSameThreeArenas)
 	{
 		const FrameParams* frame = ring.find(index);
 		ASSERT_NE(frame, nullptr);
-		EXPECT_EQ(&frame->sim_scratch, &sim_scratch);
-		EXPECT_EQ(&frame->sim_to_render, &sim_to_render);
-		EXPECT_EQ(&frame->render_scratch, &render_scratch);
+		EXPECT_EQ(&frame->scratch, &scratch);
 	}
 }
 
@@ -153,9 +143,9 @@ TEST_F(FrameRingTest, ClearForgetsEveryFrame)
 #if !defined(NDEBUG)
 TEST(FrameRingDeathTest, FramesMustBeginInOrder)
 {
-	Arena a, b, c;
+	Arena scratch;
 	InputState input;
-	FrameRing ring{a, b, c};
+	FrameRing ring{scratch};
 
 	EXPECT_DEATH((void)ring.begin(2, 0.0f, input), "assert");
 
@@ -165,28 +155,18 @@ TEST(FrameRingDeathTest, FramesMustBeginInOrder)
 }
 #endif
 
-TEST_F(FrameRingTest, PublishPlacesThePayloadInSimToRender)
+TEST_F(FrameRingTest, AFramesScratchIsMemoryUnderItsTag)
 {
-	struct Payload
-	{
-		u64 frame = 0;
-		u32 value = 0;
-	};
-
 	TaggedHeap& heap = memory::tagged_heap();
-	sim_to_render.init(heap, "sim_to_render");
-	sim_to_render.begin(heap_tag(MemoryLifetime::SimToRender, 1));
+	scratch.init(heap, "frame");
+	scratch.begin(heap_tag(MemoryLifetime::Frame, 1));
 
 	FrameParams& frame = ring.begin(1, 0.016f, input);
-	EXPECT_EQ(frame.payload<Payload>(), nullptr) << "nothing published yet";
 
-	Payload& out = frame.publish<Payload>(1u, 42u);
-	EXPECT_EQ(frame.payload<Payload>(), &out);
-	EXPECT_EQ(out.frame, 1u);
-	EXPECT_EQ(out.value, 42u);
-	EXPECT_EQ(heap.tag_of(&out), heap_tag(MemoryLifetime::SimToRender, 1)) << "the payload lives in the frame's packet";
+	auto* words = static_cast<u32*>(frame.scratch.allocate_fast(16 * sizeof(u32), alignof(u32)));
+	EXPECT_EQ(heap.tag_of(words), heap_tag(MemoryLifetime::Frame, 1)) << "what a stage builds lives under the frame's tag";
 
 	// The tag is freed by the frame loop, never by the ring.
-	EXPECT_EQ(heap.free(sim_to_render.end()), 1u);
-	sim_to_render.shutdown();
+	EXPECT_EQ(heap.free(scratch.end()), 1u);
+	scratch.shutdown();
 }

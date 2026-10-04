@@ -347,7 +347,7 @@ void cs_main(uint3 id : SV_DispatchThreadID)
 			const View view = make_view(glm::lookAt(glm::vec3{0.0f, 0.0f, 5.0f}, glm::vec3{0.0f}, {0.0f, 1.0f, 0.0f}),
 										ortho_reverse_z(4.0f, 4.0f, 0.1f, 10.0f), TARGET, m_view_layers);
 
-			m_scratch.begin(heap_tag(MemoryLifetime::RenderScratch, ++m_frames));
+			m_scratch.begin(heap_tag(MemoryLifetime::Frame, ++m_frames));
 
 			const gpu::FrameInfo info = m_device.begin_frame();
 			m_renderer.render(view,
