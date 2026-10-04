@@ -315,6 +315,50 @@ namespace ember::ecs
 
 	void World::run(Phase phase) noexcept
 	{
+		// A stage's jobs are waited for on the scheduler, which only main and jobs can do: they have a fiber
+		// to park. Any other thread hands the phase to a job and sleeps until the job hands the world back.
+		if (m_mode == RunMode::Jobs && jobs::worker_index() == jobs::NO_WORKER)
+		{
+			if (jobs::worker_count() > 1)
+			{
+				run_as_job(phase);
+				return;
+			}
+
+			// No worker but main, which takes a job only when it waits itself: one system at a time here,
+			// which makes the same world.
+			m_mode = RunMode::Serial;
+			run_stages(phase);
+			m_mode = RunMode::Jobs;
+			return;
+		}
+
+		run_stages(phase);
+	}
+
+	void World::run_as_job(Phase phase) noexcept
+	{
+		constexpr const char* NAMES[] = {"world input", "world simulate", "world present"};
+
+		m_handed = phase;
+		jobs::kick({
+			.fn =
+				[](void* data)
+			{
+				World& world = *static_cast<World*>(data);
+				world.run_stages(world.m_handed);
+				world.m_handed_back.release();
+			},
+			.data = this,
+			.name = NAMES[static_cast<u32>(phase)],
+		});
+
+		// On the operating system, not the scheduler: this thread has no queue of its own to serve meanwhile.
+		m_handed_back.acquire();
+	}
+
+	void World::run_stages(Phase phase) noexcept
+	{
 		for (Stage& stage : m_stages[static_cast<u32>(phase)])
 		{
 			if (m_mode == RunMode::Jobs)
@@ -349,8 +393,7 @@ namespace ember::ecs
 			return;
 		}
 
-		EMBER_ASSERT(jobs::worker_index() != jobs::NO_WORKER &&
-					 "RunMode::Jobs runs on the job system: from main or a job");
+		EMBER_ASSERT(jobs::worker_index() != jobs::NO_WORKER && "a stage's jobs are kicked from main or a job");
 
 		jobs::Counter done;
 		stage.done = &done;

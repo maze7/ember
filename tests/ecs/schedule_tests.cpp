@@ -1,5 +1,6 @@
 #include <ember/ecs/system.h>
 #include <ember/jobs/job_system.h>
+#include <ember/sync/thread.h>
 
 #include <gtest/gtest.h>
 
@@ -332,6 +333,34 @@ namespace
 		{
 			jobs::initialize({.worker_count = workers, .fiber_count = 64});
 			EXPECT_EQ(fight(RunMode::Jobs), serial) << "Jobs, " << workers << " workers";
+			jobs::shutdown();
+		}
+	}
+
+	TEST(Schedule, JobsRunFromAThreadOfItsOwn)
+	{
+		const u64 serial = fight(RunMode::Serial);
+
+		// A hosted server's thread: it may not wait on the scheduler, so each phase runs as a job while it
+		// sleeps. With no worker but main, which is busy here, it runs the phase itself.
+		for (const u32 workers : {1u, 2u, 4u})
+		{
+			jobs::initialize({.worker_count = workers, .fiber_count = 64});
+
+			u64 server = 0;
+			std::thread thread(
+				[&]
+				{
+					const ThreadAttachment attached("server", ThreadKind::Io);
+					server = fight(RunMode::Jobs);
+				});
+
+			// The client's world meanwhile, on main, as a host runs both.
+			const u64 client = fight(RunMode::Jobs);
+			thread.join();
+
+			EXPECT_EQ(server, serial) << workers << " workers";
+			EXPECT_EQ(client, serial) << workers << " workers";
 			jobs::shutdown();
 		}
 	}
@@ -734,7 +763,7 @@ namespace
 
 	TEST(ScheduleDeathTest, JobsModeNeedsTheJobSystem)
 	{
-		EXPECT_DEATH(run_once(&battle, RunMode::Jobs), "runs on the job system");
+		EXPECT_DEATH(run_once(&battle, RunMode::Jobs), "no job system");
 	}
 #endif
 }

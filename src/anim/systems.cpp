@@ -1,9 +1,11 @@
 #include <ember/anim/systems.h>
+#include <ember/core/profile.h>
 
 namespace ember::anim
 {
 	void resolve(ecs::View<Animator, Look> animated, Library& library)
 	{
+		EMBER_PROFILE_FIBER_SCOPE_C("anim::resolve", PROFILE_COLOR_RENDER);
 		for (auto [entity, animator, look] : animated.each())
 		{
 			if (animator.rig_id == NO_ID)
@@ -22,6 +24,7 @@ namespace ember::anim
 
 	void animate(ecs::View<const Animator, const Look, Pose> animated, const Library& library, const Clock& clock)
 	{
+		EMBER_PROFILE_FIBER_SCOPE_C("anim::animate", PROFILE_COLOR_RENDER);
 		animated.parallel_each([&](ecs::Entity, const Animator& animator, const Look& look, Pose& pose)
 							   { sample(library, animator, look, clock.now, clock.previous, pose); }, 64);
 	}

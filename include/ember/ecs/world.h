@@ -3,6 +3,8 @@
 #include <ember/ecs/prefab.h>
 #include <ember/memory/unique.h>
 
+#include <semaphore>
+
 namespace ember::jobs
 {
 	class Counter;
@@ -60,8 +62,9 @@ namespace ember::ecs
 	 */
 	enum class RunMode : u8
 	{
-		Serial,	  // one at a time in registration order, on the caller: a dedicated server, a match per core
-		Jobs,	  // at once where the stage's graph allows, on the job system, split loops across the workers
+		Serial, // one at a time in registration order, on the caller: a dedicated server, a match per core
+		Jobs,	// at once where the stage's graph allows, on the job system, split loops across the workers:
+			  // from main or a job, or from a thread of its own, which sleeps while a job runs the phase
 		Shuffled, // for tests: one at a time in random orders the graph allows, split loops' ranges too
 		Count
 	};
@@ -345,6 +348,9 @@ namespace ember::ecs
 		 * for an earlier one only when they touch the same thing and either writes it, so every mode
 		 * gives what running them one at a time in registration order gives. The stage's commands land
 		 * when its last system returns.
+		 *
+		 * One thread at a time runs a world. In Jobs mode a thread outside the scheduler, a server's own,
+		 * hands the phase to a job and sleeps until it is done: between runs the world is that thread's.
 		 */
 		void run(Phase phase) noexcept;
 
@@ -394,6 +400,8 @@ namespace ember::ecs
 		};
 
 		static void plan(Stage& stage) noexcept;
+		void run_stages(Phase phase) noexcept;
+		void run_as_job(Phase phase) noexcept;
 		static void run_node(void* data) noexcept;
 		static void run_inline(Node& node) noexcept;
 		void run_jobs(Stage& stage) noexcept;
@@ -408,6 +416,10 @@ namespace ember::ecs
 		u64 m_random   = 0;
 		SystemContext m_outside;
 		Vector<Stage> m_stages[static_cast<u32>(Phase::Count)];
+
+		// A phase handed to a job by a thread outside the scheduler, and how the job hands the world back.
+		Phase m_handed = Phase::Count;
+		std::binary_semaphore m_handed_back{0};
 	};
 
 	template <Component... Ts> Spawned Commands::spawn(const Prefab& prefab, const Ts&... overrides) noexcept

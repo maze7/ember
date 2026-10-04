@@ -1,3 +1,4 @@
+#include <ember/core/profile.h>
 #include <ember/physics/systems.h>
 
 #include <algorithm>
@@ -14,6 +15,7 @@ namespace ember::physics
 
 	void find_hits(const Space& space, Hits& hits)
 	{
+		EMBER_PROFILE_SCOPE_C("physics::find_hits", PROFILE_COLOR_PHYSICS);
 		std::swap(hits.m_hits, hits.m_before);
 		hits.m_hits.clear();
 
