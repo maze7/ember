@@ -28,6 +28,11 @@ if(EMBER_ENABLE_ASSETS)
 	add_subdirectory(anim)
 endif()
 
+# The audio tests play through FMOD, and sample animations as a game does.
+if(EMBER_ENABLE_AUDIO AND EMBER_ENABLE_ASSETS)
+	add_subdirectory(audio)
+endif()
+
 if(EMBER_ENABLE_APP)
 	add_subdirectory(app)
 endif()

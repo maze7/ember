@@ -54,4 +54,21 @@ function(ember_add_game target)
 	if(WIN32)
 		set_target_properties(${target} PROPERTIES WIN32_EXECUTABLE ON)
 	endif()
+
+	# FMOD's libraries are shared: they go beside the executable, which looks for them there, so the
+	# folder it is built into runs wherever it is copied to.
+	if(EMBER_ENABLE_AUDIO)
+		foreach(part core studio)
+			add_custom_command(TARGET ${target} POST_BUILD
+				COMMAND ${CMAKE_COMMAND} -E copy_if_different
+					"$<TARGET_FILE:fmod_${part}>"
+					"$<TARGET_FILE_DIR:${target}>/$<IF:$<CONFIG:Debug>,${EMBER_FMOD_RUNTIME_${part}_DEBUG},${EMBER_FMOD_RUNTIME_${part}}>"
+				VERBATIM
+			)
+		endforeach()
+
+		if(UNIX AND NOT APPLE)
+			set_target_properties(${target} PROPERTIES BUILD_RPATH "\$ORIGIN")
+		endif()
+	endif()
 endfunction()

@@ -38,6 +38,7 @@ namespace ember::anim
 	 *
 	 *   {
 	 *       "slots": { "body": "sheets/human.sheet" },
+	 *       "sounds": { "step": "event:/Footstep" },
 	 *       "turn": "aim",
 	 *       "layers": [{ "name": "body" }, { "name": "weapon", "socket": "body.hand", "sort": "y" }],
 	 *       "clips": {
@@ -51,7 +52,8 @@ namespace ember::anim
 	 * A layer's rest values sit beside its name ("x", "orbit", "scale"...), as do "slot", "sprite",
 	 * "socket" (an earlier layer's point) and "sort". A clip with a "base" starts as a copy of that
 	 * clip, which comes earlier in the file: what it says itself, a layer's frames, a track or its
-	 * events, replaces the base's.
+	 * events, replaces the base's. "sounds" says what the rig's events sound like, each by the path of
+	 * an audio event: whichever clip passes an event of that name, the entity's emitter plays it.
 	 */
 	[[nodiscard]] bool parse_rig(StringView text, Rig& out, String& error) noexcept;
 }

@@ -231,3 +231,66 @@ if(EMBER_ENABLE_NET)
 		target_link_libraries(networking_sockets INTERFACE GameNetworkingSockets::static)
 	endif()
 endif()
+
+# FMOD backs Ember::Audio, private to it as SDL is to Ember::Platform. Its licence keeps the SDK out of
+# an engine's repository, so, like the Steamworks SDK, it stays where it was unpacked: FMOD_SDK is the
+# folder that holds api/ ("FMOD Engine" from fmod.com/download, 2.04 or later). FMOD's libraries are
+# shared and ship beside the executable, which ember_add_game sees to. A Debug build links the logging
+# ones, whose warnings reach the engine's log.
+if(EMBER_ENABLE_AUDIO)
+	set(FMOD_SDK "" CACHE PATH "The FMOD Engine SDK's folder, holding api/core and api/studio")
+	if(NOT EXISTS "${FMOD_SDK}/api/studio/inc/fmod_studio.hpp")
+		message(FATAL_ERROR "EMBER_ENABLE_AUDIO needs FMOD_SDK: the FMOD Engine SDK's folder, which holds api/")
+	endif()
+
+	foreach(part core studio)
+		if(part STREQUAL "core")
+			set(fmod_name fmod)
+		else()
+			set(fmod_name fmodstudio)
+		endif()
+
+		add_library(fmod_${part} SHARED IMPORTED GLOBAL)
+		target_include_directories(fmod_${part} SYSTEM INTERFACE "${FMOD_SDK}/api/${part}/inc")
+
+		if(WIN32)
+			set(fmod_dir "${FMOD_SDK}/api/${part}/lib/x64")
+			set(fmod_file "${fmod_dir}/${fmod_name}.dll")
+			set(fmod_file_debug "${fmod_dir}/${fmod_name}L.dll")
+			set_target_properties(fmod_${part} PROPERTIES
+				IMPORTED_IMPLIB "${fmod_dir}/${fmod_name}_vc.lib"
+				IMPORTED_IMPLIB_DEBUG "${fmod_dir}/${fmod_name}L_vc.lib"
+			)
+		elseif(APPLE)
+			set(fmod_dir "${FMOD_SDK}/api/${part}/lib")
+			set(fmod_file "${fmod_dir}/lib${fmod_name}.dylib")
+			set(fmod_file_debug "${fmod_dir}/lib${fmod_name}L.dylib")
+		else()
+			if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+				set(fmod_dir "${FMOD_SDK}/api/${part}/lib/arm64")
+			else()
+				set(fmod_dir "${FMOD_SDK}/api/${part}/lib/x86_64")
+			endif()
+			set(fmod_file "${fmod_dir}/lib${fmod_name}.so")
+			set(fmod_file_debug "${fmod_dir}/lib${fmod_name}L.so")
+		endif()
+
+		set_target_properties(fmod_${part} PROPERTIES
+			IMPORTED_LOCATION "${fmod_file}"
+			IMPORTED_LOCATION_DEBUG "${fmod_file_debug}"
+		)
+
+		# The name the loader asks for is the file's own, less its last number: libfmod.so.15.0 is
+		# asked for as libfmod.so.15. What ships beside an executable goes by that name.
+		foreach(config "" _DEBUG)
+			string(TOLOWER "${config}" suffix)
+			file(REAL_PATH "${fmod_file${suffix}}" fmod_real)
+			get_filename_component(fmod_runtime "${fmod_real}" NAME)
+			string(REGEX REPLACE "^(.+\\.so\\.[0-9]+)\\.[0-9.]+$" "\\1" fmod_runtime "${fmod_runtime}")
+			set(EMBER_FMOD_RUNTIME_${part}${config} "${fmod_runtime}" CACHE INTERNAL "")
+		endforeach()
+	endforeach()
+
+	target_link_libraries(fmod_studio INTERFACE fmod_core)
+	add_library(FMOD::Studio ALIAS fmod_studio)
+endif()

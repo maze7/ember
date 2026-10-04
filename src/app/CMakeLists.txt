@@ -13,6 +13,7 @@ ember_add_module(App
 		Ember::Platform
 		Ember::Gpu
 		Ember::Jobs
+		Ember::Audio
 	PRIVATE_DEPS
 		Ember::ImGui
 		Ember::Anim

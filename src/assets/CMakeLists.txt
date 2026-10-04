@@ -7,6 +7,7 @@ endif()
 ember_add_module(Assets
 	SOURCES
 		asset_manager.cpp
+		bank_asset.cpp
 		texture_asset.cpp
 		file_watcher.cpp
 		material_asset.cpp
@@ -17,6 +18,7 @@ ember_add_module(Assets
 		Ember::Render
 		Ember::Material
 	PRIVATE_DEPS
+		Ember::Audio
 		Stb::Stb
 		efsw::efsw
 		$<$<BOOL:${EMBER_SHADER_COMPILER}>:Ember::ShaderCompiler>

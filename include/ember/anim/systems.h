@@ -6,21 +6,6 @@
 
 namespace ember::anim
 {
-	/** The time animation runs on, in seconds: this frame's and the one before, so events fire once. */
-	struct Clock
-	{
-		f64 now		 = 0.0;
-		f64 previous = 0.0;
-
-		void advance(f64 dt) noexcept { set(now + dt); }
-
-		void set(f64 time) noexcept
-		{
-			previous = now;
-			now		 = time;
-		}
-	};
-
 	/** Present: the library's ids for the paths an animator or look names, once each. One thread: the library grows. */
 	void resolve(ecs::View<Animator, Look> animated, Library& library);
 

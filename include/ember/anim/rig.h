@@ -195,10 +195,21 @@ namespace ember::anim
 		String sheet;
 	};
 
+	/** What an event sounds like: an audio event, by its path and by the hash audio knows it by. */
+	struct Cue
+	{
+		u64 sound = 0;
+		String path;
+	};
+
 	struct Rig
 	{
 		Vector<Layer> layers;
 		Vector<SlotDefault> slots;
+
+		/// What its events sound like, by the event's name: every clip's "step" sounds like this.
+		Vector<Named<Cue>> sounds;
+
 		Vector<Clip> clips; // the first plays when nothing asks for another
 		Name turn = 0;		// an input the whole rig turns by: a weapon by its aim
 

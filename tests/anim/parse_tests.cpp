@@ -201,3 +201,23 @@ TEST(AnimParse, AClipAnInputPlaysSaysHowMuchOfIt)
 						   out, error));
 	EXPECT_NE(error.find("span"), String::npos) << error;
 }
+
+TEST(AnimParse, ARigSaysWhatItsEventsSoundLike)
+{
+	const Rig read = rig(R"({
+		"sounds": { "step": "event:/Footstep", "slash": "event:/SwordSlash" },
+		"layers": [{ "name": "body" }],
+		"clips": { "walk": { "length": 400, "events": [[0, "step"]] } },
+	})");
+
+	ASSERT_EQ(read.sounds.size(), 2u);
+	const Cue* step = find(read.sounds, name("step"));
+	ASSERT_NE(step, nullptr);
+	EXPECT_EQ(step->sound, hash_text("event:/Footstep")) << "the hash audio finds the event by";
+	EXPECT_EQ(step->path, "event:/Footstep") << "and its path, for messages";
+
+	Rig out;
+	String error;
+	EXPECT_FALSE(parse_rig(R"({ "sounds": { "step": 3 }, "layers": [{ "name": "body" }] })", out, error));
+	EXPECT_NE(error.find("step"), String::npos) << error;
+}

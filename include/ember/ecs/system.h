@@ -20,6 +20,7 @@
  *   View<Ts...>       every entity this world has with Ts, simulated or not
  *   Without<Ts...>    inside either: leaves out entities that have Ts
  *   const T&, T&      the world's T resource, to read or to write
+ *   const T*          a resource the world may not have yet, null until it does: a scene's terrain
  *   Commands&         spawns, adds, removes and destroys, landing when the stage ends
  *
  * Sim and View are light wrappers: an EnTT view and the system it belongs to. each() is EnTT's,
@@ -210,7 +211,8 @@ namespace ember::ecs
 		 */
 		template <class P> struct Param
 		{
-			static_assert(always_false<P>, "a system takes Sim, View, its resources as const T& or T&, and Commands&");
+			static_assert(always_false<P>, "a system takes Sim, View, its resources as const T& or T& (const T* for "
+										   "one that may not be there), and Commands&");
 		};
 
 		/** A Sim or a View: an EnTT view, made afresh for each run, with the system's context. */
@@ -279,6 +281,18 @@ namespace ember::ecs
 			static T& make(World& world, SystemContext&) { return world.resource<Resource>(); }
 			template <Phase> static constexpr bool check() { return true; }
 			static void note(Vector<AccessInfo>& access) { note_access<T>(access); }
+			static void prepare(entt::registry&) noexcept {}
+		};
+
+		/** A resource the world may not have: const T* reads it, and is null while the world has none. */
+		template <class T> struct Param<const T*>
+		{
+			static_assert(!Component<T>, "a component is not a resource: reach it through a Sim or a View");
+			static_assert(!is_view<T>, "take a Sim or a View by value: it is a handle");
+
+			static const T* make(World& world, SystemContext&) { return world.registry.ctx().template find<T>(); }
+			template <Phase> static constexpr bool check() { return true; }
+			static void note(Vector<AccessInfo>& access) { note_access<const T>(access); }
 			static void prepare(entt::registry&) noexcept {}
 		};
 

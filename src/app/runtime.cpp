@@ -1,5 +1,6 @@
 #include <ember/anim/library.h>
 #include <ember/app/runtime.h>
+#include <ember/assets/bank_asset.h>
 #include <ember/core/logger.h>
 #include <ember/core/profile.h>
 #include <ember/gpu/device.h>
@@ -72,12 +73,17 @@ namespace ember
 		m_renderer = memory::make_unique<render::Renderer>(MemoryTag::Graphics);
 		m_renderer->init(*m_gpu, {});
 
+		// A machine that cannot play sound still runs the game: the engine says why, and does nothing.
+		m_audio = memory::make_unique<audio::Engine>(MemoryTag::Audio);
+		(void)m_audio->init(config.audio);
+
 		m_assets = memory::make_unique<AssetManager>(MemoryTag::Assets);
 		m_assets->init(*m_gpu, config.assets);
 
 		// The engine's own types come registered, as the manager's textures and the material library's
 		// types do. A game registers its own in its init().
 		anim::register_types(*m_assets);
+		m_assets->register_type<BankAsset>("bank", m_audio.get());
 
 		// Materials are assets that load into the renderer's registry, which they reach through this.
 		m_materials = memory::make_unique<MaterialAssets>(MemoryTag::Assets);
@@ -101,6 +107,13 @@ namespace ember
 		}
 
 		m_materials.reset();
+
+		// After the assets, whose banks unload through it; FMOD's threads stop here, before the heap goes.
+		if (m_audio)
+		{
+			m_audio->shutdown();
+			m_audio.reset();
+		}
 
 		// Submitted frames may still reference renderer-owned resources,
 		// so quiesce the GPU before tearing the renderer down.
@@ -211,7 +224,7 @@ namespace ember
 	 *
 	 *   wait      for the GPU and the display; the GPU's frame is open from here to the submit
 	 *   sample    input and time
-	 *   update()  the game moves on
+	 *   update()  the game moves on, and what it sounds like goes to the mixer
 	 *   render()  draws it
 	 *   submit    and the frame's memory goes
 	 *
@@ -284,6 +297,12 @@ namespace ember
 			frame.update_begin_ns = now_ns();
 			app.update(frame);
 			frame.update_end_ns = now_ns();
+		}
+
+		// Everything the frame asked to be heard goes to the mixer together, with where it is heard from.
+		{
+			EMBER_PROFILE_SCOPE_C("audio", PROFILE_COLOR_AUDIO);
+			m_audio->update();
 		}
 
 		if (!backbuffer.is_null())

@@ -59,4 +59,10 @@ namespace ember
 		EMBER_ASSERT(m_runtime != nullptr);
 		return *m_runtime->m_assets;
 	}
+
+	audio::Engine& App::audio() noexcept
+	{
+		EMBER_ASSERT(m_runtime != nullptr);
+		return *m_runtime->m_audio;
+	}
 }

@@ -207,6 +207,7 @@ namespace ember::anim
 				m_pose.part_count  = 0;
 				m_pose.point_count = 0;
 				m_pose.event_count = 0;
+				m_pose.sound_count = 0;
 
 				if (const Rig* rig = m_source.rig(m_animator.rig_id))
 					sample_rig(*rig, m_animator.rig_id, 0, {}, 0.0f);
@@ -355,13 +356,13 @@ namespace ember::anim
 					playing.length = length_of(*playing.clip, sheets);
 					playing.t = wrap(into(*playing.clip, playing.played, playing.length, m_now), playing.length,
 									 playing.clip->loop);
-					fire(*playing.clip, playing.played, playing.length, mount);
+					fire(rig, *playing.clip, playing.played, playing.length, mount);
 				}
 				return playing;
 			}
 
 			/** Each event a clip passed since the frame before, once, however short the frame. */
-			void fire(const Clip& clip, const Animator::Played& played, f32 length, Name mount) noexcept
+			void fire(const Rig& rig, const Clip& clip, const Animator::Played& played, f32 length, Name mount) noexcept
 			{
 				if (clip.events.empty() || length <= 0.0f)
 					return;
@@ -375,8 +376,16 @@ namespace ember::anim
 						clip.loop ? std::floor((now - event.ms) / length) > std::floor((previous - event.ms) / length)
 								  : previous < event.ms && event.ms <= now;
 
-					if (passed && m_pose.event_count < Pose::EVENTS)
+					if (!passed)
+						continue;
+
+					if (m_pose.event_count < Pose::EVENTS)
 						m_pose.events[m_pose.event_count++] = mount != 0 ? join(mount, event.name) : event.name;
+
+					// What the event sounds like is its own rig's to say: a sword brings its swing's sound.
+					if (const Cue* cue = find(rig.sounds, event.name);
+						cue != nullptr && m_pose.sound_count < Pose::SOUNDS)
+						m_pose.sounds[m_pose.sound_count++] = cue->sound;
 				}
 			}
 

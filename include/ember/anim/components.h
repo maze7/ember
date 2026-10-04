@@ -254,7 +254,10 @@ namespace ember::anim
 
 	EMBER_COMPONENT(Animator, Client);
 
-	/** An entity's animation as sampled this frame: the parts it draws, its named points and the events it passed. */
+	/**
+	 * An entity's animation as sampled this frame: the parts it draws, its named points, the events it
+	 * passed and what its rigs say those sound like.
+	 */
 	struct Pose
 	{
 		struct Part
@@ -278,6 +281,7 @@ namespace ember::anim
 		static constexpr u32 PARTS	= 8;
 		static constexpr u32 POINTS = 6;
 		static constexpr u32 EVENTS = 4;
+		static constexpr u32 SOUNDS = 4;
 
 		Part parts[PARTS]	 = {};
 		u8 part_count		 = 0;
@@ -285,6 +289,8 @@ namespace ember::anim
 		u8 point_count		 = 0;
 		Name events[EVENTS]	 = {}; // "step", or a mounted rig's "weapon.slash"
 		u8 event_count		 = 0;
+		u64 sounds[SOUNDS]	 = {}; // what its rigs say those events sound like: audio events, by their hashed paths
+		u8 sound_count		 = 0;
 
 		// The inputs it was sampled with: where the clips they play were, so the next frame fires what they pass.
 		Animator::Input inputs[Animator::INPUTS] = {};
@@ -310,4 +316,19 @@ namespace ember::anim
 	};
 
 	EMBER_COMPONENT(Pose, Client);
+
+	/** The time a client presents on, in seconds: this frame's and the one before, so events fire once. */
+	struct Clock
+	{
+		f64 now		 = 0.0;
+		f64 previous = 0.0;
+
+		void advance(f64 dt) noexcept { set(now + dt); }
+
+		void set(f64 time) noexcept
+		{
+			previous = now;
+			now		 = time;
+		}
+	};
 }

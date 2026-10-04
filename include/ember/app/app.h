@@ -4,6 +4,7 @@
 #include <ember/app/main.h>
 #include <ember/assets/asset.h>
 #include <ember/assets/material_asset.h>
+#include <ember/audio/engine.h>
 #include <ember/core/common.h>
 #include <ember/gpu/common.h>
 #include <ember/gpu/device.h>
@@ -23,6 +24,7 @@ namespace ember
 		jobs::JobSystemDef jobs		  = {};
 		AssetManagerDef assets		  = {};
 		MaterialAssetsDef materials	  = {};
+		audio::EngineDef audio		  = {};
 		WindowDef window			  = {};
 		gpu::DeviceDef gpu			  = {};
 		gpu::PresentMode present_mode = gpu::PresentMode::VSync;
@@ -71,6 +73,9 @@ namespace ember
 		[[nodiscard]] WindowHandle window() const noexcept;
 		[[nodiscard]] SwapchainHandle swapchain() const noexcept;
 		[[nodiscard]] AssetManager& assets() noexcept;
+
+		/** What the app is heard through. One thread at a time, as either stage is. */
+		[[nodiscard]] audio::Engine& audio() noexcept;
 
 		/**
 		 * One of the last FrameRing::CAPACITY frames by number, the current one included: what an

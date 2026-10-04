@@ -193,6 +193,17 @@ namespace
 			log.ran.push_back("read_counts");
 	}
 
+	/** A resource that comes and goes: the level a world is playing. */
+	struct Level
+	{
+		u32 number = 0;
+	};
+
+	void read_level_system(const Level* level, Log& log)
+	{
+		log.ran.push_back(level != nullptr ? "level " + std::to_string(level->number) : "no level");
+	}
+
 	void add_and_remove_system(Sim<const HealthComponent> targets, Commands& commands)
 	{
 		for (auto [entity, health] : targets.each())
@@ -484,6 +495,22 @@ namespace
 		EXPECT_FALSE(reader.access[0].write) << "const Counts&";
 		EXPECT_TRUE(reader.access[1].write) << "Log&";
 		EXPECT_FALSE(reader.structural);
+	}
+
+	TEST(World, AResourceAWorldMayNotHaveIsTakenAsAPointer)
+	{
+		Game game([](Registry& registry) { registry.simulate<read_level_system>(Stage::Act); });
+		const Unique<World> world = game.world();
+
+		world->run(Phase::Simulate);
+		world->add_resource<Level>(Level{.number = 3});
+		world->run(Phase::Simulate);
+
+		EXPECT_EQ(world->resource<Log>().ran, (std::vector<std::string>{"no level", "level 3"}));
+
+		const SystemInfo& reader = game.registry.systems()[0];
+		EXPECT_EQ(reader.access[0].name, "Level");
+		EXPECT_FALSE(reader.access[0].write) << "const Level*: a read, as const Level& is";
 	}
 
 	TEST(World, TheScheduleKnowsWhatEachSystemTouches)

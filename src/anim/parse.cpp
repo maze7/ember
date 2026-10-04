@@ -1,5 +1,6 @@
 #include <ember/anim/parse.h>
 
+#include <ember/core/hash.h>
 #include <ember/core/json.h>
 #include <ember/memory/memory.h>
 
@@ -104,6 +105,14 @@ namespace ember::anim
 				StringView turn;
 				if (root["turn"].read(turn))
 					m_rig.turn = name(turn);
+
+				for (const auto [event, sound] : root["sounds"].members())
+				{
+					StringView path;
+					if (!sound.read(path) || path.empty())
+						return fail(m_error, "sound '{}' names an audio event's path", event);
+					m_rig.sounds.push_back({name(event), {.sound = hash_text(path), .path = String(path)}});
+				}
 
 				for (const JsonValue layer : root["layers"].elements())
 					if (!read_layer(layer))

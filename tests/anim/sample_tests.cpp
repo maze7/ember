@@ -29,6 +29,7 @@ namespace
 
 	constexpr const char* HUMAN_RIG = R"({
 		"slots": { "body": "sheets/human.sheet" },
+		"sounds": { "step": "event:/Footstep" },
 		"layers": [{ "name": "body" }, { "name": "weapon", "socket": "body.hand", "sort": "y" }],
 		"clips": {
 			"idle": { "loop": true, "frames": { "body": { "sprites": "idle", "ms": 400 } } },
@@ -43,6 +44,7 @@ namespace
 
 	constexpr const char* SWORD_RIG = R"({
 		"slots": { "blade": "sheets/sword.sheet", "slash": "sheets/slash.sheet" },
+		"sounds": { "slash": "event:/SwordSlash" },
 		"turn": "aim",
 		"layers": [
 			{ "name": "blade", "radius": 6.5, "orbit": -45, "angle": -45, "sprite": "blade" },
@@ -348,4 +350,25 @@ TEST_F(Human, AnInputPlaysAClipInPlaceOfTheClock)
 	sample(m_assets, m_animator, m_look, 40.0, 40.0 - 1.0 / 60.0, fresh);
 	EXPECT_EQ(fresh.parts[0].sprite, 3);
 	EXPECT_FALSE(fresh.fired("step")) << "first seen part way in, it fires nothing it did not pass";
+}
+
+TEST_F(Human, AnEventSoundsAsItsRigSays)
+{
+	m_animator.play("walk");
+
+	// The pose carries what a passed event sounds like, as the hash audio knows the event by.
+	Pose pose = at(0.2);
+	ASSERT_TRUE(pose.fired("step"));
+	ASSERT_EQ(pose.sound_count, 1u);
+	EXPECT_EQ(pose.sounds[0], hash_text("event:/Footstep"));
+
+	EXPECT_EQ(at(0.3).sound_count, 0u) << "a frame that passes no event makes no sound";
+
+	// A mounted rig brings its own: the sword says what its slash sounds like, whoever holds it.
+	m_animator.play("idle");
+	m_animator.play("weapon", "swing", {.since = 1.0});
+	pose = at(1.01);
+	ASSERT_TRUE(pose.fired("weapon.slash"));
+	ASSERT_EQ(pose.sound_count, 1u);
+	EXPECT_EQ(pose.sounds[0], hash_text("event:/SwordSlash"));
 }

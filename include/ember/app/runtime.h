@@ -100,6 +100,7 @@ namespace ember
 		Unique<Platform> m_platform;
 		Unique<gpu::Device> m_gpu;
 		Unique<render::Renderer> m_renderer;
+		Unique<audio::Engine> m_audio; // before the assets: banks are assets, and load into it
 		Unique<AssetManager> m_assets;
 		Unique<MaterialAssets> m_materials;
 
