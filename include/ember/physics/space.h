@@ -17,6 +17,13 @@ namespace ember::physics
 		f32 cell_size = 64.0f; // the broad phase's grid: a few times the size of what it sorts
 		u32 page_size = 16;	   // tiles a side of a page of ground, a power of two: the game's chunk
 		Layers outside = {};   // what the ground is where no page is loaded: nothing, or a wall about the world
+
+		// Lag compensation, a server's: how many ticks of hurtboxes it keeps, to find them where they stood when a
+		// striker saw them (Hitbox::rewind); none on a client, which hits what it draws. And how far a hurtbox
+		// goes in a tick before it was put somewhere rather than moved there, as a respawn puts it: it is never
+		// found back past that.
+		u32 history	 = 0;
+		f32 teleport = 64.0f; // world units
 	};
 
 	/** Where a move ended, and what stopped it. */
@@ -67,6 +74,7 @@ namespace ember::physics
 		ecs::Entity entity = ecs::NO_ENTITY;
 		Layers layers = {};
 		Shape shape;
+		f32 rewind = 0.0f; // a hitbox's: ticks back that it finds hurtboxes, as Hitbox::rewind says
 	};
 
 	/**
@@ -75,8 +83,9 @@ namespace ember::physics
 	 * A world resource. Systems take it const to move things and ask questions, which any number may
 	 * do at once; only the sync writes it.
 	 *
-	 * Nothing here remembers a tick: a move and every query depend on the space and their arguments
-	 * alone, so a client replaying its prediction gets what it got the first time.
+	 * Nothing here remembers a tick but the hurtboxes a server keeps for lag compensation (SpaceDef::history):
+	 * a move and every other query depend on the space and their arguments alone, so a client, which keeps
+	 * none, gets what it got the first time when it replays its prediction.
 	 */
 	class Space final
 	{
@@ -140,6 +149,19 @@ namespace ember::physics
 		/** The same, however many: added to `out` in entity order. */
 		void hurtboxes(const Shape& shape, Layers layers, Vector<Touch>& out) const noexcept;
 
+		/**
+		 * The hurtboxes a placed shape touched `ticks` ticks before this one, fractions included: each where it
+		 * stood then, between two ticks as far as the fraction goes, as a client draws it. Lag compensation:
+		 * what a hitbox finds where its striker saw things. Only what has a hurtbox still, on these layers now,
+		 * and nothing that has since gone further than SpaceDef::teleport in a tick: put somewhere new, it is
+		 * not where the striker saw it. No further back than the history goes; with none, the present. Added to
+		 * `out` in entity order.
+		 */
+		void hurtboxes(const Shape& shape, Layers layers, f32 ticks, Vector<Touch>& out) const noexcept;
+
+		/** How many ticks back the hurtboxes go: SpaceDef::history, once that many have been synced. */
+		[[nodiscard]] u32 history() const noexcept { return m_kept; }
+
 		/** The first ground or collider on these layers along a line: can this see that? */
 		[[nodiscard]] std::optional<RayHit> raycast(glm::vec2 from, glm::vec2 to, Layers layers,
 													ecs::Entity ignore = ecs::NO_ENTITY) const noexcept;
@@ -193,8 +215,18 @@ namespace ember::physics
 			void build(f32 inverse_cell) noexcept;
 		};
 
-		/** Calls fn(index) for each proxy on `layers` whose bounds touch `area`, once each. */
-		template <class F> void each(const Index& index, const Aabb& area, u32 layers, F&& fn) const noexcept;
+		/**
+		 * Calls fn(index) for each proxy on `layers` whose bounds touch `area`, once each. With any_layer, for each
+		 * whose bounds touch it, on any layer or none.
+		 */
+		template <bool any_layer = false, class F>
+		void each(const Index& index, const Aabb& area, u32 layers, F&& fn) const noexcept;
+
+		/** The hurtboxes as the sync left them `back` ticks ago: this tick's at 0, and no further back than kept. */
+		[[nodiscard]] const Index& hurtboxes_back(u32 back) const noexcept;
+
+		/** An entity's proxy in an index, if its bounds touch `area`. */
+		[[nodiscard]] const Proxy* find(const Index& index, ecs::Entity entity, const Aabb& area) const noexcept;
 
 		[[nodiscard]] Found touching(const Index& index, const Shape& shape, Layers layers) const noexcept;
 
@@ -224,5 +256,12 @@ namespace ember::physics
 		Index m_colliders;
 		Index m_hurtboxes;
 		Vector<Proxy> m_hitboxes{&memory::heap(MemoryTag::Physics)};
+
+		// The hurtboxes of the ticks before this one, a ring of SpaceDef::history. A sync hands the last tick's
+		// index to it, and builds this tick's in the storage of the oldest.
+		Vector<Index> m_history{&memory::heap(MemoryTag::Physics)};
+		u32 m_last	 = 0;	  // where in the ring the last tick's is
+		u32 m_kept	 = 0;	  // how many ticks it holds
+		bool m_built = false; // whether a sync has built an index yet, for the next to keep
 	};
 }

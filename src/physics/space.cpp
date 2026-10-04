@@ -56,6 +56,8 @@ namespace ember::physics
 	{
 		EMBER_ASSERT(def.tile_size > 0.0f && def.cell_size > 0.0f);
 		EMBER_ASSERT(std::has_single_bit(def.page_size) && def.page_size <= 256 && "a page is a power of two tiles a side");
+		EMBER_ASSERT(def.teleport > 0.0f);
+		m_history.resize(def.history);
 	}
 
 	u32 Space::page_at(glm::ivec2 page) noexcept
@@ -200,10 +202,11 @@ namespace ember::physics
 		}
 	}
 
-	template <class F> void Space::each(const Index& index, const Aabb& area, u32 layers, F&& fn) const noexcept
+	template <bool any_layer, class F>
+	void Space::each(const Index& index, const Aabb& area, u32 layers, F&& fn) const noexcept
 	{
 		// Most questions are about layers nothing here is on: a mover that only walls stop asks no collider.
-		if ((index.layers & layers) == 0)
+		if (!any_layer && (index.layers & layers) == 0)
 			return;
 
 		const i32 x0 = floor_to_int(area.min.x * m_inverse_cell), y0 = floor_to_int(area.min.y * m_inverse_cell);
@@ -219,7 +222,7 @@ namespace ember::physics
 				for (u32 at = index.starts[bucket]; at < index.starts[bucket + 1]; ++at)
 				{
 					const Entry& entry = index.entries[at];
-					if (entry.cell != key || (index.proxies[entry.proxy].layers.bits & layers) == 0)
+					if (entry.cell != key || (!any_layer && (index.proxies[entry.proxy].layers.bits & layers) == 0))
 						continue;
 
 					const Aabb& box = index.bounds[entry.proxy];
@@ -237,12 +240,21 @@ namespace ember::physics
 		}
 
 		for (const u32 proxy : index.wide)
-			if ((index.proxies[proxy].layers.bits & layers) != 0 && meets(index.bounds[proxy], area))
+			if ((any_layer || (index.proxies[proxy].layers.bits & layers) != 0) && meets(index.bounds[proxy], area))
 				fn(proxy);
 	}
 
 	void Space::clear() noexcept
 	{
+		// The last tick's hurtboxes go into the history, in place of the oldest, whose storage this tick's reuse.
+		if (m_built && !m_history.empty())
+		{
+			const u32 size = static_cast<u32>(m_history.size());
+			m_last		   = (m_last + 1) % size;
+			std::swap(m_hurtboxes, m_history[m_last]);
+			m_kept = std::min(m_kept + 1, size);
+		}
+
 		m_colliders.clear();
 		m_hurtboxes.clear();
 		m_hitboxes.clear();
@@ -261,13 +273,37 @@ namespace ember::physics
 	void Space::add(ecs::Entity entity, glm::vec2 position, const Hitbox& hitbox) noexcept
 	{
 		if (!hitbox.hits.none())
-			m_hitboxes.push_back({.entity = entity, .layers = hitbox.hits, .shape = hitbox.shape.at(position)});
+			m_hitboxes.push_back(
+				{.entity = entity, .layers = hitbox.hits, .shape = hitbox.shape.at(position), .rewind = hitbox.rewind});
 	}
 
 	void Space::build() noexcept
 	{
 		m_colliders.build(m_inverse_cell);
 		m_hurtboxes.build(m_inverse_cell);
+		m_built = true;
+	}
+
+	const Space::Index& Space::hurtboxes_back(u32 back) const noexcept
+	{
+		EMBER_ASSERT(back <= m_kept);
+		if (back == 0)
+			return m_hurtboxes;
+
+		const u32 size = static_cast<u32>(m_history.size());
+		return m_history[(m_last + size - (back - 1)) % size];
+	}
+
+	const Proxy* Space::find(const Index& index, ecs::Entity entity, const Aabb& area) const noexcept
+	{
+		const Proxy* found = nullptr;
+		each<true>(index, area, 0,
+				   [&](u32 at)
+				   {
+					   if (index.proxies[at].entity == entity)
+						   found = &index.proxies[at];
+				   });
+		return found;
 	}
 
 	f32 Space::slide(const Aabb& box, u32 axis, f32 delta, Layers by, ecs::Entity self, Moved& moved,
@@ -455,6 +491,68 @@ namespace ember::physics
 
 		std::sort(out.begin() + static_cast<std::ptrdiff_t>(first), out.end(),
 				  [](const Touch& a, const Touch& b) { return entt::to_integral(a.entity) < entt::to_integral(b.entity); });
+	}
+
+	void Space::hurtboxes(const Shape& shape, Layers layers, f32 ticks, Vector<Touch>& out) const noexcept
+	{
+		// Nothing to rewind, or nothing kept to rewind through: the present.
+		const f32 back = std::min(std::isfinite(ticks) ? ticks : 0.0f, static_cast<f32>(m_kept));
+		if (!(back > 0.0f))
+		{
+			hurtboxes(shape, layers, out);
+			return;
+		}
+
+		// Between the two ticks it lies between, `fraction` of the way from the later toward the earlier, as a
+		// client draws a moment between two of the server's ticks.
+		const u32 whole		 = static_cast<u32>(back);
+		const f32 fraction	 = back - static_cast<f32>(whole);
+		const Index& later	 = hurtboxes_back(whole);
+		const Index* earlier = fraction > 0.0f ? &hurtboxes_back(whole + 1) : nullptr;
+
+		const auto grown = [](Aabb box, f32 by) noexcept
+		{
+			box.min -= glm::vec2(by);
+			box.max += glm::vec2(by);
+			return box;
+		};
+
+		// Whatever stood near enough then to touch it, somewhere between the two ticks, on any layer: a hurtbox
+		// switched off then, as a dash's i-frames do, can be hit if it is on now.
+		const size_t first = out.size();
+		each<true>(later, grown(bounds(shape), m_def.teleport * fraction), 0,
+				   [&](u32 at)
+				   {
+					   const Proxy& then = later.proxies[at];
+					   Shape placed		 = then.shape;
+					   if (earlier != nullptr)
+					   {
+						   const Proxy* before = find(*earlier, then.entity, grown(later.bounds[at], m_def.teleport));
+						   if (before != nullptr)
+							   placed.center =
+								   then.shape.center + (before->shape.center - then.shape.center) * fraction;
+					   }
+					   if (!overlaps(shape, placed))
+						   return;
+
+					   // Followed tick by tick to the present, never further than a teleport in one: what jumped
+					   // since, or has gone, is not where the striker saw it.
+					   const Proxy* step = &then;
+					   Aabb near		 = later.bounds[at];
+					   for (u32 tick = whole; tick-- > 0 && step != nullptr;)
+					   {
+						   step = find(hurtboxes_back(tick), then.entity, grown(near, m_def.teleport));
+						   if (step != nullptr)
+							   near = physics::bounds(step->shape);
+					   }
+
+					   // On the layers it is on now: one that is safe now, as i-frames make it, is safe from the past.
+					   if (step != nullptr && step->layers.any(layers))
+						   out.push_back({.entity = then.entity, .layers = step->layers});
+				   });
+
+		std::sort(out.begin() + static_cast<std::ptrdiff_t>(first), out.end(), [](const Touch& a, const Touch& b)
+				  { return entt::to_integral(a.entity) < entt::to_integral(b.entity); });
 	}
 
 	Found Space::colliders(const Shape& shape, Layers layers) const noexcept { return touching(m_colliders, shape, layers); }

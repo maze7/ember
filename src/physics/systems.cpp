@@ -21,9 +21,10 @@ namespace ember::physics
 
 		for (const Proxy& hitbox : space.hitboxes())
 		{
-			// However many it touches: a blast over a crowd hits all of it.
+			// However many it touches: a blast over a crowd hits all of it. One that rewinds finds them where its
+			// striker saw them.
 			hits.m_touched.clear();
-			space.hurtboxes(hitbox.shape, hitbox.layers, hits.m_touched);
+			space.hurtboxes(hitbox.shape, hitbox.layers, hitbox.rewind, hits.m_touched);
 			for (const Touch& touch : hits.m_touched)
 				if (touch.entity != hitbox.entity)
 					hits.m_hits.push_back({.hitbox = hitbox.entity, .hurtbox = touch.entity});

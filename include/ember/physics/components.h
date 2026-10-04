@@ -59,11 +59,16 @@ namespace ember::physics
 	/**
 	 * Where an entity hits: every tick its shape touches a hurtbox on one of `hits`, other than its
 	 * own, the two are a Hit. Hitting nothing switches it off.
+	 *
+	 * `rewind` is lag compensation: how many ticks before this one its striker's screen showed the world,
+	 * fractions included. Its hits are found where the hurtboxes stood then, so a blow lands on what the
+	 * striker saw. Only a space that keeps a history rewinds (SpaceDef::history): a server's. At 0, the present.
 	 */
 	struct Hitbox
 	{
 		Shape shape = box({16.0f, 16.0f});
 		Layers hits = {};
+		f32 rewind	= 0.0f; // ticks
 	};
 	EMBER_COMPONENT(Hitbox, Sim);
 }

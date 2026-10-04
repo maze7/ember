@@ -22,6 +22,7 @@ add_subdirectory(memory)
 add_subdirectory(math)
 add_subdirectory(jobs)
 add_subdirectory(ecs)
+add_subdirectory(physics)
 
 if(EMBER_ENABLE_ASSETS)
 	add_subdirectory(assets)

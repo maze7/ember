@@ -64,7 +64,10 @@ namespace ember::physics
 		space.build();
 	}
 
-	/** Simulate: the hitboxes and the hurtboxes that touch, into Hits. */
+	/**
+	 * Simulate: the hitboxes and the hurtboxes that touch, into Hits. A hitbox that rewinds finds the hurtboxes
+	 * where they stood that many ticks ago.
+	 */
 	void find_hits(const Space& space, Hits& hits);
 
 	/**
