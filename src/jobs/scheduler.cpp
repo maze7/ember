@@ -59,7 +59,7 @@ namespace ember::jobs
 #if EMBER_USE_TRACY
 			EMBER_PROFILE_ZONE_BEGIN(worker.segment, "fiber");
 
-			const char* label = fiber->job_name != nullptr ? fiber->job_name : fiber->name;
+			const char* label = fiber->job_name != nullptr ? fiber->job_name : "idle";
 			EMBER_PROFILE_ZONE_RENAME(worker.segment, label, std::strlen(label));
 #else
 			(void)worker;
