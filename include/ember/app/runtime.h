@@ -98,7 +98,7 @@ namespace ember
 		[[nodiscard]] bool quit_requested() const noexcept { return m_quit_requested.load(std::memory_order_acquire); }
 
 		void frame_loop(App& app) noexcept;
-		void render_frame(App& app, FrameParams& frame) noexcept;
+		void run_frame(App& app) noexcept;
 
 		Unique<Platform> m_platform;
 		Unique<gpu::Device> m_gpu;

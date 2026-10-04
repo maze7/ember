@@ -39,7 +39,7 @@ namespace ember
 	inline constexpr u32 PROFILE_COLOR_IO		= 0x3949ab;
 	inline constexpr u32 PROFILE_COLOR_NETWORK	= 0x1e88e5;
 	inline constexpr u32 PROFILE_COLOR_WAIT		= 0xb71c1c; // stalls, lock waits, sleeps
-	inline constexpr u32 PROFILE_COLOR_IDLE		= 0x424242; // workers between jobs, spinning for work
+	inline constexpr u32 PROFILE_COLOR_IDLE		= 0x424242; // workers spinning for work
 }
 
 	/// Frame boundaries. Call EMBER_PROFILE_FRAME() once per frame, after present.
@@ -133,7 +133,7 @@ namespace ember
 	#define EMBER_PROFILE_ZONE_BEGIN(zone, name) ((void)0)
 	#define EMBER_PROFILE_ZONE_END(zone) ((void)0)
 	#define EMBER_PROFILE_ZONE_RENAME(zone, txt, size) ((void)0)
-	#define EMBER_PROFILE_ZONE_COLOR(zone, color) ((void)0))
+	#define EMBER_PROFILE_ZONE_COLOR(zone, color) ((void)0)
 	#define EMBER_PROFILE_FRAME() ((void)0)
 	#define EMBER_PROFILE_FRAME_N(name) ((void)0)
 	#define EMBER_PROFILE_FRAME_START(name) ((void)0)

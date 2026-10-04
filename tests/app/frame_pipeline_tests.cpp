@@ -10,23 +10,28 @@
 using namespace ember;
 
 /*
- * Runtime::frame_loop's ordering, run headless with the real arenas and the real job system:
- * frame N's update runs as a job while this thread "renders" frame N - 1 from its payload, and
- * every lifetime is begun and freed exactly where the loop does it.
+ * Runtime::run_frame's ordering, run headless with the real arenas and the real job system: a
+ * frame updates, fanning out into jobs that write its packet, then renders from that packet
+ * alone, and every lifetime is begun and freed exactly where the loop does it.
  */
 namespace
 {
 	constexpr u32 WORKERS = 4;
-	constexpr u32 WORDS	  = 61;
+	constexpr u32 PARTS	  = 8;	// jobs an update fans out into
+	constexpr u32 WORDS	  = 61; // what each writes into the packet
+	constexpr u64 FRAMES  = 96;
 
 	struct Payload
 	{
-		u64 frame		 = 0;
-		u32 words[WORDS] = {};
-		u32 checksum	 = 0;
+		u64 frame		  = 0;
+		u32* parts[PARTS] = {};
+		u32 checksum	  = 0;
 	};
 
-	[[nodiscard]] u32 pattern(u64 frame, u32 i) noexcept { return static_cast<u32>(frame * 7919 + i * 31); }
+	[[nodiscard]] u32 pattern(u64 frame, u32 part, u32 i) noexcept
+	{
+		return static_cast<u32>(frame * 7919 + part * 613 + i * 31);
+	}
 
 	class FramePipeline : public ::testing::Test
 	{
@@ -64,13 +69,8 @@ namespace
 	};
 }
 
-TEST_F(FramePipeline, OverlappedFramesKeepTheirLifetimesApart)
+TEST_F(FramePipeline, AFramesLifetimesDieWhereItsStagesEnd)
 {
-	constexpr u64 FRAMES = 96;
-
-	jobs::Counter update_done;
-	FrameParams* pending = nullptr; // updated, not yet rendered
-	std::atomic<u32> faults{0};
 	u32 mismatches = 0;
 
 	for (u64 index = 1; index <= FRAMES; ++index)
@@ -80,73 +80,83 @@ TEST_F(FramePipeline, OverlappedFramesKeepTheirLifetimesApart)
 		sim_scratch.begin(heap_tag(MemoryLifetime::SimScratch, index));
 		sim_to_render.begin(heap_tag(MemoryLifetime::SimToRender, index));
 
-		// The update job: scribble in scratch, publish the payload.
-		auto update = [&frame, &faults]() noexcept
+		// update(): scribble in scratch, then build the packet in jobs, each writing its own part
+		// from whichever worker runs it.
 		{
 			auto* junk = static_cast<u8*>(frame.sim_scratch.allocate_fast(3000));
 			std::memset(junk, 0xAB, 3000);
 
 			Payload& out = frame.publish<Payload>();
-			out.frame	 = frame.frame_index;
+			out.frame	 = index;
 
-			for (u32 i = 0; i < WORDS; ++i)
+			std::atomic<u32> checksum{0};
+
+			auto build = [&](jobs::JobRange range) noexcept
 			{
-				out.words[i] = pattern(frame.frame_index, i);
-				out.checksum += out.words[i];
-			}
+				for (u32 part = range.begin; part < range.end; ++part)
+				{
+					auto* words = static_cast<u32*>(frame.sim_to_render.allocate_fast(WORDS * sizeof(u32), alignof(u32)));
+					u32 sum		= 0;
 
-			if (!frame.sim_to_render.owns(&out) || frame.sim_scratch.owns(&out))
-				faults.fetch_add(1, std::memory_order_relaxed);
-		};
+					for (u32 i = 0; i < WORDS; ++i)
+					{
+						words[i] = pattern(index, part, i);
+						sum += words[i];
+					}
 
-		jobs::kick(jobs::make_job(update, "update"), &update_done);
+					out.parts[part] = words;
+					checksum.fetch_add(sum, std::memory_order_relaxed);
+				}
+			};
 
-		// Meanwhile, render the previous frame on this thread from its payload alone.
-		if (pending != nullptr)
-		{
-			render_scratch.begin(heap_tag(MemoryLifetime::RenderScratch, pending->frame_index));
+			jobs::parallel_for({.count = PARTS, .grain = 1, .name = "build part"}, build);
+			out.checksum = checksum.load();
 
-			const Payload& in = *pending->payload<Payload>();
-			mismatches += in.frame != pending->frame_index;
-
-			auto* copy = static_cast<u32*>(pending->render_scratch.allocate_fast(WORDS * sizeof(u32), alignof(u32)));
-			std::memcpy(copy, in.words, WORDS * sizeof(u32));
-
-			u32 checksum = 0;
-			for (u32 i = 0; i < WORDS; ++i)
-			{
-				mismatches += copy[i] != pattern(in.frame, i);
-				checksum += copy[i];
-			}
-
-			mismatches += checksum != in.checksum;
-			mismatches += heap.tag_of(&in) != heap_tag(MemoryLifetime::SimToRender, in.frame);
-
-			pending->gpu = {.value = pending->frame_index};
-
-			// The submit: the render scratch and the packet die together.
-			heap.free(render_scratch.end());
-			heap.free(heap_tag(MemoryLifetime::SimToRender, pending->frame_index));
-
-			EXPECT_EQ(owned(MemoryLifetime::RenderScratch, pending->frame_index), 0u);
-			EXPECT_EQ(owned(MemoryLifetime::SimToRender, pending->frame_index), 0u);
+			EXPECT_TRUE(frame.sim_to_render.owns(&out));
+			EXPECT_FALSE(frame.sim_scratch.owns(&out));
 		}
 
-		// The join: the update's scratch dies, its packet closes but stays alive.
-		jobs::wait(update_done);
-
+		// update() has returned: its scratch dies, its packet closes but stays alive.
 		heap.free(sim_scratch.end());
-		(void)sim_to_render.end();
-		pending = &frame;
+		const HeapTag packet = sim_to_render.end();
 
 		EXPECT_EQ(owned(MemoryLifetime::SimScratch, index), 0u);
 		EXPECT_GT(owned(MemoryLifetime::SimToRender, index), 0u) << "the packet outlives its update";
+
+		// render(): from the payload alone.
+		{
+			render_scratch.begin(heap_tag(MemoryLifetime::RenderScratch, index));
+
+			const Payload& in = *frame.payload<Payload>();
+			mismatches += in.frame != index;
+
+			u32 checksum = 0;
+			for (u32 part = 0; part < PARTS; ++part)
+			{
+				auto* copy = static_cast<u32*>(frame.render_scratch.allocate_fast(WORDS * sizeof(u32), alignof(u32)));
+				std::memcpy(copy, in.parts[part], WORDS * sizeof(u32));
+
+				for (u32 i = 0; i < WORDS; ++i)
+				{
+					mismatches += copy[i] != pattern(index, part, i);
+					checksum += copy[i];
+				}
+
+				mismatches += heap.tag_of(in.parts[part]) != packet;
+			}
+
+			mismatches += checksum != in.checksum;
+			frame.gpu = {.value = index};
+		}
+
+		// The submit: the render scratch and the packet die together.
+		heap.free(render_scratch.end());
+		heap.free(packet);
+
+		EXPECT_EQ(owned(MemoryLifetime::RenderScratch, index), 0u);
+		EXPECT_EQ(owned(MemoryLifetime::SimToRender, index), 0u);
 	}
 
-	EXPECT_EQ(faults.load(), 0u) << "a payload landed in the wrong lifetime";
 	EXPECT_EQ(mismatches, 0u) << "a render read a payload that was not its frame's";
-
-	// Quit: the last frame was updated but never rendered and still owns its packet.
-	heap.free(heap_tag(MemoryLifetime::SimToRender, pending->frame_index));
 	EXPECT_EQ(heap.blocks_in_use(), before);
 }

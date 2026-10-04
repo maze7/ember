@@ -13,14 +13,14 @@ namespace ember
 	Platform& App::platform() noexcept
 	{
 		EMBER_ASSERT(m_runtime != nullptr);
-		EMBER_ASSERT(jobs::is_main() && "the platform is the owner thread's; update() runs as a job");
+		EMBER_ASSERT(jobs::is_main() && "the platform is the owner thread's; a job cannot use it");
 		return *m_runtime->m_platform;
 	}
 
 	gpu::Device& App::gpu() noexcept
 	{
 		EMBER_ASSERT(m_runtime != nullptr);
-		EMBER_ASSERT(jobs::is_main() && "the device is the owner thread's; update() runs as a job");
+		EMBER_ASSERT(jobs::is_main() && "the device is the owner thread's; a job cannot take it from here");
 		return *m_runtime->m_gpu;
 	}
 

@@ -47,11 +47,12 @@ namespace ember::jobs
 
 		// A segment is a zone on the thread's own track for the time the thread spends running
 		// one fiber, named after the job on it: fiber tracks show a job whole, thread tracks
-		// show where each piece of it ran. The profiler files every event under the fiber it has
+		// show where each piece of it ran. Between jobs it is the scheduler's own work, and idle
+		// while the worker spins for more. The profiler files every event under the fiber it has
 		// entered, so the segment opens and closes in thread context: begin it before entering
 		// the fiber, leave the fiber before ending it. Thread records are the thread itself to the
 		// profiler and get neither.
-		void trace_enter(Worker& worker, const FiberRecord* fiber) noexcept
+		void trace_enter(Worker& worker, const FiberRecord* fiber, bool spinning = false) noexcept
 		{
 			if (!fiber->pool)
 				return;
@@ -59,15 +60,16 @@ namespace ember::jobs
 #if EMBER_USE_TRACY
 			EMBER_PROFILE_ZONE_BEGIN(worker.segment, "fiber");
 
-			const char* label = fiber->job_name != nullptr ? fiber->job_name : "idle";
+			const char* label = fiber->job_name != nullptr ? fiber->job_name : spinning ? "idle" : "scheduler";
 			EMBER_PROFILE_ZONE_RENAME(worker.segment, label, std::strlen(label));
 
-			if (fiber->job_name == nullptr)
+			if (spinning)
 			{
 				EMBER_PROFILE_ZONE_COLOR(worker.segment, PROFILE_COLOR_IDLE);
 			}
 #else
 			(void)worker;
+			(void)spinning;
 #endif
 			EMBER_PROFILE_FIBER_ENTER(fiber->name);
 		}
@@ -82,12 +84,13 @@ namespace ember::jobs
 			(void)worker;
 		}
 
-		// Splits the segment at a job boundary, so the thread track shows the job as its own piece.
-		void trace_split(const FiberRecord* fiber) noexcept
+		// Splits the segment at a job boundary, so the thread track shows the job as its own piece,
+		// and where the worker starts to spin, so the scheduler's own work stays apart from the wait.
+		void trace_split(const FiberRecord* fiber, bool spinning = false) noexcept
 		{
 			Worker& worker = *fiber->worker;
 			trace_leave(worker, fiber);
-			trace_enter(worker, fiber);
+			trace_enter(worker, fiber, spinning);
 		}
 	}
 
@@ -512,6 +515,8 @@ namespace ember::jobs
 	// Spin a little for work that is about to arrive, then sleep.
 	void Scheduler::idle(Worker& worker) noexcept
 	{
+		trace_split(worker.current, true);
+
 		for (u32 spin = 0; spin < IDLE_SPINS; ++spin)
 		{
 			if (has_work(worker) || stopping.load(std::memory_order_relaxed))
