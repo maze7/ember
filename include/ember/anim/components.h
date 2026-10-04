@@ -286,6 +286,10 @@ namespace ember::anim
 		Name events[EVENTS]	 = {}; // "step", or a mounted rig's "weapon.slash"
 		u8 event_count		 = 0;
 
+		// The inputs it was sampled with: where the clips they play were, so the next frame fires what they pass.
+		Animator::Input inputs[Animator::INPUTS] = {};
+		u8 input_count							 = 0;
+
 		[[nodiscard]] const glm::vec2* point(StringView point_name) const noexcept
 		{
 			const Name key = name(point_name);

@@ -22,9 +22,10 @@ namespace ember::anim
 
 	/**
 	 * An entity's pose at `now`, from what its animator asks and its look holds, their ids resolved.
-	 * Nothing but the time moves it, so a frame drawn twice or a rollback draws the same; events are
-	 * the ones its clips passed since `previous`, the frame before. Everything is worked out facing
-	 * east and mirrored as it is written.
+	 * Nothing but the time and the inputs moves it, so a frame drawn twice or a rollback draws the same;
+	 * events are the ones its clips passed since the frame before: since `previous` on the clock, and
+	 * since the inputs the pose was last sampled with for a clip an input plays. Everything is worked
+	 * out facing east and mirrored as it is written.
 	 */
 	void sample(const Source& source, const Animator& animator, const Look& look, f64 now, f64 previous,
 				Pose& pose) noexcept;

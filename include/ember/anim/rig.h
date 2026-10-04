@@ -164,6 +164,8 @@ namespace ember::anim
 		Name name  = 0;
 		f32 length = -1.0f; // ms; below zero, where the last key or flipbook frame ends
 		bool loop  = false;
+		Name input = 0;		// one that plays it in place of the clock: a walk by the distance walked
+		f32 span   = 1.0f;	// how much of that input takes it from its start to its end
 
 		Vector<Track> tracks;
 		Vector<Key> keys;

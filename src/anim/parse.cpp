@@ -184,6 +184,14 @@ namespace ember::anim
 				(void)value["length"].read(clip.length);
 				(void)value["loop"].read(clip.loop);
 
+				StringView input;
+				if (value["input"].read(input))
+					clip.input = name(input);
+				(void)value["span"].read(clip.span);
+				if (clip.span <= 0.0f)
+					return fail(m_error, "clip '{}' has a span of {}: how much of its input plays it through, above 0",
+								clip_name, clip.span);
+
 				for (const auto [layer, book] : value["frames"].members())
 					if (!read_flipbook(clip, layer, book))
 						return false;

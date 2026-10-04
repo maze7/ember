@@ -210,6 +210,9 @@ namespace ember::anim
 
 				if (const Rig* rig = m_source.rig(m_animator.rig_id))
 					sample_rig(*rig, m_animator.rig_id, 0, {}, 0.0f);
+
+				std::copy_n(m_animator.inputs, m_animator.input_count, m_pose.inputs);
+				m_pose.input_count = m_animator.input_count;
 			}
 
 		private:
@@ -350,7 +353,8 @@ namespace ember::anim
 				if (playing.clip != nullptr)
 				{
 					playing.length = length_of(*playing.clip, sheets);
-					playing.t	   = wrap(elapsed(playing.played, m_now), playing.length, playing.clip->loop);
+					playing.t = wrap(into(*playing.clip, playing.played, playing.length, m_now), playing.length,
+									 playing.clip->loop);
 					fire(*playing.clip, playing.played, playing.length, mount);
 				}
 				return playing;
@@ -362,8 +366,8 @@ namespace ember::anim
 				if (clip.events.empty() || length <= 0.0f)
 					return;
 
-				const f32 now	   = elapsed(played, m_now);
-				const f32 previous = elapsed(played, m_previous);
+				const f32 now	   = into(clip, played, length, m_now);
+				const f32 previous = clip.input != 0 ? sampled(clip, length, now) : elapsed(played, m_previous);
 
 				for (const Event& event : clip.events)
 				{
@@ -374,6 +378,24 @@ namespace ember::anim
 					if (passed && m_pose.event_count < Pose::EVENTS)
 						m_pose.events[m_pose.event_count++] = mount != 0 ? join(mount, event.name) : event.name;
 				}
+			}
+
+			/** How far into a clip, in ms: on the clock since it began, or as far through as the input playing it. */
+			[[nodiscard]] f32 into(const Clip& clip, const Animator::Played& played, f32 length, f64 time) const noexcept
+			{
+				return clip.input != 0 ? m_animator.input(clip.input) * (length / clip.span) : elapsed(played, time);
+			}
+
+			/**
+			 * Where a clip an input plays was the frame before: that input as the pose was last sampled with it.
+			 * First seen, where it is now, so it fires nothing it did not pass.
+			 */
+			[[nodiscard]] f32 sampled(const Clip& clip, f32 length, f32 now) const noexcept
+			{
+				for (u32 i = 0; i < m_pose.input_count; ++i)
+					if (m_pose.inputs[i].name == clip.input)
+						return m_pose.inputs[i].value * (length / clip.span);
+				return now;
 			}
 
 			/**
@@ -407,7 +429,8 @@ namespace ember::anim
 					if (earlier.layer != track.layer || earlier.channel != track.channel)
 						continue;
 
-					const f32 at   = wrap(elapsed(played, moment), length_of(*clip, sheets), clip->loop);
+					const f32 length = length_of(*clip, sheets);
+					const f32 at	 = wrap(into(*clip, played, length, moment), length, clip->loop);
 					const f32 from = clip->keys[earlier.first].from_current
 										 ? before(rig, head, depth + 1, played.since, track, sheets, rest)
 										 : rest;

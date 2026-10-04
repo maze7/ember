@@ -186,3 +186,18 @@ TEST(AnimParse, AClipsOwnEventsReplaceItsBases)
 	EXPECT_EQ(read.clip(name("swing_back"))->events.size(), 1u) << "kept when it lists none";
 	EXPECT_TRUE(read.clip(name("feint"))->events.empty()) << "replaced when it lists its own";
 }
+
+TEST(AnimParse, AClipAnInputPlaysSaysHowMuchOfIt)
+{
+	Rig out;
+	String error;
+	EXPECT_TRUE(parse_rig(R"({ "layers": [{ "name": "a" }], "clips": { "walk": { "input": "distance", "span": 62.4 } } })",
+						  out, error))
+		<< error;
+	EXPECT_EQ(out.clips[0].input, name("distance"));
+	EXPECT_FLOAT_EQ(out.clips[0].span, 62.4f);
+
+	EXPECT_FALSE(parse_rig(R"({ "layers": [{ "name": "a" }], "clips": { "walk": { "input": "distance", "span": 0 } } })",
+						   out, error));
+	EXPECT_NE(error.find("span"), String::npos) << error;
+}

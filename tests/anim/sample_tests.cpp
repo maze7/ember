@@ -300,3 +300,52 @@ TEST_F(Human, SlashPlaysAlongTheAim)
 	EXPECT_NEAR(glm::distance(part(pose, SLASH)->position, glm::vec2(0.0f, -8.0f + 32.0f)), 0.0f, 1e-4f);
 	EXPECT_TRUE(at(0.01).fired("weapon.slash")) << "a mounted rig's events are named through its slot";
 }
+
+TEST_F(Human, AnInputPlaysAClipInPlaceOfTheClock)
+{
+	// game2's walk, played by the distance walked: once through every 62 texels, 31 to each 200 ms frame.
+	m_animator.rig_id = m_assets.add(rig(R"({
+		"slots": { "body": "sheets/human.sheet" },
+		"layers": [{ "name": "body" }],
+		"clips": { "walk": { "loop": true, "input": "distance", "span": 62,
+							 "frames": { "body": { "sprites": "walk", "ms": 200 } }, "events": [[0, "step"], [200, "step"]] } },
+	})"),
+									 {BODY});
+	m_animator.play("walk");
+
+	Pose pose;
+	const auto walk = [&](f64 now, f32 distance)
+	{
+		m_animator.set("distance", distance);
+		sample(m_assets, m_animator, m_look, now, now - 1.0 / 60.0, pose);
+		return pose.parts[0].sprite;
+	};
+
+	EXPECT_EQ(walk(0.0, 0.0f), 2);
+	EXPECT_FALSE(pose.fired("step")) << "first seen, it has passed nothing";
+	EXPECT_EQ(walk(5.0, 30.0f), 2) << "the clock does not move it";
+	EXPECT_FALSE(pose.fired("step"));
+	EXPECT_EQ(walk(5.1, 32.0f), 3) << "past 31 texels, the next frame";
+	EXPECT_TRUE(pose.fired("step"));
+	EXPECT_EQ(walk(9.0, 32.0f), 3);
+	EXPECT_FALSE(pose.fired("step")) << "standing still, it fires nothing, however long";
+
+	u32 steps = 0;
+	for (u32 texel = 33; texel <= 652; ++texel)
+	{
+		(void)walk(10.0 + texel / 60.0, static_cast<f32>(texel));
+		steps += pose.fired("step");
+	}
+	EXPECT_EQ(steps, 20u) << "a foot at 62, 93 ... 651 texels, each once";
+
+	EXPECT_EQ(walk(30.0, 0.0f), 2) << "a new walk starts over";
+	EXPECT_FALSE(pose.fired("step")) << "and going back passes nothing";
+	EXPECT_EQ(walk(30.1, 40.0f), 3);
+	EXPECT_TRUE(pose.fired("step")) << "a long frame still passes its foot";
+
+	Pose fresh;
+	m_animator.set("distance", 45.0f);
+	sample(m_assets, m_animator, m_look, 40.0, 40.0 - 1.0 / 60.0, fresh);
+	EXPECT_EQ(fresh.parts[0].sprite, 3);
+	EXPECT_FALSE(fresh.fired("step")) << "first seen part way in, it fires nothing it did not pass";
+}
