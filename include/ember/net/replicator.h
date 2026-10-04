@@ -60,6 +60,10 @@ namespace ember::net
 		/**
 		 * The world as it stands at the end of tick: entities spawned and destroyed since, components
 		 * gained and lost, values changed. The server calls this before it writes the tick's packets.
+		 *
+		 * Once a tick: a second call for the same tick does nothing. A game that sets relevance calls it
+		 * itself after its tick, so what the tick spawned has its NetId, then sets relevance, and the
+		 * server's own call finds nothing left to do.
 		 */
 		void update(Tick tick) noexcept;
 
@@ -78,7 +82,8 @@ namespace ember::net
 		/**
 		 * How much a viewer cares about an entity: 0 takes it out of the viewer's world (the entity a
 		 * viewer owns stays in it), more sends its changes sooner. 1 until set, for every new entity and
-		 * every new viewer.
+		 * every new viewer: set between update() and the server's writes, and a new entity never reaches
+		 * a viewer it is not for.
 		 */
 		void set_relevance(u8 viewer, NetId id, f32 relevance) noexcept;
 
@@ -274,6 +279,7 @@ namespace ember::net
 		u32 m_free_count = 0;
 		u32 m_high		 = 0; // one past the highest index ever used
 		u32 m_alive		 = 0;
+		Tick m_updated	 = NO_TICK; // the tick update() last looked at the world for
 
 		Vector<ecs::Entity> m_spawned; // world entities spawned since the last update
 

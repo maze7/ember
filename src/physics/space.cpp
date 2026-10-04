@@ -1,6 +1,7 @@
 #include <ember/physics/space.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <limits>
 
@@ -18,17 +19,8 @@ namespace ember::physics
 		/** A proxy over more cells than this a side is kept apart from the grid, and asked of every query. */
 		constexpr i32 WIDE_CELLS = 8;
 
-		/** Tiles the window grows by, so setting a row of them moves it once. */
-		constexpr i32 TILE_BLOCK = 32;
-
 		[[nodiscard]] i32 floor_to_int(f32 value) noexcept { return static_cast<i32>(std::floor(value)); }
 		[[nodiscard]] i32 ceil_to_int(f32 value) noexcept { return static_cast<i32>(std::ceil(value)); }
-
-		[[nodiscard]] constexpr i32 floor_div(i32 value, i32 divisor) noexcept
-		{
-			const i32 quotient = value / divisor;
-			return quotient - ((value % divisor != 0) && ((value < 0) != (divisor < 0)));
-		}
 
 		[[nodiscard]] constexpr u32 cell_key(i32 x, i32 y) noexcept
 		{
@@ -59,49 +51,66 @@ namespace ember::physics
 	}
 
 	Space::Space(const SpaceDef& def) noexcept
-		: m_def(def), m_inverse_tile(1.0f / def.tile_size), m_inverse_cell(1.0f / def.cell_size)
+		: m_def(def), m_inverse_tile(1.0f / def.tile_size), m_inverse_cell(1.0f / def.cell_size),
+		  m_page_shift(static_cast<u32>(std::countr_zero(def.page_size)))
 	{
 		EMBER_ASSERT(def.tile_size > 0.0f && def.cell_size > 0.0f);
+		EMBER_ASSERT(std::has_single_bit(def.page_size) && def.page_size <= 256 && "a page is a power of two tiles a side");
+	}
+
+	u32 Space::page_at(glm::ivec2 page) noexcept
+	{
+		const auto [found, made] = m_pages.try_emplace(page_key(page), 0u);
+		if (!made)
+			return found->second;
+
+		// The place of a page let go, or a new one at the end.
+		const u32 area = m_def.page_size * m_def.page_size;
+		if (!m_free_pages.empty())
+		{
+			found->second = m_free_pages.back();
+			m_free_pages.pop_back();
+			std::fill_n(m_tiles.begin() + found->second, area, 0u);
+		}
+		else
+		{
+			found->second = static_cast<u32>(m_tiles.size());
+			m_tiles.resize(m_tiles.size() + area, 0u);
+		}
+		return found->second;
+	}
+
+	void Space::load_page(glm::ivec2 page, Span<const Layers> tiles) noexcept
+	{
+		EMBER_ASSERT(tiles.size() == static_cast<size_t>(m_def.page_size) * m_def.page_size && "a page's every tile");
+
+		const u32 at = page_at(page);
+		for (size_t i = 0; i < tiles.size(); ++i)
+			m_tiles[at + i] = tiles[i].bits;
+	}
+
+	void Space::unload_page(glm::ivec2 page) noexcept
+	{
+		const auto found = m_pages.find(page_key(page));
+		if (found == m_pages.end())
+			return;
+
+		m_free_pages.push_back(found->second);
+		m_pages.erase(found);
 	}
 
 	void Space::set_tile(glm::ivec2 tile, Layers layers) noexcept
 	{
-		const glm::ivec2 local = tile - m_tiles_min;
-		if (local.x < 0 || local.y < 0 || local.x >= m_tiles_size.x || local.y >= m_tiles_size.y)
-		{
-			// Grow the window to hold it, a block at a time.
-			const glm::ivec2 block{floor_div(tile.x, TILE_BLOCK) * TILE_BLOCK, floor_div(tile.y, TILE_BLOCK) * TILE_BLOCK};
-			const bool empty = m_tiles_size.x == 0;
-			const glm::ivec2 low{empty ? block.x : std::min(m_tiles_min.x, block.x),
-								 empty ? block.y : std::min(m_tiles_min.y, block.y)};
-			const glm::ivec2 high{empty ? block.x + TILE_BLOCK : std::max(m_tiles_min.x + m_tiles_size.x, block.x + TILE_BLOCK),
-								  empty ? block.y + TILE_BLOCK : std::max(m_tiles_min.y + m_tiles_size.y, block.y + TILE_BLOCK)};
-			const glm::ivec2 size = high - low;
-
-			Vector<u32> grown(static_cast<size_t>(size.x) * static_cast<size_t>(size.y), m_def.outside.bits,
-							  &memory::heap(MemoryTag::Physics));
-			for (i32 y = 0; y < m_tiles_size.y; ++y)
-			{
-				const size_t to = static_cast<size_t>(y + m_tiles_min.y - low.y) * static_cast<size_t>(size.x) +
-								  static_cast<size_t>(m_tiles_min.x - low.x);
-				std::copy_n(m_tiles.begin() + static_cast<std::ptrdiff_t>(y) * m_tiles_size.x, m_tiles_size.x,
-							grown.begin() + static_cast<std::ptrdiff_t>(to));
-			}
-
-			m_tiles		 = std::move(grown);
-			m_tiles_min	 = low;
-			m_tiles_size = size;
-		}
-
-		const glm::ivec2 at = tile - m_tiles_min;
-		m_tiles[static_cast<size_t>(at.y) * static_cast<size_t>(m_tiles_size.x) + static_cast<size_t>(at.x)] = layers.bits;
+		const i32 mask = static_cast<i32>(m_def.page_size) - 1;
+		const u32 at   = page_at({tile.x >> m_page_shift, tile.y >> m_page_shift});
+		m_tiles[at + static_cast<u32>(((tile.y & mask) << m_page_shift) + (tile.x & mask))] = layers.bits;
 	}
 
 	void Space::clear_tiles() noexcept
 	{
+		m_pages.clear();
 		m_tiles.clear();
-		m_tiles_min	 = {};
-		m_tiles_size = {};
+		m_free_pages.clear();
 	}
 
 	Layers Space::ground(glm::vec2 point) const noexcept

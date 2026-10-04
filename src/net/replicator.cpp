@@ -114,6 +114,10 @@ namespace ember::net
 	void Replicator::update(Tick tick) noexcept
 	{
 		EMBER_ASSERT(tick != NO_TICK);
+		if (tick == m_updated)
+			return;
+
+		m_updated					   = tick;
 		const entt::registry& registry = m_world.registry;
 
 		// Every replicated entity, whole: gone, or its components and their values as they are now. The

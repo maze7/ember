@@ -15,7 +15,8 @@ namespace ember::physics
 	{
 		f32 tile_size = 16.0f; // world units a tile
 		f32 cell_size = 64.0f; // the broad phase's grid: a few times the size of what it sorts
-		Layers outside = {};   // what the ground is where no tile was ever set: nothing, or a wall about the world
+		u32 page_size = 16;	   // tiles a side of a page of ground, a power of two: the game's chunk
+		Layers outside = {};   // what the ground is where no page is loaded: nothing, or a wall about the world
 	};
 
 	/** Where a move ended, and what stopped it. */
@@ -87,22 +88,35 @@ namespace ember::physics
 
 		[[nodiscard]] const SpaceDef& def() const noexcept { return m_def; }
 
-		// The ground. The game sets a tile's layers when it makes or changes its terrain.
+		// The ground, a page of page_size tiles a side at a time: the game loads a page as its world streams
+		// in about where things are, and lets it go as the world streams out. Where no page is loaded the
+		// ground is SpaceDef::outside, however far the world goes.
 
+		/** A page's tiles, row by row, page_size squared of them: in place of any it had. */
+		void load_page(glm::ivec2 page, Span<const Layers> tiles) noexcept;
+
+		/** A page goes, and the ground there is outside again. Nothing when none is loaded there. */
+		void unload_page(glm::ivec2 page) noexcept;
+
+		/** One tile, the game's edit: a page where none is loaded starts as open ground. */
 		void set_tile(glm::ivec2 tile, Layers layers) noexcept;
+
+		/** Every page goes. */
 		void clear_tiles() noexcept;
 
 		[[nodiscard]] Layers tile(glm::ivec2 tile) const noexcept
 		{
-			const glm::ivec2 local = tile - m_tiles_min;
-			if (local.x < 0 || local.y < 0 || local.x >= m_tiles_size.x || local.y >= m_tiles_size.y)
+			const auto page = m_pages.find(page_key({tile.x >> m_page_shift, tile.y >> m_page_shift}));
+			if (page == m_pages.end())
 				return m_def.outside;
 
+			const i32 mask = static_cast<i32>(m_def.page_size) - 1;
 			Layers layers;
-			layers.bits = m_tiles[static_cast<size_t>(local.y) * static_cast<size_t>(m_tiles_size.x) +
-								  static_cast<size_t>(local.x)];
+			layers.bits = m_tiles[page->second + static_cast<u32>(((tile.y & mask) << m_page_shift) + (tile.x & mask))];
 			return layers;
 		}
+
+		[[nodiscard]] u32 page_count() const noexcept { return static_cast<u32>(m_pages.size()); }
 
 		/** The layers of the ground under a point: what a bullet asks every tick. */
 		[[nodiscard]] Layers ground(glm::vec2 point) const noexcept;
@@ -188,13 +202,24 @@ namespace ember::physics
 		[[nodiscard]] f32 slide(const Aabb& box, u32 axis, f32 delta, Layers by, ecs::Entity self, Moved& moved,
 								bool& stopped) const noexcept;
 
+		[[nodiscard]] static u64 page_key(glm::ivec2 page) noexcept
+		{
+			return (static_cast<u64>(static_cast<u32>(page.x)) << 32) | static_cast<u32>(page.y);
+		}
+
+		/** Where a page keeps its tiles in m_tiles: the one loaded there, or a new one, open ground. */
+		[[nodiscard]] u32 page_at(glm::ivec2 page) noexcept;
+
 		SpaceDef m_def;
 		f32 m_inverse_tile = 0.0f;
 		f32 m_inverse_cell = 0.0f;
+		u32 m_page_shift   = 0; // log2 of page_size: a tile's page is its coordinates shifted down by this
 
-		Vector<u32> m_tiles{&memory::heap(MemoryTag::Physics)}; // a window on the tile grid, row by row
-		glm::ivec2 m_tiles_min	= {};
-		glm::ivec2 m_tiles_size = {};
+		// The ground: every page's tiles, row by row, page_size squared apiece, and where each page's begin.
+		// A page let go leaves its place to the next one loaded.
+		HashMap<u64, u32> m_pages{&memory::heap(MemoryTag::Physics)};
+		Vector<u32> m_tiles{&memory::heap(MemoryTag::Physics)};
+		Vector<u32> m_free_pages{&memory::heap(MemoryTag::Physics)};
 
 		Index m_colliders;
 		Index m_hurtboxes;
