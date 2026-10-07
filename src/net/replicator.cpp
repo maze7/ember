@@ -72,7 +72,7 @@ namespace ember::net
 		for (u32 id = 0; id < m_schema.component_count(); ++id)
 		{
 			const ecs::ComponentInfo& info = m_schema.component(static_cast<ComponentId>(id));
-			info.assure(registry);
+			info.assure(info, registry);
 
 			Pool& pool = m_pools.emplace_back(Pool{.info	= &info,
 												   .storage = std::as_const(registry).storage(info.type),
@@ -231,7 +231,8 @@ namespace ember::net
 			for (ComponentMask gained = has & ~slot.components; gained != 0;)
 			{
 				const ComponentId component = detail::take_lowest(gained);
-				const void* value			= m_pools[component].info->find(registry, slot.entity);
+				const ecs::ComponentInfo& type = *m_pools[component].info;
+				const void* value			   = type.find(type, registry, slot.entity);
 				Stored& stored				= insert(index, component, value);
 				stored.changed				= tick;
 				if (!encode(component, value, stored.wire))
@@ -263,7 +264,7 @@ namespace ember::net
 			Pool& pool					= m_pools[component];
 			const u32 size				= pool.info->size;
 			const u32 at				= pool.sparse[index];
-			const void* value			= pool.info->find(registry, slot.entity);
+			const void* value			= pool.info->find(*pool.info, registry, slot.entity);
 			u8* bytes					= pool.bytes.data() + static_cast<size_t>(at) * size;
 
 			if (!every && std::memcmp(bytes, value, size) == 0)
@@ -297,10 +298,10 @@ namespace ember::net
 	void Replicator::snap(u32 index, ComponentId component, const ComponentBits& wire) noexcept
 	{
 		Pool& pool	= m_pools[component];
-		void* value = pool.info->get(m_world.registry, m_entities[index].entity);
+		void* value = pool.info->get(*pool.info, m_world.registry, m_entities[index].entity);
 
 		serialize::ReadStream reader(wire.bytes.data(), static_cast<int>((wire.bits + 7) / 8));
-		[[maybe_unused]] const bool read = pool.info->read(reader, value);
+		[[maybe_unused]] const bool read = pool.info->read(*pool.info, reader, value);
 		EMBER_ASSERT(read && "a component's own bits do not read back");
 
 		std::memcpy(pool.bytes.data() + static_cast<size_t>(pool.sparse[index]) * pool.info->size, value,
@@ -615,7 +616,8 @@ namespace ember::net
 	{
 		serialize::WriteStream stream = packet_writer(m_scratch);
 
-		[[maybe_unused]] const bool wrote = m_pools[component].info->write(stream, value);
+		const ecs::ComponentInfo& type	  = *m_pools[component].info;
+		[[maybe_unused]] const bool wrote = type.write(type, stream, value);
 		EMBER_ASSERT(wrote);
 		stream.Flush();
 

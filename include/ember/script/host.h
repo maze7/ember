@@ -4,6 +4,7 @@
 #include <ember/core/common.h>
 #include <ember/ecs/world.h>
 #include <ember/memory/memory.h>
+#include <ember/memory/unique.h>
 #include <ember/script/binding.h>
 #include <ember/script/problem.h>
 #include <ember/script/source.h>
@@ -12,11 +13,19 @@ struct lua_State;
 
 namespace ember::script
 {
+	struct Schema;
+
 	struct HostDef
 	{
 		u32 budget	   = 100'000; // VM safepoints one call may pass before it is stopped and named: an endless loop
 		u32 gc_step_kb = 64;	  // what the collector is asked to reclaim at each script point
 		bool checks	   = true;	  // a number that does not fit its field is refused, not wrapped: dev builds
+
+		/**
+		 * Schema mode: the host collects what the modules declare (component, prefab, stategraph) into
+		 * this schema and keeps nothing else; systems and stategraphs never run. For collect_schema().
+		 */
+		Schema* schema = nullptr;
 	};
 
 	/** What the host has done, for a panel: totals since it started, and the latest tick's cost. */
@@ -27,10 +36,13 @@ namespace ember::script
 		u64 reads	= 0; // component fields read
 		u64 writes	= 0; // fields written, and commands made
 		u64 errors	= 0;
+		u64 events		= 0; // raised, by scripts and by the game
+		u64 transitions = 0; // stategraph states entered
 		f64 simulate_us	 = 0.0; // the latest run of every simulate point
 		f64 present_us	 = 0.0; // the latest present point
 		u32 modules		 = 0;
 		u32 systems		 = 0;
+		u32 stategraphs	 = 0;
 		u32 disabled	 = 0; // systems off until their module reloads
 		u32 problems	 = 0;
 		size_t lua_bytes = 0; // the VM's heap
@@ -83,6 +95,16 @@ namespace ember::script
 		/** The Present point: a client's per-frame systems. */
 		void present(ecs::Commands& commands) noexcept;
 
+		/**
+		 * Raises an event on an entity, as a script's e:event("hurt") does: its prefab's event of that
+		 * name swaps component groups at the next script point, and its stategraph's state answers to
+		 * it there. From a system, with the entity that caused it when there is one.
+		 */
+		void event(ecs::Entity entity, StringView name, ecs::Entity source = ecs::NO_ENTITY) noexcept;
+
+		/** The name of the state an entity's stategraph is in, for a panel; empty when it has none. */
+		[[nodiscard]] StringView state_of(ecs::Entity entity) const noexcept;
+
 		[[nodiscard]] bool started() const noexcept { return m_L != nullptr; }
 		[[nodiscard]] u64 hash() const noexcept { return m_hash; }
 		[[nodiscard]] Span<const Problem> problems() const noexcept { return {m_problems.data(), m_problems.size()}; }
@@ -100,6 +122,12 @@ namespace ember::script
 
 		/** The VM, for tests and packs that need it directly; null until the first reload(). */
 		[[nodiscard]] lua_State* state() noexcept { return m_L; }
+
+		/** Schema mode, after reload(): converts the prefabs declared, now every component is known. collect_schema() calls it. */
+		void finish_schema() noexcept;
+
+		/** The stategraphs, prefab extras, events and dice: internal.h. */
+		struct Brains;
 
 	private:
 		friend struct HostAccess;
@@ -147,6 +175,7 @@ namespace ember::script
 		static int lua_trampoline(lua_State* L);
 
 		[[nodiscard]] i16 atom(StringView name) noexcept;
+		void expose_engine() noexcept;
 		void make_state() noexcept;
 		void install_binding() noexcept;
 		void push_function(const Function& function) noexcept;
@@ -155,6 +184,7 @@ namespace ember::script
 		[[nodiscard]] bool load_module(Pending& pending) noexcept;
 		void unload_module(u32 index) noexcept;
 		void run_bucket(u32 bucket) noexcept;
+		void run_events(u8 stage) noexcept;
 		void rebuild_order() noexcept;
 		void report(StringView path, u32 line, Severity severity, StringView message) noexcept;
 		void report_lua(StringView path, const char* message) noexcept;
@@ -180,6 +210,7 @@ namespace ember::script
 		Vector<Vector<u32>> m_buckets; // m_systems indices by stage, in run order; the last is Present
 		Vector<f64> m_bucket_us;
 		Vector<System> m_staging; // what the loading module has declared so far
+		Unique<Brains> m_brains;
 
 		// While a module loads or a system runs: whose, and with what rights.
 		i32 m_loading			  = -1; // m_modules index

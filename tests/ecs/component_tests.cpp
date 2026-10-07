@@ -118,7 +118,8 @@ namespace
 	template <class T> T interpolated(const Components& types, const T& from, const T& to, f32 t)
 	{
 		T out{};
-		types.find<T>()->interpolate(&from, &to, t, &out);
+		const ComponentInfo& info = *types.find<T>();
+		info.interpolate(info, &from, &to, t, &out);
 		return out;
 	}
 
@@ -181,14 +182,15 @@ namespace
 		net::PacketBuffer buffer;
 		serialize::WriteStream writer = net::packet_writer(buffer);
 		const HealthComponent sent{.current = 17, .max = 999};
-		ASSERT_TRUE(info.write(writer, &sent));
-		ASSERT_TRUE(types.find<StunnedComponent>()->write(writer, nullptr));
+		ASSERT_TRUE(info.write(info, writer, &sent));
+		const ComponentInfo& stunned = *types.find<StunnedComponent>();
+		ASSERT_TRUE(stunned.write(stunned, writer, nullptr));
 		writer.Flush();
 		EXPECT_EQ(writer.GetBitsProcessed(), 20); // two ranges of 10 bits, and a tag of none
 
 		serialize::ReadStream reader(buffer.bytes.data(), static_cast<int>(writer.GetBytesProcessed()));
 		HealthComponent got;
-		ASSERT_TRUE(info.read(reader, &got));
+		ASSERT_TRUE(info.read(info, reader, &got));
 		EXPECT_EQ(got.current, 17);
 		EXPECT_EQ(got.max, 999);
 	}
@@ -208,7 +210,8 @@ namespace
 
 		serialize::ReadStream reader(buffer.bytes.data(), static_cast<int>(writer.GetBytesProcessed()));
 		HealthComponent got{.current = 5, .max = 5};
-		EXPECT_FALSE(types.find<HealthComponent>()->read(reader, &got));
+		const ComponentInfo& health = *types.find<HealthComponent>();
+		EXPECT_FALSE(health.read(health, reader, &got));
 		EXPECT_EQ(got.current, 5);
 	}
 

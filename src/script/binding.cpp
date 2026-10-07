@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <new>
 
 /**
  * The Binding's records, and what scripts touch through them: every entity, component and component
@@ -169,13 +170,22 @@ namespace ember::script
 			{
 				case TAG_ENTITY:
 				{
+					// e.rng: the entity's dice.
+					if (atom >= 0 && atom == HostAccess::brains(host).atom_rng)
+					{
+						lua_pushlightuserdatatagged(L, handle(HANDLE_HIGH | static_cast<u32>(entt::to_integral(live_entity(L, world, 1)))),
+													TAG_RNG);
+						return 1;
+					}
+
 					// e.Position: the component handle, or nil when the entity has none: `if e.Push then`.
 					const ecs::ComponentId id = HostAccess::component_of_atom(host, atom);
 					if (id == ecs::NO_COMPONENT)
 						luaL_error(L, "'%s' is not a component; an entity's components are reached by their names", key);
 
 					const ecs::Entity entity = live_entity(L, world, 1);
-					if (world.components()[id].find(world.registry, entity) == nullptr)
+					const ecs::ComponentInfo& info = world.components()[id];
+					if (info.find(info, world.registry, entity) == nullptr)
 						lua_pushnil(L);
 					else
 						push_component(L, entity, id);
@@ -192,7 +202,7 @@ namespace ember::script
 								   exposed.field_list.c_str());
 
 					const ecs::Entity entity = live_entity(L, world, 1);
-					const void* bytes		 = exposed.info->find(world.registry, entity);
+					const void* bytes		 = exposed.info->find(*exposed.info, world.registry, entity);
 					if (bytes == nullptr)
 						luaL_error(L, "the entity no longer has a %s", exposed.info->name.data());
 
@@ -245,7 +255,7 @@ namespace ember::script
 				refuse_write(L, context, exposed, field->name);
 
 			const ecs::Entity entity = live_entity(L, world, 1);
-			void* bytes				 = exposed.info->get(world.registry, entity);
+			void* bytes				 = exposed.info->get(*exposed.info, world.registry, entity);
 			if (bytes == nullptr)
 				luaL_error(L, "the entity no longer has a %s", exposed.info->name.data());
 
@@ -326,7 +336,8 @@ namespace ember::script
 						case Verb::Has:
 						{
 							const ecs::ComponentId id = check_component_type(L, 2);
-							lua_pushboolean(L, world.components()[id].find(world.registry, entity) != nullptr);
+							const ecs::ComponentInfo& info = world.components()[id];
+							lua_pushboolean(L, info.find(info, world.registry, entity) != nullptr);
 							return 1;
 						}
 						case Verb::Add:
@@ -340,6 +351,10 @@ namespace ember::script
 						case Verb::Id:
 							lua_pushnumber(L, static_cast<f64>(entt::to_integral(entity)));
 							return 1;
+						case Verb::Play:
+							return entity_play(L, host, entity);
+						case Verb::Event:
+							return entity_event(L, host, entity);
 						case Verb::None:
 							luaL_error(L, "an entity has no method '%s'", method);
 						default:
@@ -357,6 +372,9 @@ namespace ember::script
 					}
 				}
 
+				case TAG_RNG:
+					return rng_namecall(L);
+
 				case TAG_COMPONENT:
 				{
 					const auto id			 = static_cast<ecs::ComponentId>(((bits >> 32) & 0xffff) - 1);
@@ -366,7 +384,7 @@ namespace ember::script
 						luaL_error(L, "%s has no method '%s'", exposed.info->name.data(), method);
 
 					const ecs::Entity entity = live_entity(L, world, 1);
-					void* bytes				 = exposed.info->get(world.registry, entity);
+					void* bytes				 = exposed.info->get(*exposed.info, world.registry, entity);
 					if (bytes == nullptr)
 						luaL_error(L, "the entity no longer has a %s", exposed.info->name.data());
 
@@ -403,6 +421,9 @@ namespace ember::script
 					lua_pushfstring(L, "Component %s", exposed != nullptr ? exposed->info->name.data() : "?");
 					return 1;
 				}
+				case TAG_RNG:
+					lua_pushfstring(L, "Rng of Entity(%u)", static_cast<unsigned>(entt::to_integral(entity_of(bits))));
+					return 1;
 				default:
 					lua_pushstring(L, "userdata");
 					return 1;
@@ -425,6 +446,14 @@ namespace ember::script
 			return nullptr;
 		for (const Field& field : fields)
 			if (field.atom == atom)
+				return &field;
+		return nullptr;
+	}
+
+	const Field* Exposed::find(StringView name) const noexcept
+	{
+		for (const Field& field : fields)
+			if (field.name == name)
 				return &field;
 		return nullptr;
 	}
@@ -488,6 +517,94 @@ namespace ember::script
 	}
 
 	void Binding::definitions(const char* text) noexcept { m_definitions.push_back(String(text, &heap())); }
+
+	void Binding::world_function(const Function& function) noexcept { m_world_functions.push_back(function); }
+
+	void Binding::units(f64 texels_per_tile, f64 ticks_per_second) noexcept
+	{
+		m_texels_per_tile  = texels_per_tile;
+		m_ticks_per_second = ticks_per_second;
+	}
+
+	void Binding::expose_dynamic(const ecs::ComponentInfo& info) noexcept
+	{
+		EMBER_ASSERT(info.dynamic);
+		Exposed& exposed = exposed_of(info);
+		exposed.fields.clear();
+		exposed.field_list.clear();
+		for (const ecs::FieldInfo& layout : info.fields)
+		{
+			Field field;
+			field.name	 = String(layout.name, &heap());
+			field.offset = layout.offset;
+			field.size	 = ecs::field_size(layout.type);
+			switch (layout.type)
+			{
+				case ecs::FieldType::Bool:
+					field.kind = FieldKind::Bool;
+					break;
+				case ecs::FieldType::F32:
+					field.kind = FieldKind::Float;
+					break;
+				case ecs::FieldType::Vec2:
+					field.kind = FieldKind::Vec2;
+					break;
+				case ecs::FieldType::I32:
+					field.kind		= FieldKind::Int;
+					field.is_signed = true;
+					break;
+				default:
+					field.kind = FieldKind::Int;
+					break;
+			}
+			if (!exposed.field_list.empty())
+				exposed.field_list += ' ';
+			exposed.field_list += field.name;
+			exposed.fields.push_back(std::move(field));
+		}
+	}
+
+	void describe_fields(Host& host, const ecs::ComponentInfo& info, Exposed& exposed) noexcept
+	{
+		// As expose_dynamic() lays them out, with atoms, for a type the registry does not have yet.
+		Binding& binding = HostAccess::binding(host);
+		Exposed scratch;
+		scratch.info = &info;
+		// The binding's exposure table is by id, which this type has not got: build the fields alongside it.
+		for (const ecs::FieldInfo& layout : info.fields)
+		{
+			Field field;
+			field.name	 = String(layout.name, &heap());
+			field.offset = layout.offset;
+			field.size	 = ecs::field_size(layout.type);
+			field.kind	 = layout.type == ecs::FieldType::Bool	 ? FieldKind::Bool
+						   : layout.type == ecs::FieldType::F32	 ? FieldKind::Float
+						   : layout.type == ecs::FieldType::Vec2 ? FieldKind::Vec2
+																 : FieldKind::Int;
+			field.is_signed = layout.type == ecs::FieldType::I32;
+			field.atom		= HostAccess::atom(host, field.name);
+			if (!exposed.field_list.empty())
+				exposed.field_list += ' ';
+			exposed.field_list += field.name;
+			exposed.fields.push_back(std::move(field));
+		}
+		(void)binding;
+	}
+
+	bool runs_in(Context context, ecs::Role role) noexcept
+	{
+		switch (context)
+		{
+			case Context::Server:
+				return role != ecs::Role::Client;
+			case Context::Client:
+				return role != ecs::Role::Server;
+			case Context::Sim:
+				return true;
+			default:
+				return false;
+		}
+	}
 
 	const StageName* Binding::find_stage(StringView name) const noexcept
 	{
@@ -559,7 +676,7 @@ namespace ember::script
 	ecs::Entity live_entity(lua_State* L, ecs::World& world, int index)
 	{
 		const int tag = lua_lightuserdatatag(L, index);
-		if (tag != TAG_ENTITY && tag != TAG_COMPONENT)
+		if (tag != TAG_ENTITY && tag != TAG_COMPONENT && tag != TAG_RNG)
 			luaL_typeerror(L, index, "Entity");
 
 		const ecs::Entity entity = entity_of(bits_of(lua_tolightuserdatatagged(L, index, tag)));
@@ -620,6 +737,22 @@ namespace ember::script
 
 	void write_field(lua_State* L, const Exposed& exposed, const Field& field, void* bytes, int index, bool checks)
 	{
+		if (index < 0)
+			index = lua_gettop(L) + 1 + index;
+
+		// A unit value from the schema pass, tiles(3), stands for its number.
+		if (lua_istable(L, index))
+		{
+			lua_rawgetfield(L, index, "__unit");
+			const bool unit = !lua_isnil(L, -1);
+			lua_pop(L, 1);
+			if (unit)
+			{
+				lua_rawgetfield(L, index, "n");
+				lua_replace(L, index);
+			}
+		}
+
 		void* p = static_cast<u8*>(bytes) + field.offset;
 		switch (field.kind)
 		{
@@ -686,7 +819,7 @@ namespace ember::script
 			}
 
 			case FieldKind::Shape:
-				store_as<physics::Shape>(p, check_shape(L, index));
+				store_shape(p, check_shape(L, index)); // padding zeroed: a prefab's bytes agree on every machine
 				return;
 
 			case FieldKind::Text:
@@ -697,7 +830,7 @@ namespace ember::script
 		}
 	}
 
-	void fill_component(lua_State* L, const Exposed& exposed, int table, void* bytes, bool checks)
+	void fill_component(lua_State* L, const Exposed& exposed, int table, void* bytes, bool checks, u8* written)
 	{
 		// Absolute, so the key and value lua_next leaves on top do not move it.
 		if (table < 0)
@@ -711,12 +844,18 @@ namespace ember::script
 			if (key == nullptr)
 				luaL_error(L, "%s takes fields by name, not %s", exposed.info->name.data(), luaL_typename(L, -2));
 
+			// By atom, or by name for a string the VM fixed an atom for before the field had one: a constant of a
+			// module loaded in the schema pass, whose components were not yet known.
 			const Field* field = exposed.find(static_cast<i16>(atom));
+			if (field == nullptr)
+				field = exposed.find(StringView(key));
 			if (field == nullptr)
 				luaL_error(L, "%s has no field '%s'; it has: %s", exposed.info->name.data(), key,
 						   exposed.field_list.c_str());
 
 			write_field(L, exposed, *field, bytes, lua_gettop(L), checks);
+			if (written != nullptr)
+				std::memset(written + field->offset, 1, field->size);
 			lua_pop(L, 1);
 		}
 	}

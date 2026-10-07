@@ -16,7 +16,7 @@ namespace ember::net
 			if (offset > 0)
 				stream.SerializeBits(zero, static_cast<int>(offset));
 
-			[[maybe_unused]] const bool wrote = info.write(stream, value);
+			[[maybe_unused]] const bool wrote = info.write(info, stream, value);
 			EMBER_ASSERT(wrote);
 			stream.Flush();
 

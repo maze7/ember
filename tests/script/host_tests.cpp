@@ -658,7 +658,7 @@ namespace host_test
 		const StringView text(reinterpret_cast<const char*>(read->data()), read->size());
 
 		for (const char* expected : {"declare extern type Weapon with", "\tcooldown: number", "\tfunction ready(self): boolean",
-									 "declare Weapon: Component<Weapon>", "declare extern type Entity with", "\tWeapon: Weapon?",
+									 "declare Weapon: Component<Weapon>", "declare extern type Entity with", "\tWeapon: Weapon\n",
 									 "\tfunction distance(self, other: Entity): number", "\tfunction has(self, component: Component<any>): boolean",
 									 "declare extern type Hitbox with", "\tshape: Shape", "\thits: number", "\tpoint: vector", "\twide: number",
 									 "\"Act\" | \"React\" | \"Present\"", "declare fx: {", "\tmark: (entity: Entity) -> (),",

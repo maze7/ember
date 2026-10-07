@@ -3,6 +3,7 @@
 #include <ember/core/common.h>
 #include <ember/core/hash.h>
 #include <ember/ecs/component.h>
+#include <ember/net/serialize.h>
 
 #include <glm/vec2.hpp>
 
@@ -166,6 +167,9 @@ namespace ember::anim
 		/** The entity's own rig plays a clip. */
 		void play(StringView clip, Play how = {}) noexcept { start(playhead(0), name(clip), how); }
 
+		/** The same, by a clip's number: what a Playing component carries. */
+		void play(Name clip, Play how = {}) noexcept { start(playhead(0), clip, how); }
+
 		/** The rig mounted in a slot plays a clip. */
 		void play(StringView slot, StringView clip, Play how = {}) noexcept
 		{
@@ -270,6 +274,32 @@ namespace ember::anim
 	};
 
 	EMBER_COMPONENT(Animator, Client);
+
+	/**
+	 * What gameplay asked an entity's rig to play, as every machine knows it: a clip by its number,
+	 * from a tick. The server's brains write it (a script's e:play("squat")), it replicates, and a
+	 * client's Present system plays it on the Animator from the moment that tick is drawn. Nothing
+	 * while clip is 0.
+	 */
+	struct Playing
+	{
+		Name clip = 0;
+		u32 since = 0; // the tick it started
+
+		template <class Stream> bool serialize(Stream& stream)
+		{
+			u32 low	 = static_cast<u32>(clip);
+			u32 high = static_cast<u32>(clip >> 32);
+			serialize_bits(stream, low, 32);
+			serialize_bits(stream, high, 32);
+			serialize_bits(stream, since, 32);
+			if (Stream::IsReading)
+				clip = (static_cast<Name>(high) << 32) | low;
+			return true;
+		}
+	};
+
+	EMBER_COMPONENT(Playing, Replicated);
 
 	/**
 	 * An entity's animation as sampled this frame: the parts it draws, its named points, the events it

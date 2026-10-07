@@ -339,7 +339,7 @@ namespace ember::ecs
 		template <Component T> void set(Entity entity, const T& value) noexcept
 		{
 			if (lives_in(kind_of<T>, m_role))
-				detail::emplace<T>(registry, entity, &value);
+				registry.emplace_or_replace<T>(entity, value);
 		}
 
 		/** A resource: one value of its type for the whole world, which systems take as const T& or T&. */

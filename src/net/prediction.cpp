@@ -93,7 +93,7 @@ namespace ember::net
 		for (u32 i = 0; i < m_types.size(); ++i)
 		{
 			const ecs::ComponentInfo& info = *m_types[i];
-			void* value					   = info.get(m_world.registry, track.entity);
+			void* value					   = info.get(info, m_world.registry, track.entity);
 			if (value == nullptr)
 				continue;
 
@@ -142,7 +142,7 @@ namespace ember::net
 			for (const ecs::ComponentInfo* info : m_types)
 			{
 				const void* server = m_replica.server_value(track.entity, *info);
-				void* value		   = info->get(registry, track.entity);
+				void* value		   = info->get(*info, registry, track.entity);
 				if (server != nullptr && value != nullptr)
 					std::memcpy(value, server, info->size);
 			}
@@ -152,7 +152,7 @@ namespace ember::net
 			const u8* values = row(track, tick);
 			for (u32 i = 0; i < m_types.size(); ++i)
 			{
-				void* value = m_types[i]->get(registry, track.entity);
+				void* value = m_types[i]->get(*m_types[i], registry, track.entity);
 				if (value != nullptr && (*present & (ComponentMask{1} << i)) != 0)
 					std::memcpy(value, values + m_offsets[i], m_types[i]->size);
 			}
@@ -167,7 +167,7 @@ namespace ember::net
 	{
 		serialize::WriteStream stream = packet_writer(m_scratch[scratch]);
 
-		[[maybe_unused]] const bool wrote = info.write(stream, value);
+		[[maybe_unused]] const bool wrote = info.write(info, stream, value);
 		EMBER_ASSERT(wrote);
 		stream.Flush();
 
@@ -179,7 +179,7 @@ namespace ember::net
 		const u32 bits = wire_form(info, value, 0);
 
 		serialize::ReadStream reader(m_scratch[0].bytes.data(), static_cast<int>((bits + 7) / 8));
-		[[maybe_unused]] const bool read = info.read(reader, value);
+		[[maybe_unused]] const bool read = info.read(info, reader, value);
 		EMBER_ASSERT(read && "a component's own bits do not read back");
 	}
 

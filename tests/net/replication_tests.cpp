@@ -1390,7 +1390,7 @@ namespace
 		for (ComponentMask left = carried; left != 0;)
 		{
 			const ecs::ComponentInfo& info = schema.component(net::detail::take_lowest(left));
-			(void)info.write(stream, info.defaults.data());
+			(void)info.write(info, stream, info.defaults.data());
 		}
 		stream.Flush();
 

@@ -486,6 +486,17 @@ namespace ember::ecs
 		/** A prefab of bytes rather than a definition, as a prefab file makes: its components registered already. */
 		PrefabId add_prefab(Prefab prefab) noexcept { return m_prefabs.add(std::move(prefab)); }
 
+		/** A component type declared at run time, by a script or a tool: see Components::add_dynamic(). */
+		ComponentId add_component(const DynamicComponentDef& def) noexcept { return m_components.add_dynamic(def); }
+
+		/**
+		 * A hash over everything registered that the wire depends on: every component's name, kind, size
+		 * and fields, and every prefab's name and bytes. Two machines whose registries differ, say in the
+		 * components or prefabs their scripts declared, cannot replicate to each other; folded into the
+		 * game's protocol number, they refuse each other at the handshake instead.
+		 */
+		[[nodiscard]] u64 fingerprint() const noexcept;
+
 		/** A Simulate system: game rules. Everywhere runs it on the server, and on a client for what it predicts. */
 		template <auto System, class Stage>
 			requires std::is_enum_v<Stage>

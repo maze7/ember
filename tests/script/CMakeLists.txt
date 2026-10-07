@@ -4,7 +4,9 @@ ember_add_test_suite(ember_script_tests script
 	"${CMAKE_CURRENT_LIST_DIR}/../main.cpp"
 	dmath_tests.cpp
 	host_tests.cpp
+	schema_tests.cpp
 	source_tests.cpp
+	stategraph_tests.cpp
 )
 
 target_link_libraries(ember_script_tests PRIVATE Ember::Script Ember::Jobs Luau.VM)

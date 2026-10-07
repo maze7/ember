@@ -7,12 +7,15 @@
 ember_add_module(Script
 	SOURCES
 		binding.cpp
+		declare.cpp
 		definitions.cpp
 		dmath.cpp
 		host.cpp
 		physics_binding.cpp
 		query.cpp
+		schema.cpp
 		source.cpp
+		stategraph.cpp
 	PUBLIC_DEPS
 		Ember::Core
 		Ember::Ecs

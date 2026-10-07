@@ -2,6 +2,7 @@
 
 #include <ember/ecs/components.h>
 
+#include <new>
 #include <tuple>
 
 /**
@@ -166,10 +167,11 @@ namespace ember::ecs
 						[&](const auto& value)
 						{
 							using C					   = std::remove_cvref_t<decltype(value)>;
+							// A copy over zeroed bytes: the fields, and none of the source's padding.
 							PrefabComponent& component = prefab.components.emplace_back();
 							component.id			   = components.find<C>()->id;
-							component.value.resize(sizeof(C));
-							std::memcpy(component.value.data(), &value, sizeof(C));
+							component.value.assign(sizeof(C), 0);
+							new (component.value.data()) C(value);
 						}(values),
 						...);
 				},

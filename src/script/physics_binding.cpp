@@ -1,6 +1,7 @@
 #include "internal.h"
 
 #include <cstring>
+#include <new>
 
 /**
  * Shapes as scripts hold them: a Shape userdata, made by shape.box() and shape.circle(), turned and
@@ -87,10 +88,21 @@ namespace ember::script
 		}
 	}
 
+	void store_shape(void* bytes, const physics::Shape& shape) noexcept
+	{
+		// A trivially copyable struct copies as a whole, padding and all; the members one by one leave the zeroes.
+		physics::Shape tidy;
+		std::memset(&tidy, 0, sizeof(tidy));
+		tidy.kind	= shape.kind;
+		tidy.center = shape.center;
+		tidy.half	= shape.half;
+		tidy.axis	= shape.axis;
+		std::memcpy(bytes, &tidy, sizeof(tidy));
+	}
+
 	void push_shape(lua_State* L, const physics::Shape& shape)
 	{
-		void* bytes = lua_newuserdatataggedwithmetatable(L, sizeof(physics::Shape), TAG_SHAPE);
-		std::memcpy(bytes, &shape, sizeof(physics::Shape));
+		store_shape(lua_newuserdatataggedwithmetatable(L, sizeof(physics::Shape), TAG_SHAPE), shape);
 	}
 
 	const physics::Shape& check_shape(lua_State* L, int index)

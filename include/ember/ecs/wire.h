@@ -24,6 +24,8 @@
  */
 namespace ember::ecs
 {
+	struct ComponentInfo;
+
 	/** The largest Replicated component, in memory and on the wire. */
 	inline constexpr u32 MAX_REPLICATED_BYTES = 64;
 	inline constexpr u32 MAX_REPLICATED_BITS  = 512;
@@ -85,7 +87,8 @@ namespace ember::ecs
 			return value;
 		}
 
-		template <class T> bool write_component(serialize::WriteStream& stream, const void* bytes) noexcept
+		template <class T>
+		bool write_component(const ComponentInfo&, serialize::WriteStream& stream, const void* bytes) noexcept
 		{
 			if constexpr (Serializable<T>)
 			{
@@ -100,7 +103,7 @@ namespace ember::ecs
 			}
 		}
 
-		template <class T> bool read_component(serialize::ReadStream& stream, void* bytes) noexcept
+		template <class T> bool read_component(const ComponentInfo&, serialize::ReadStream& stream, void* bytes) noexcept
 		{
 			if constexpr (Serializable<T>)
 			{
@@ -118,7 +121,8 @@ namespace ember::ecs
 			return true;
 		}
 
-		template <class T> void interpolate_component(const void* from, const void* to, f32 t, void* out) noexcept
+		template <class T>
+		void interpolate_component(const ComponentInfo&, const void* from, const void* to, f32 t, void* out) noexcept
 		{
 			const T value = interpolate_value(load<T>(from), load<T>(to), t);
 			std::memcpy(out, &value, sizeof(T));

@@ -26,6 +26,7 @@ namespace ember::script
 		TAG_FILTER		   = 4, // userdata: without(...)
 		TAG_QUERY		   = 5, // userdata: a query under iteration
 		TAG_SHAPE		   = 6, // userdata: a physics::Shape
+		TAG_RNG			   = 7, // lightuserdata: an entity's dice, e.rng
 		TAG_GAME		   = 16,
 	};
 

@@ -127,6 +127,7 @@ namespace ember::script
 		bool derived = false;
 
 		[[nodiscard]] const Field* find(i16 atom) const noexcept;
+		[[nodiscard]] const Field* find(StringView name) const noexcept; // for a string whose atom was fixed before the field had one
 		[[nodiscard]] const Method* find_method(i16 atom) const noexcept;
 	};
 
@@ -206,11 +207,23 @@ namespace ember::script
 		/** Luau declarations the generator cannot derive, copied into the definitions file: an extern type a pack brings. */
 		void definitions(const char* text) noexcept;
 
+		/** A function on the world table: world:nearest_player(e, radius). The world is argument 1. */
+		void world_function(const Function& function) noexcept;
+
+		/**
+		 * The game's units, which the declarators tiles(), seconds() and the rest convert with: how many
+		 * texels a tile is, and how many ticks a second. Unset, the declarators refuse to run.
+		 */
+		void units(f64 texels_per_tile, f64 ticks_per_second) noexcept;
+		[[nodiscard]] f64 texels_per_tile() const noexcept { return m_texels_per_tile; }
+		[[nodiscard]] f64 ticks_per_second() const noexcept { return m_ticks_per_second; }
+
 		[[nodiscard]] const Exposed* exposed(ecs::ComponentId id) const noexcept;
 		[[nodiscard]] Span<const Exposed> exposures() const noexcept { return {m_exposed.data(), m_exposed.size()}; }
 		[[nodiscard]] Span<const Library> libraries() const noexcept { return {m_libraries.data(), m_libraries.size()}; }
 		[[nodiscard]] Span<const Function> entity_methods() const noexcept { return {m_entity_methods.data(), m_entity_methods.size()}; }
 		[[nodiscard]] Span<const Function> globals() const noexcept { return {m_globals.data(), m_globals.size()}; }
+		[[nodiscard]] Span<const Function> world_functions() const noexcept { return {m_world_functions.data(), m_world_functions.size()}; }
 		[[nodiscard]] Span<const Enumeration> enumerations() const noexcept { return {m_enumerations.data(), m_enumerations.size()}; }
 		[[nodiscard]] Span<const Constant> constants() const noexcept { return {m_constants.data(), m_constants.size()}; }
 		[[nodiscard]] Span<const StageName> stages() const noexcept { return {m_stages.data(), m_stages.size()}; }
@@ -226,11 +239,17 @@ namespace ember::script
 		template <class T, size_t I> void add_field(Exposed& exposed, const T& probe, StringView name) noexcept;
 		[[nodiscard]] Exposed& exposed_of(const ecs::ComponentInfo& info) noexcept;
 
+		/** A type declared at run time, its fields from its layout: the host exposes every one the registry has. */
+		void expose_dynamic(const ecs::ComponentInfo& info) noexcept;
+
 		ecs::World& m_world;
 		Vector<Exposed> m_exposed; // by ComponentId; info null when not exposed
 		Vector<Library> m_libraries;
 		Vector<Function> m_entity_methods;
 		Vector<Function> m_globals;
+		Vector<Function> m_world_functions;
+		f64 m_texels_per_tile  = 0.0;
+		f64 m_ticks_per_second = 0.0;
 		Vector<Enumeration> m_enumerations;
 		Vector<Constant> m_constants;
 		Vector<StageName> m_stages;

@@ -76,7 +76,7 @@ namespace ember::ecs
 
 			const ComponentInfo& info = world.components()[payload.component];
 			if (lives_in(info.kind, world.role()))
-				info.emplace(world.registry, entity, bytes + sizeof(payload));
+				info.emplace(info, world.registry, entity, bytes + sizeof(payload));
 		}
 
 		void apply_remove_raw(World& world, SystemContext& context, const u8* bytes) noexcept
@@ -86,7 +86,10 @@ namespace ember::ecs
 
 			const Entity entity = context.resolve(payload.target);
 			if (world.registry.valid(entity))
-				world.components()[payload.component].remove(world.registry, entity);
+				{
+				const ComponentInfo& info = world.components()[payload.component];
+				info.remove(info, world.registry, entity);
+			}
 		}
 	}
 
@@ -301,7 +304,7 @@ namespace ember::ecs
 		// Every storage exists before anything runs: EnTT makes one on first use, and two systems running
 		// at once must never both be first.
 		for (const ComponentInfo& info : components().all())
-			info.assure(registry);
+			info.assure(info, registry);
 		(void)registry.storage<Simulated>();
 		(void)registry.storage<PrefabRef>();
 
@@ -541,7 +544,7 @@ namespace ember::ecs
 		{
 			const ComponentInfo& info = types[component.id];
 			if (lives_in(info.kind, m_role))
-				info.emplace(registry, entity, component.value.data());
+				info.emplace(info, registry, entity, component.value.data());
 		}
 	}
 

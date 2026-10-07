@@ -21,7 +21,10 @@ namespace ember::net
 		m_pools.reserve(m_schema.component_count());
 		for (u32 id = 0; id < m_schema.component_count(); ++id)
 		{
-			m_schema.component(static_cast<ComponentId>(id)).assure(registry);
+			{
+				const ecs::ComponentInfo& info = m_schema.component(static_cast<ComponentId>(id));
+				info.assure(info, registry);
+			}
 
 			Pool& pool = m_pools.emplace_back(Pool{.sparse = Vector<u32>(&memory::heap(MemoryTag::Network)),
 												   .dense  = Vector<u32>(&memory::heap(MemoryTag::Network)),
@@ -74,7 +77,7 @@ namespace ember::net
 				if (predicted && slot.owned)
 					continue; // its owner's simulation draws it
 
-				void* out = info.get(registry, slot.entity);
+				void* out = info.get(info, registry, slot.entity);
 				if (out == nullptr || slot.samples == 0)
 					continue;
 
@@ -94,7 +97,7 @@ namespace ember::net
 
 				const Tick end = slot.ticks[place_of(slot, at + 1)];
 				const f32 t	   = static_cast<f32>((tick - static_cast<f64>(start)) / static_cast<f64>(end - start));
-				info.interpolate(from, value_of(index, component, place_of(slot, at + 1)), t, out);
+				info.interpolate(info, from, value_of(index, component, place_of(slot, at + 1)), t, out);
 			}
 		}
 	}
@@ -291,7 +294,7 @@ namespace ember::net
 				const ecs::ComponentInfo& info = m_schema.component(component);
 				const size_t at				   = m_staged_values.size();
 				m_staged_values.resize(at + info.size);
-				if (!info.read(stream, m_staged_values.data() + at))
+				if (!info.read(info, stream, m_staged_values.data() + at))
 					return false;
 			}
 
@@ -344,7 +347,10 @@ namespace ember::net
 			{
 				const ComponentId component = detail::take_lowest(left);
 				if (present)
-					m_schema.component(component).remove(registry, slot.entity);
+				{
+					const ecs::ComponentInfo& gone = m_schema.component(component);
+					gone.remove(gone, registry, slot.entity);
+				}
 				if ((keeps & component_bit(component)) != 0)
 					erase(staged.index, component);
 			}
@@ -363,7 +369,7 @@ namespace ember::net
 				at += info.size;
 
 				if (present && (writes & component_bit(component)) != 0)
-					info.emplace(registry, slot.entity, value);
+					info.emplace(info, registry, slot.entity, value);
 
 				if ((keeps & component_bit(component)) == 0)
 					continue;
@@ -427,7 +433,10 @@ namespace ember::net
 		if (!staged.owned)
 		{
 			for (ComponentMask left = m_schema.prefab(staged.prefab).components & m_schema.owner_only(); left != 0;)
-				m_schema.component(detail::take_lowest(left)).remove(registry, slot.entity);
+			{
+				const ecs::ComponentInfo& gone = m_schema.component(detail::take_lowest(left));
+				gone.remove(gone, registry, slot.entity);
+			}
 		}
 
 		registry.emplace<NetId>(slot.entity, NetId::make(staged.index, staged.generation));

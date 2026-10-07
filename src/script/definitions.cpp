@@ -100,6 +100,45 @@ namespace ember::script
 			   "}\n\n";
 		out += "declare function layers(...: number): number\n\n";
 
+		// The dice an entity rolls with, the declarations a module makes and the units their values take.
+		out += "declare extern type Rng with\n"
+			   "\tfunction range(self, n: number): number\n"
+			   "\tfunction chance(self, p: number): boolean\n"
+			   "\tfunction float(self): number\n"
+			   "end\n\n";
+		out += "export type Kind = \"Sim\" | \"Server\" | \"Client\" | \"Replicated\" | \"Interpolated\" | \"Predicted\" | \"OwnerOnly\"\n"
+			   "export type ComponentDef = { kind: (Kind | { Kind })?, [string]: any }\n"
+			   "export type PrefabDef = {\n"
+			   "\textends: string?,\n"
+			   "\tgroups: { [string]: { [string]: any } }?,\n"
+			   "\tstart: { string }?,\n"
+			   "\tevents: { [string]: { add: { string }?, remove: { string }? } }?,\n"
+			   "\t[string]: any,\n"
+			   "}\n"
+			   "-- A handler names the next state by returning it, or returns nothing: hence the packs.\n"
+			   "export type StateDef = {\n"
+			   "\tevery: number?,\n"
+			   "\tenter: ((e: Entity) -> ...any)?,\n"
+			   "\tupdate: ((e: Entity) -> ...any)?,\n"
+			   "\texit: ((e: Entity) -> ())?,\n"
+			   "\ttimeline: { [number]: string }?,\n"
+			   "\ton: { [string]: (e: Entity) -> () }?,\n"
+			   "\tlength: number?,\n"
+			   "\tnext: (string | (e: Entity) -> ...any)?,\n"
+			   "\tevents: { [string]: string }?,\n"
+			   "\treact: { [string]: (e: Entity, source: Entity?) -> ...any }?,\n"
+			   "}\n"
+			   "export type StategraphDef = { initial: string, stage: string?, states: { [string]: StateDef } }\n\n";
+		out += "declare function component(name: string): (def: ComponentDef) -> ()\n"
+			   "declare function prefab(name: string): (def: PrefabDef) -> ()\n"
+			   "declare function stategraph(name: string): (def: StategraphDef) -> ()\n"
+			   "declare function tiles(x: number): number\n"
+			   "declare function ticks(n: number): number\n"
+			   "declare function seconds(s: number): number\n"
+			   "declare function count(n: number): number\n"
+			   "declare function tick(t: number?): number\n"
+			   "declare function int(n: number): number\n\n";
+
 		for (const String& text : binding.extra_definitions())
 		{
 			out += text;
@@ -122,15 +161,20 @@ namespace ember::script
 			line(out, "declare {}: Component<{}>\n", name, name);
 		}
 
+		// Components as properties, typed as present: a script written for a prefab reads them straight; one that
+		// is not sure asks has(), or tests the property, which is nil at run time when the entity lacks it.
 		out += "declare extern type Entity with\n";
 		for (const Exposed& exposed : binding.exposures())
 			if (exposed.info != nullptr)
-				line(out, "\t{}: {}?", exposed.info->name, exposed.info->name);
-		out += "\tfunction has(self, component: Component<any>): boolean\n"
+				line(out, "\t{}: {}", exposed.info->name, exposed.info->name);
+		out += "\trng: Rng\n"
+			   "\tfunction has(self, component: Component<any>): boolean\n"
 			   "\tfunction add(self, component: Component<any>, fields: { [string]: any }?): ()\n"
 			   "\tfunction remove(self, component: Component<any>): ()\n"
 			   "\tfunction destroy(self): ()\n"
-			   "\tfunction id(self): number\n";
+			   "\tfunction id(self): number\n"
+			   "\tfunction play(self, clip: string): ()\n"
+			   "\tfunction event(self, name: string, source: Entity?): ()\n";
 		for (const Function& method : binding.entity_methods())
 			method_line(out, method.name, method.signature);
 		out += "end\n\n";
@@ -153,8 +197,17 @@ namespace ember::script
 				fmt::format_to(std::back_inserter(out), ", {}", LETTERS[i]);
 			out += "))";
 		}
-		out += ",\n\tspawn: (self: World, prefab: string, overrides: { [string]: { [string]: any } }?) -> (),\n"
-			   "}\n"
+		out += ",\n\tspawn: (self: World, prefab: string, overrides: { [string]: { [string]: any } }?) -> (),\n";
+		for (const Function& function : binding.world_functions())
+		{
+			StringView params, ret;
+			split_signature(function.signature, params, ret);
+			if (params.empty())
+				line(out, "\t{}: (self: World) -> {},", function.name, ret);
+			else
+				line(out, "\t{}: (self: World, {}) -> {},", function.name, params, ret);
+		}
+		out += "}\n"
 			   "declare world: World\n\n";
 		out += "declare function without(...: Component<any>): Filter\n";
 

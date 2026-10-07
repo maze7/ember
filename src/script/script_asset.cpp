@@ -151,9 +151,17 @@ namespace ember::script
 
 	void ScriptLibrary::update(AssetManager& assets, Span<const AssetChange> changes, Vector<Source>& out) noexcept
 	{
-		// A file that appeared is loaded now and waited for, as the start waited for the rest.
+		// A file that appeared is loaded now and waited for, as the start waited for the rest. The .luaurc beside
+		// them arriving or changing compiles every script again: their requires resolve through its aliases.
 		for (const AssetChange& change : changes)
 		{
+			if (change.name == m_root + "/.luaurc")
+			{
+				for (const Entry& entry : m_entries)
+					if (const ScriptAsset* asset = entry.ref.get())
+						assets.notify_changed(StringView(asset->source.path));
+				continue;
+			}
 			if (!is_script(change.name) || m_by_path.contains(hash_text(change.name)))
 				continue;
 			add(assets, change.name);

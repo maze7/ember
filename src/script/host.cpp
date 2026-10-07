@@ -10,6 +10,7 @@
 #include <charconv>
 #include <chrono>
 #include <cstring>
+#include <string>
 
 namespace ember::script
 {
@@ -254,6 +255,10 @@ namespace ember::script
 			stage = found->index;
 		}
 
+		// The schema pass wants declarations alone: a system is noted as well formed and let go.
+		if (host.m_def.schema != nullptr)
+			return 0;
+
 		System system;
 		system.module  = static_cast<u32>(host.m_loading);
 		system.ordinal = static_cast<u32>(host.m_staging.size());
@@ -315,8 +320,29 @@ namespace ember::script
 		: m_world(world), m_def(def), m_binding(world), m_atoms(&heap()), m_atom_names(&heap()),
 		  m_component_by_atom(&heap()), m_verb_by_atom(&heap()), m_sources(&heap()), m_modules(&heap()),
 		  m_module_by_path(&heap()), m_systems(&heap()), m_buckets(&heap()), m_bucket_us(&heap()), m_staging(&heap()),
-		  m_problems(&heap())
+		  m_brains(memory::make_unique<Brains>(MemoryTag::Scripting)), m_problems(&heap())
 	{
+		expose_engine();
+	}
+
+	void Host::expose_engine() noexcept
+	{
+		// The engine's own components, when the game registered them, and every type the scripts declared:
+		// exposed before the game's binding adds its own, so the definitions file has them all.
+		const ecs::Components& components = m_world.components();
+		if (const ecs::ComponentInfo* info = components.find<Stategraph>())
+		{
+			m_brains->stategraph = info;
+			expose_stategraph(m_binding);
+		}
+		if (const ecs::ComponentInfo* info = components.find<anim::Playing>())
+		{
+			m_brains->playing = info;
+			m_binding.expose<anim::Playing>();
+		}
+		for (const ecs::ComponentInfo& info : components.all())
+			if (info.dynamic)
+				m_binding.expose_dynamic(info);
 	}
 
 	Host::~Host() noexcept
@@ -355,8 +381,9 @@ namespace ember::script
 				method.atom = atom(method.name);
 		}
 
-		const i16 verbs[static_cast<size_t>(Verb::Count)] = {atom("has"), atom("add"), atom("remove"), atom("destroy"),
-															 atom("id")};
+		const i16 verbs[static_cast<size_t>(Verb::Count)] = {atom("has"),	  atom("add"), atom("remove"), atom("destroy"),
+															 atom("id"), atom("play"), atom("event")};
+		m_brains->atom_rng								   = atom("rng");
 		Vector<i16> game_verbs(&heap());
 		for (const Function& method : m_binding.m_entity_methods)
 			game_verbs.push_back(atom(method.name));
@@ -423,6 +450,8 @@ namespace ember::script
 		install_handles(m_L, *this);
 		install_world(m_L, *this);
 		install_physics(m_L, *this);
+		install_declarations(m_L, *this);
+		install_stategraphs(m_L, *this);
 		install_binding();
 
 		// Everything a script sees is read only from here; each module gets a global table of its own over it.
@@ -450,7 +479,7 @@ namespace ember::script
 		{
 			if (exposed.info == nullptr)
 				continue;
-			exposed.info->assure(m_world.registry);
+			exposed.info->assure(*exposed.info, m_world.registry);
 			push_component_type(m_L, exposed.info->id);
 			lua_setglobal(m_L, exposed.info->name.data());
 		}
@@ -472,6 +501,14 @@ namespace ember::script
 			push_function(function);
 			lua_setglobal(m_L, function.name);
 		}
+
+		lua_getglobal(m_L, "world");
+		for (const Function& function : m_binding.m_world_functions)
+		{
+			push_function(function);
+			lua_setfield(m_L, -2, function.name);
+		}
+		lua_pop(m_L, 1);
 
 		for (const Enumeration& enumeration : m_binding.m_enumerations)
 		{
@@ -613,7 +650,11 @@ namespace ember::script
 		const Context outer_context	   = m_context;
 		ecs::Commands* outer_commands  = m_commands;
 		Vector<System> outer_staging(std::move(m_staging));
+		Vector<Graph> outer_graphs(std::move(m_brains->staging));
+		Vector<Extras> outer_extras(std::move(m_brains->extras_staging));
 		m_staging.clear();
+		m_brains->staging.clear();
+		m_brains->extras_staging.clear();
 		m_modules[index].loading = true;
 		m_loading				 = static_cast<i32>(index);
 		m_context				 = Context::Count;
@@ -628,13 +669,19 @@ namespace ember::script
 		m_context		= outer_context;
 		m_commands		= outer_commands;
 		Vector<System> staged(std::move(m_staging));
-		m_staging = std::move(outer_staging);
+		Vector<Graph> graphs(std::move(m_brains->staging));
+		Vector<Extras> extras(std::move(m_brains->extras_staging));
+		m_staging				 = std::move(outer_staging);
+		m_brains->staging		 = std::move(outer_graphs);
+		m_brains->extras_staging = std::move(outer_extras);
 
 		if (status != LUA_OK)
 		{
 			report_lua(source.path, lua_tostring(thread, -1));
 			for (const System& system : staged)
 				lua_unref(m_L, system.ref);
+			for (Graph& graph : graphs)
+				release_graph(m_L, graph);
 			lua_unref(m_L, thread_ref);
 			if (module.loaded)
 			{
@@ -655,6 +702,27 @@ namespace ember::script
 		module.loaded	 = true;
 		for (const System& system : staged)
 			m_systems.push_back(system);
+		for (Graph& graph : graphs)
+		{
+			// A graph of the same name from another module gives way: the last loaded wins, and says so.
+			std::erase_if(m_brains->graphs,
+						  [&](Graph& known)
+						  {
+							  if (known.id != graph.id)
+								  return false;
+							  if (known.module != graph.module)
+								  report(source.path, 0, Severity::Warning,
+										 "stategraph " + graph.name + " is declared by " + m_modules[known.module].path + " too");
+							  release_graph(m_L, known);
+							  return true;
+						  });
+			m_brains->graphs.push_back(std::move(graph));
+		}
+		for (Extras& record : extras)
+		{
+			std::erase_if(m_brains->extras, [&](const Extras& known) { return known.prefab == record.prefab; });
+			m_brains->extras.push_back(std::move(record));
+		}
 		return true;
 	}
 
@@ -678,6 +746,15 @@ namespace ember::script
 						  lua_unref(m_L, system.ref);
 						  return true;
 					  });
+		std::erase_if(m_brains->graphs,
+					  [&](Graph& graph)
+					  {
+						  if (graph.module != index)
+							  return false;
+						  release_graph(m_L, graph);
+						  return true;
+					  });
+		std::erase_if(m_brains->extras, [&](const Extras& extras) { return extras.module == index; });
 	}
 
 	void Host::reload(Span<const Source> sources) noexcept
@@ -758,9 +835,12 @@ namespace ember::script
 			if (system.disabled)
 				continue;
 
+			// A server script's system never runs in a client's world, nor a client's in a server's.
 			Module& module = m_modules[system.module];
-			m_context	   = module.context;
-			m_steps		   = 0;
+			if (!runs_in(module.context, m_world.role()))
+				continue;
+			m_context = module.context;
+			m_steps	  = 0;
 
 			lua_State* thread = module.thread;
 			lua_settop(thread, 0);
@@ -780,8 +860,8 @@ namespace ember::script
 				++m_stats.errors;
 			}
 		}
-		m_context			= Context::Count;
-		m_bucket_us[bucket] = microseconds_since(start);
+		m_context = Context::Count;
+		m_bucket_us[bucket] += microseconds_since(start);
 	}
 
 	void Host::simulate(u8 stage, ecs::Commands& commands) noexcept
@@ -791,6 +871,7 @@ namespace ember::script
 
 		EMBER_PROFILE_SCOPE_C("script simulate", PROFILE_COLOR_GAMEPLAY);
 		m_commands = &commands;
+		run_events(stage);
 		run_bucket(stage);
 		m_commands = nullptr;
 		lua_gc(m_L, LUA_GCSTEP, static_cast<int>(m_def.gc_step_kb));
@@ -803,9 +884,47 @@ namespace ember::script
 
 		EMBER_PROFILE_SCOPE_C("script present", PROFILE_COLOR_GAMEPLAY);
 		m_commands = &commands;
+		m_bucket_us.back() = 0.0;
 		run_bucket(static_cast<u32>(m_buckets.size() - 1));
 		m_commands = nullptr;
 		lua_gc(m_L, LUA_GCSTEP, static_cast<int>(m_def.gc_step_kb));
+	}
+
+	void Host::run_events(u8 stage) noexcept
+	{
+		const auto start = Clock::now();
+		run_stategraphs(*this, stage);
+		if (stage < m_bucket_us.size())
+			m_bucket_us[stage] = microseconds_since(start);
+		else
+			(void)start;
+	}
+
+	void Host::event(ecs::Entity entity, StringView name, ecs::Entity source) noexcept
+	{
+		Event event;
+		event.target = entity;
+		event.source = source;
+		event.name	 = hash_text(name);
+		event.tick	 = m_now;
+		if (m_brains->running)
+			m_brains->raised.push_back(event);
+		else
+			m_brains->events.push_back(event);
+		++m_stats.events;
+	}
+
+	StringView Host::state_of(ecs::Entity entity) const noexcept
+	{
+		if (m_brains->stategraph == nullptr || !m_world.registry.valid(entity))
+			return {};
+		const auto* sg = static_cast<const Stategraph*>(m_brains->stategraph->find(*m_brains->stategraph, m_world.registry, entity));
+		if (sg == nullptr)
+			return {};
+		const Graph* graph = m_brains->graph(sg->graph);
+		if (graph == nullptr || sg->state == Stategraph::NO_STATE || sg->state >= graph->states.size())
+			return {};
+		return graph->states[sg->state].name;
 	}
 
 	void Host::report(StringView path, u32 line, Severity severity, StringView message) noexcept
@@ -853,8 +972,9 @@ namespace ember::script
 			stats.modules += module.loaded ? 1 : 0;
 		for (const System& system : m_systems)
 			stats.disabled += system.disabled ? 1 : 0;
-		stats.problems	= static_cast<u32>(m_problems.size());
-		stats.lua_bytes = m_lua_bytes;
+		stats.problems	  = static_cast<u32>(m_problems.size());
+		stats.stategraphs = static_cast<u32>(m_brains->graphs.size());
+		stats.lua_bytes	  = m_lua_bytes;
 		stats.hash		= m_hash;
 
 		stats.simulate_us = 0.0;

@@ -3,11 +3,13 @@
 #include <ember/core/common.h>
 
 /**
- * Deterministic math for scripts: what the sim's `math` table calls instead of the platform's libm,
- * whose sin and exp differ in their last bits between C libraries. Every function here is adds,
- * multiplies, divides and square roots on doubles, which IEEE 754 fixes to the bit, and the module
- * is built without fused multiply-adds, so two machines agree exactly. Accuracy is a few units in
- * the last place: plenty for gameplay, and the same everywhere, which is the point.
+ * Deterministic math for lua scripts.
+ *
+ * What the lua `math` table calls instead of the platform's libm, whose sin and exp differ in their
+ * last bits between C libraries. Every function here is adds, multiplies, divides and square roots
+ * on doubles, which IEEE 754 fixes to the bit, and the module is built without fused multiply-adds,
+ * so two machines can agree exactly. Accuracy is a few units in the last place; plenty for gameplay,
+ * and consistent everywhere.
  */
 namespace ember::script::dmath
 {
