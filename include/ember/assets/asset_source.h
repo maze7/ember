@@ -75,6 +75,19 @@ namespace ember
 		/** The directory an OS watch reports saves under; empty when nothing changes behind the source's back. */
 		[[nodiscard]] virtual StringView watch_directory() const noexcept { return {}; }
 
+		/**
+		 * Every name the source serves below `below` ("scripts", or empty for all of them), appended to `out`
+		 * in no particular order, as the source names them: a directory walks its tree, a pack its index
+		 * with what was delivered over it. Owner thread, at a start: a library that loads a whole directory.
+		 * Unsupported for a source that cannot list itself.
+		 */
+		[[nodiscard]] virtual Result<void, fs::FileError> enumerate(StringView below, Vector<String>& out) noexcept
+		{
+			(void)below;
+			(void)out;
+			return fail(fs::FileError{.code = fs::FileErrorCode::Unsupported, .op = fs::FileOp::Enumerate});
+		}
+
 	protected:
 		AssetSource() noexcept = default;
 	};
@@ -95,6 +108,7 @@ namespace ember
 		[[nodiscard]] bool file_of(StringView name, String& out) const noexcept override;
 		[[nodiscard]] bool name_of(StringView file, String& out) const noexcept override;
 		[[nodiscard]] StringView watch_directory() const noexcept override { return m_directory; }
+		[[nodiscard]] Result<void, fs::FileError> enumerate(StringView below, Vector<String>& out) noexcept override;
 
 	private:
 		String m_directory;

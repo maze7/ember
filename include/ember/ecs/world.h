@@ -135,6 +135,13 @@ namespace ember::ecs
 			Target target;
 		};
 
+		/** A component by id, its bytes following the payload: what a script or a tool adds. */
+		struct RawPayload
+		{
+			Target target;
+			ComponentId component = 0;
+		};
+
 		struct DestroyPayload
 		{
 			Entity entity = NO_ENTITY;
@@ -184,6 +191,15 @@ namespace ember::ecs
 
 		void destroy(Entity entity) noexcept;
 
+		/**
+		 * A component by its id rather than its type, as a script or a tool adds one: `value` is the
+		 * component's bytes, as many as its type has. Nothing when the type does not live in this world,
+		 * as the typed add leaves it out.
+		 */
+		void add(Entity entity, ComponentId component, const void* value) noexcept;
+		void add(Spawned spawned, ComponentId component, const void* value) noexcept;
+		void remove(Entity entity, ComponentId component) noexcept;
+
 	private:
 		static constexpr u32 OWN = ~u32{0};
 
@@ -198,6 +214,10 @@ namespace ember::ecs
 			std::memcpy(into.bytes.data() + at + sizeof(apply), &size, sizeof(size));
 			std::memcpy(into.bytes.data() + at + sizeof(apply) + sizeof(size), &payload, sizeof(Payload));
 		}
+
+		/** A payload with a component's bytes after it, which are not part of it: an add by id. */
+		static void push_raw(detail::CommandStream& into, detail::ApplyFn apply, const detail::RawPayload& payload,
+							 const void* bytes, u32 size) noexcept;
 
 		/** Whether T lives in this world: a component that does not is left out, as the world would. */
 		template <Component T> [[nodiscard]] bool lives_here() const noexcept;

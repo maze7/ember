@@ -48,8 +48,16 @@ namespace ember
 		[[nodiscard]] Result<fs::FileData, fs::FileError> read(StringView name,
 															   std::pmr::memory_resource& memory) noexcept override;
 		[[nodiscard]] Result<void, fs::FileError> deliver(StringView name, Span<const u8> bytes) noexcept override;
+		[[nodiscard]] Result<void, fs::FileError> enumerate(StringView below, Vector<String>& out) noexcept override;
 
 	private:
+		/** A file delivered over the pack: its name, for enumerate(), and its bytes. */
+		struct Overlaid
+		{
+			String name;
+			Vector<u8> bytes;
+		};
+
 		struct Entry
 		{
 			String name;
@@ -65,6 +73,6 @@ namespace ember
 
 		/// The overlay: read on the IO thread, written there too, asked about from anywhere.
 		mutable SpinMutex m_lock;
-		HashMap<AssetId, Vector<u8>> m_overlay;
+		HashMap<AssetId, Overlaid> m_overlay;
 	};
 }

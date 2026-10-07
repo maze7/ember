@@ -441,6 +441,7 @@ namespace ember::ecs
 		Where where = Where::Everywhere;
 		Vector<AccessInfo> access; // one entry a type
 		bool structural = false;   // takes Commands&
+		bool exclusive	= false;   // runs alone in its stage: after everything before it, before everything after
 
 		void (*run)(World& world, SystemContext& context)  = nullptr;
 		void (*prepare)(entt::registry& registry) noexcept = nullptr; // makes the storages its views read
@@ -495,8 +496,29 @@ namespace ember::ecs
 				info.stage_name = [](u8 value) noexcept { return enum_name(static_cast<Stage>(value)); };
 		}
 
+		/**
+		 * A Simulate system the stage runs alone, whatever its parameters say: after every system registered
+		 * before it, and before every one after. For a system that reaches storages its parameters cannot
+		 * name, such as a script host running what scripts declared.
+		 */
+		template <auto System, class Stage>
+			requires std::is_enum_v<Stage>
+		void simulate_exclusive(Stage stage, Where where = Where::Everywhere) noexcept
+		{
+			SystemInfo& info = add<Phase::Simulate, System>(static_cast<u8>(stage), where);
+			info.exclusive	 = true;
+			if constexpr (requires { EnumNames<Stage>{}(); })
+				info.stage_name = [](u8 value) noexcept { return enum_name(static_cast<Stage>(value)); };
+		}
+
 		/** A Present system: a client, every frame. */
 		template <auto System> void present() noexcept { (void)add<Phase::Present, System>(0, Where::Client); }
+
+		/** A Present system that runs alone, as simulate_exclusive() does. */
+		template <auto System> void present_exclusive() noexcept
+		{
+			add<Phase::Present, System>(0, Where::Client).exclusive = true;
+		}
 
 		/** An Input system: a client, every tick, before Simulate. */
 		template <auto System> void input() noexcept { (void)add<Phase::Input, System>(0, Where::Client); }

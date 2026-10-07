@@ -6,6 +6,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <cstring>
 #include <atomic>
 #include <iterator>
 
@@ -60,6 +61,72 @@ namespace ember::ecs
 					world.registry.destroy(payload.entity);
 			},
 			detail::DestroyPayload{.entity = entity});
+	}
+
+	namespace
+	{
+		void apply_add_raw(World& world, SystemContext& context, const u8* bytes) noexcept
+		{
+			detail::RawPayload payload;
+			std::memcpy(&payload, bytes, sizeof(payload));
+
+			const Entity entity = context.resolve(payload.target);
+			if (!world.registry.valid(entity))
+				return;
+
+			const ComponentInfo& info = world.components()[payload.component];
+			if (lives_in(info.kind, world.role()))
+				info.emplace(world.registry, entity, bytes + sizeof(payload));
+		}
+
+		void apply_remove_raw(World& world, SystemContext& context, const u8* bytes) noexcept
+		{
+			detail::RawPayload payload;
+			std::memcpy(&payload, bytes, sizeof(payload));
+
+			const Entity entity = context.resolve(payload.target);
+			if (world.registry.valid(entity))
+				world.components()[payload.component].remove(world.registry, entity);
+		}
+	}
+
+	void Commands::push_raw(detail::CommandStream& into, detail::ApplyFn apply, const detail::RawPayload& payload,
+							const void* bytes, u32 size) noexcept
+	{
+		const size_t at	 = into.bytes.size();
+		const u32 total = static_cast<u32>(sizeof(payload)) + size;
+		into.bytes.resize(at + sizeof(apply) + sizeof(total) + total);
+		std::memcpy(into.bytes.data() + at, &apply, sizeof(apply));
+		std::memcpy(into.bytes.data() + at + sizeof(apply), &total, sizeof(total));
+		std::memcpy(into.bytes.data() + at + sizeof(apply) + sizeof(total), &payload, sizeof(payload));
+		if (size > 0)
+			std::memcpy(into.bytes.data() + at + sizeof(apply) + sizeof(total) + sizeof(payload), bytes, size);
+	}
+
+	void Commands::add(Entity entity, ComponentId component, const void* value) noexcept
+	{
+		const World& world		  = m_context->world();
+		const ComponentInfo& info = world.components()[component];
+		if (!lives_in(info.kind, world.role()))
+			return;
+		push_raw(stream(), &apply_add_raw, {.target = {.entity = entity, .spawned = {}}, .component = component}, value,
+				 info.size);
+	}
+
+	void Commands::add(Spawned spawned, ComponentId component, const void* value) noexcept
+	{
+		const World& world		  = m_context->world();
+		const ComponentInfo& info = world.components()[component];
+		if (!lives_in(info.kind, world.role()))
+			return;
+		push_raw(stream(), &apply_add_raw, {.target = {.entity = NO_ENTITY, .spawned = spawned}, .component = component},
+				 value, info.size);
+	}
+
+	void Commands::remove(Entity entity, ComponentId component) noexcept
+	{
+		push_raw(stream(), &apply_remove_raw, {.target = {.entity = entity, .spawned = {}}, .component = component},
+				 nullptr, 0);
 	}
 
 	u32 Commands::segment() noexcept
@@ -295,6 +362,11 @@ namespace ember::ecs
 		for (u32 i = 0; i < stage.nodes.size(); ++i)
 		{
 			flow.bind(static_cast<entt::id_type>(i));
+
+			// An exclusive system is a barrier: it waits for everything before it, and everything after waits for it.
+			if (stage.nodes[i].system->exclusive)
+				flow.sync();
+
 			for (const AccessInfo& access : stage.nodes[i].system->access)
 			{
 				if (access.write)
@@ -510,6 +582,8 @@ namespace ember::ecs
 					fmt::format_to(std::back_inserter(access.write ? writes : reads), " {}", access.name);
 				if (system.structural)
 					writes += " +commands";
+				if (system.exclusive)
+					writes += " +exclusive";
 
 				String after;
 				for (u32 parent : node.after)

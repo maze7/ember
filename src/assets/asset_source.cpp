@@ -65,4 +65,52 @@ namespace ember
 		out.assign(StringView(normal).substr(m_directory.size()));
 		return true;
 	}
+
+	namespace
+	{
+		/** Walks `directory` and its subdirectories, naming each file `prefix/<path below directory>`. */
+		Result<void, fs::FileError> walk(StringView directory, StringView prefix, Vector<String>& out) noexcept
+		{
+			Vector<String> subdirectories(out.get_allocator());
+
+			const auto visited = fs::enumerate(
+				directory,
+				[&](const fs::DirectoryEntry& entry) noexcept
+				{
+					String name(prefix, out.get_allocator());
+					if (!name.empty())
+						name += '/';
+					name += entry.name;
+
+					if (entry.type == fs::FileType::Directory)
+						subdirectories.push_back(std::move(name));
+					else if (entry.type == fs::FileType::Regular)
+						out.push_back(std::move(name));
+
+					return fs::Visit::Continue;
+				});
+			if (!visited)
+				return visited;
+
+			for (const String& subdirectory : subdirectories)
+			{
+				String path(out.get_allocator());
+				if (const auto joined = fs::join(path, directory, StringView(subdirectory).substr(prefix.empty() ? 0 : prefix.size() + 1)); !joined)
+					return joined;
+				if (const auto walked = walk(path, subdirectory, out); !walked)
+					return walked;
+			}
+
+			return {};
+		}
+	}
+
+	Result<void, fs::FileError> DirectorySource::enumerate(StringView below, Vector<String>& out) noexcept
+	{
+		String directory(out.get_allocator());
+		if (const auto joined = fs::join(directory, m_directory, below); !joined)
+			return joined;
+
+		return walk(directory, below, out);
+	}
 }

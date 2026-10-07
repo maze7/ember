@@ -18,6 +18,7 @@ add_subdirectory(jobs)
 add_subdirectory(ecs)
 add_subdirectory(physics)
 add_subdirectory(audio)
+add_subdirectory(script)
 
 if(WIN32)
 	target_compile_definitions(ember_core PUBLIC EMBER_PLATFORM_WINDOWS)
@@ -85,6 +86,8 @@ target_link_libraries(ember INTERFACE
 	Ember::Ecs
 	Ember::Physics
 	Ember::Audio
+	Ember::Script
+	$<$<BOOL:${EMBER_ENABLE_ASSETS}>:Ember::ScriptAssets>
 	$<$<BOOL:${EMBER_ENABLE_PLATFORM}>:Ember::Platform>
 	$<$<BOOL:${EMBER_ENABLE_IMGUI}>:Ember::ImGui>
 	$<$<BOOL:${EMBER_ENABLE_APP}>:Ember::App>

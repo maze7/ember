@@ -551,6 +551,13 @@ namespace ember
 		[[nodiscard]] bool is_mounted(StringView name) const noexcept;
 
 		/**
+		 * Every name below `prefix` ("scripts", "ember/materials"), as assets are named, appended to `out`: the
+		 * root's or the mount's source lists it. Owner thread, at a start; a source that cannot list itself,
+		 * or a prefix nothing serves, gives an error and adds nothing.
+		 */
+		[[nodiscard]] Result<void, fs::FileError> enumerate(StringView prefix, Vector<String>& out) noexcept;
+
+		/**
 		 * Once per frame on the owner thread, before the frame's update is kicked: unloads assets
 		 * nothing references, publishes what finished for types that publish here, folds finished
 		 * reloads into their payloads, refreshes the payloads those touched, frees what earlier

@@ -294,3 +294,27 @@ if(EMBER_ENABLE_AUDIO)
 	target_link_libraries(fmod_studio INTERFACE fmod_core)
 	add_library(FMOD::Studio ALIAS fmod_studio)
 endif()
+
+# Luau backs Ember::Script: the VM, its compiler and the parser the host reads signatures and lints
+# from. Pinned to a release, built without its CLI, tests and web module. Its headers are system
+# headers to the modules that use them, and the VM is built without fused multiply-adds, as game code
+# is: a sim script must add and multiply the same on every machine.
+set(LUAU_BUILD_CLI OFF CACHE BOOL "No Luau CLI" FORCE)
+set(LUAU_BUILD_TESTS OFF CACHE BOOL "No Luau tests" FORCE)
+set(LUAU_BUILD_WEB OFF CACHE BOOL "No Luau web module" FORCE)
+set(LUAU_WERROR OFF CACHE BOOL "Luau warnings are its own" FORCE)
+add_subdirectory(luau EXCLUDE_FROM_ALL)
+
+foreach(luau_target Luau.VM Luau.Compiler Luau.Ast Luau.Bytecode Luau.Common Luau.Config)
+	if(TARGET ${luau_target})
+		get_target_property(luau_includes ${luau_target} INTERFACE_INCLUDE_DIRECTORIES)
+		if(luau_includes)
+			set_target_properties(${luau_target} PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${luau_includes}")
+		endif()
+	endif()
+endforeach()
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+	target_compile_options(Luau.VM PRIVATE -ffp-contract=off)
+	target_compile_options(Luau.Compiler PRIVATE -ffp-contract=off)
+endif()

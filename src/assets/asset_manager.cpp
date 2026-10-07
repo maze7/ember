@@ -315,6 +315,29 @@ namespace ember
 		return m_root_source->name_of(file, name);
 	}
 
+	Result<void, fs::FileError> AssetManager::enumerate(StringView prefix, Vector<String>& out) noexcept
+	{
+		Resolved resolved(*m_heap);
+		if (!resolve(prefix, resolved))
+			return fail(fs::FileError{.code = fs::FileErrorCode::NotFound, .op = fs::FileOp::Enumerate});
+
+		// The source names below itself; a mount's names get the prefix back that resolve() took off.
+		Vector<String> local(out.get_allocator());
+		if (const auto listed = resolved.source->enumerate(resolved.local, local); !listed)
+			return listed;
+
+		const StringView mount = resolved.mounted ? StringView(resolved.name).substr(0, resolved.name.size() - resolved.local.size()) : StringView();
+		for (String& name : local)
+		{
+			if (mount.empty())
+				out.push_back(std::move(name));
+			else
+				out.push_back(String(mount, out.get_allocator()) + name);
+		}
+
+		return {};
+	}
+
 	bool AssetManager::is_mounted(StringView name) const noexcept
 	{
 		Resolved resolved(*m_heap);

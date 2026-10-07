@@ -193,9 +193,9 @@ namespace ember
 
 			if (const auto it = m_overlay.find(id); it != m_overlay.end())
 			{
-				auto data = fs::FileData::allocate(it->second.size(), memory);
+				auto data = fs::FileData::allocate(it->second.bytes.size(), memory);
 				if (data)
-					std::memcpy(data->data(), it->second.data(), it->second.size());
+					std::memcpy(data->data(), it->second.bytes.data(), it->second.bytes.size());
 				return data;
 			}
 		}
@@ -218,10 +218,28 @@ namespace ember
 
 	Result<void, fs::FileError> PackSource::deliver(StringView name, Span<const u8> bytes) noexcept
 	{
-		Vector<u8> copy(bytes.begin(), bytes.end(), &memory::heap(m_tag));
+		Overlaid overlaid{.name = String(name, &memory::heap(m_tag)), .bytes = Vector<u8>(bytes.begin(), bytes.end(), &memory::heap(m_tag))};
 
 		std::scoped_lock lock(m_lock);
-		m_overlay.insert_or_assign(asset_id(name), std::move(copy));
+		m_overlay.insert_or_assign(asset_id(name), std::move(overlaid));
+		return {};
+	}
+
+	Result<void, fs::FileError> PackSource::enumerate(StringView below, Vector<String>& out) noexcept
+	{
+		// A name is below a prefix when it starts with it and a separator, or the prefix is empty.
+		const auto under = [below](StringView name)
+		{ return below.empty() || (name.size() > below.size() && name.starts_with(below) && name[below.size()] == '/'); };
+
+		for (const Entry& entry : m_entries)
+			if (under(entry.name))
+				out.push_back(String(entry.name, out.get_allocator()));
+
+		std::scoped_lock lock(m_lock);
+		for (const auto& [id, overlaid] : m_overlay)
+			if (under(overlaid.name) && !m_index.contains(id))
+				out.push_back(String(overlaid.name, out.get_allocator()));
+
 		return {};
 	}
 }
