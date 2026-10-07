@@ -40,6 +40,11 @@ namespace ember::net
 	 * Arrival times come from the library's receive thread, so they mark when a datagram reached the
 	 * machine, not when poll() noticed it.
 	 *
+	 * Every connection has two lanes: lane 0 for the game's packets and messages, and a bulk lane behind
+	 * it, at lower priority, for Delivery::Bulk. The library sends lane 0 first whenever it has anything
+	 * to send there, so a file on its way never delays a tick's packet, and a bulk message of up to
+	 * MAX_BULK_BYTES travels whole, fragmented and reassembled by the library.
+	 *
 	 * One thread drives each transport. The library reports connection changes through a callback that
 	 * whichever transport polls next runs for all of them (or, in a Steam build, the app's
 	 * SteamAPI_RunCallbacks), so each transport's connection table is guarded by a lock of its own.
@@ -85,7 +90,7 @@ namespace ember::net
 																   f64 now) noexcept;
 
 		void disconnect(PeerId peer, DisconnectReason reason, f64 now) noexcept override;
-		void send(PeerId peer, Span<const u8> data, Delivery delivery, f64 now) noexcept override;
+		bool send(PeerId peer, Span<const u8> data, Delivery delivery, f64 now) noexcept override;
 		bool poll(f64 now, TransportEvent& event) noexcept override;
 		PeerStats stats(PeerId peer) const noexcept override;
 
@@ -139,5 +144,12 @@ namespace ember::net
 
 		/** The bytes poll() handed out last; the event's span points here until the next poll(). */
 		std::array<u8, MAX_PACKET_BYTES> m_received = {};
+
+		/**
+		 * The library's own message behind the bulk event poll() handed out last, released at the next
+		 * poll(): a bulk message is read where the library put it rather than copied. Its type is the
+		 * library's, which no header of the engine names.
+		 */
+		void* m_held = nullptr;
 	};
 }

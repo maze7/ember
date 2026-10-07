@@ -54,33 +54,79 @@ namespace ember
 			return components < std::size(widths) ? widths[components] : StringView();
 		}
 
-		/**
-		 * A type from the pair ember_cook wrote beside its source. Both files are dependencies: in a dev
-		 * build running cooked, a cook that rewrites them reloads the type.
-		 */
-		[[nodiscard]] bool read_cooked(StringView file, material::Type& out, String& problems) noexcept
+		[[nodiscard]] Span<const u8> as_bytes(StringView text) noexcept
 		{
-			const StringView stem = file.substr(0, file.size() - fs::extension(file).size());
+			return {reinterpret_cast<const u8*>(text.data()), text.size()};
+		}
 
-			String type_path(stem, &assets_heap());
-			String spirv_path(stem, &assets_heap());
-			type_path += material::TYPE_EXTENSION;
-			spirv_path += material::SPIRV_EXTENSION;
+		/** The name of one of a type's pair: its source's name with the extension swapped. */
+		[[nodiscard]] String pair_name(StringView source, const char* extension) noexcept
+		{
+			String name(source.substr(0, source.size() - fs::extension(source).size()), &assets_heap());
+			name += extension;
+			return name;
+		}
 
-			const auto type_file = fs::read_file(type_path, assets_heap());
-			const auto spirv	 = fs::read_file(spirv_path, assets_heap());
+		/**
+		 * A type from the pair ember_cook, or a cooking build, wrote beside its source, read by name
+		 * through whatever source holds the type: a directory, or a pack. Both files become
+		 * dependencies by being read, so a cook that rewrites them reloads the type.
+		 */
+		[[nodiscard]] bool read_pair(AssetLoad& load, material::Type& out, String& problems) noexcept
+		{
+			const String type_name	= pair_name(load.path(), material::TYPE_EXTENSION);
+			const String spirv_name = pair_name(load.path(), material::SPIRV_EXTENSION);
 
-			bool read = false;
+			const auto type_file = load.read(type_name);
+			const auto spirv	 = load.read(spirv_name);
 
 			if (!type_file || !spirv)
+			{
 				fmt::format_to(std::back_inserter(problems), "no cooked pair beside it: {} and {} are read together",
-							   type_path, spirv_path);
-			else
-				read = material::read_cooked(type_file->text(), spirv->bytes(), out, problems);
+							   type_name, spirv_name);
+				return false;
+			}
 
-			out.dependencies.push_back(std::move(type_path));
-			out.dependencies.push_back(std::move(spirv_path));
-			return read;
+			return material::read_cooked(type_file->text(), spirv->bytes(), out, problems);
+		}
+
+		/** Writes a file only when its bytes differ, as ember_cook does: an unchanged pair wakes no watcher. */
+		[[nodiscard]] bool write_if_changed(StringView path, Span<const u8> bytes, String& problems,
+											bool& wrote) noexcept
+		{
+			wrote = false;
+
+			if (const auto existing = fs::read_file(path, assets_heap());
+				existing && existing->size() == bytes.size() &&
+				std::equal(bytes.begin(), bytes.end(), existing->data()))
+				return true;
+
+			if (const auto written = fs::write_file_atomic(path, bytes, fs::WriteDurability::None); !written)
+			{
+				fmt::format_to(std::back_inserter(problems), "cannot write {} ({})", path,
+							   enum_name(written.error().code));
+				return false;
+			}
+
+			wrote = true;
+			return true;
+		}
+
+		/** The pair ember_cook would write beside the source, from a build: the SPIR-V and the .type file. */
+		[[nodiscard]] bool write_pair(StringView file, const material::Type& type, String& problems,
+									  MaterialAssets::PairWritten& written) noexcept
+		{
+			String type_text(&assets_heap());
+			if (!material::write_type(type, type_text))
+			{
+				problems = "its .type file could not be written: a value in it has no spelling";
+				return false;
+			}
+
+			return write_if_changed(pair_name(file, material::SPIRV_EXTENSION), type.bytecode(), problems,
+									written.spirv) &&
+				   write_if_changed(pair_name(file, material::TYPE_EXTENSION), as_bytes(type_text), problems,
+									written.type);
 		}
 
 		/// A value as the file spells it. False for a spelling no parameter could hold.
@@ -330,19 +376,40 @@ namespace ember
 		if (out.stock && !library.builds_stock())
 			return true;
 
+		String problems(&load.heap());
+
+		// A build without the compiler, or one asked to run cooked: the pair, by name, from whatever
+		// source holds the type.
+		if (!library.compiles())
+		{
+			if (read_pair(load, out.build, problems))
+				return true;
+
+			EMBER_ERROR("material type '{}' did not load:\n{}", load.path(), problems);
+			return false;
+		}
+
+		// A compile needs the source as a file: a type in a pack is read cooked, never compiled.
+		if (load.file().empty())
+		{
+			EMBER_ERROR("material type '{}': no source file to compile; it is served by a pack", load.path());
+			return false;
+		}
+
 		// On the IO thread: a compile reads the source and every file it imports, holds its thread for
-		// tens of milliseconds, and wants more stack than a fiber has. A cooked pair is two reads.
+		// tens of milliseconds, and wants more stack than a fiber has.
 		struct Build
 		{
 			MaterialAssets* library;
 			StringView file;
+			bool stock;
 			material::Type* type;
 			String* problems;
 			bool built;
+			MaterialAssets::PairWritten written;
 		};
 
-		String problems(&load.heap());
-		Build build{&library, load.file(), &out.build, &problems, false};
+		Build build{&library, load.file(), out.stock, &out.build, &problems, false, {}};
 		jobs::Counter done;
 
 		const auto submitted = jobs::submit_io(
@@ -351,7 +418,8 @@ namespace ember
 					[](void* data) noexcept
 				{
 					Build& build = *static_cast<Build*>(data);
-					build.built	 = build.library->build(build.file, *build.type, *build.problems);
+					build.built =
+						build.library->build(build.file, build.stock, *build.type, *build.problems, build.written);
 				},
 				.data	  = &build,
 				.name	  = "build material type",
@@ -366,6 +434,13 @@ namespace ember
 		}
 
 		jobs::wait(done);
+
+		// What the cook wrote is news now, not when the watcher gets round to it: a host sends the pair
+		// on at once, and the watcher's own report of the write is not counted again.
+		if (build.written.type)
+			load.notify_written(pair_name(load.path(), material::TYPE_EXTENSION));
+		if (build.written.spirv)
+			load.notify_written(pair_name(load.path(), material::SPIRV_EXTENSION));
 
 		// Everything the build read reloads the type when it changes: its imports, the engine modules it
 		// links, or the pair it was cooked into. A failed build names what it got to, where the fix is.
@@ -526,7 +601,8 @@ namespace ember
 		assets.register_type<MaterialAsset>("material", this);
 
 #if EMBER_SHADER_COMPILER
-		m_cooked = def.cooked;
+		m_cooked	  = def.cooked;
+		m_write_pairs = def.write_pairs;
 
 		if (!m_cooked)
 		{
@@ -569,7 +645,8 @@ namespace ember
 		return {};
 	}
 
-	bool MaterialAssets::build(StringView file, material::Type& out, String& problems) noexcept
+	bool MaterialAssets::build(StringView file, bool stock, material::Type& out, String& problems,
+							   PairWritten& written) noexcept
 	{
 #if EMBER_SHADER_COMPILER
 		if (!m_cooked)
@@ -603,10 +680,21 @@ namespace ember
 				return false;
 			}
 
-			return m_compiler->compile_material(file, source->text(), out, problems);
+			if (!m_compiler->compile_material(file, source->text(), out, problems))
+				return false;
+
+			// The cook: a game type's build goes beside its source as the pair a cooked build reads, so
+			// the tree holds what this build runs. A stock source lives in the engine's directory, which
+			// cooked builds embed, so nothing is written there. The pair is this build's own output, not
+			// one of its dependencies: a save compiles once.
+			return stock || !m_write_pairs || write_pair(file, out, problems, written);
 		}
 #endif
 
-		return read_cooked(file, out, problems);
+		(void)stock;
+		(void)out;
+		(void)written;
+		problems = "this build does not compile; a type loads from its cooked pair";
+		return false;
 	}
 }

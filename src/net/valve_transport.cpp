@@ -20,6 +20,7 @@
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <utility>
 
 namespace ember::net
 {
@@ -30,6 +31,12 @@ namespace ember::net
 	namespace
 	{
 		constexpr const char* LIBRARY = STEAM_NETWORKING ? "SteamNetworkingSockets" : "GameNetworkingSockets";
+
+		// Lane 0 is the game's, the bulk lane is behind it: lower priority, so lane 0 is always sent
+		// first when it has anything. Weights are moot across priorities.
+		constexpr int LANE_COUNT				  = 2;
+		constexpr uint16 BULK_LANE				  = 1;
+		constexpr int LANE_PRIORITIES[LANE_COUNT] = {0, 1};
 
 		std::atomic<bool> s_claimed = false; // initialize() has run, or is running
 
@@ -316,6 +323,15 @@ namespace ember::net
 		utils.SetDebugOutputFunction(k_ESteamNetworkingSocketsDebugOutputType_Warning, &log_output);
 		utils.SetGlobalCallback_SteamNetConnectionStatusChanged(&ValveTransport::Callbacks::status_changed);
 
+		// The library paces each connection at a fixed rate, its min and max the same value; the
+		// default is 256 KB a second. Set here, it reaches every connection made from now on.
+		if (def.send_rate != 0)
+		{
+			const auto rate = static_cast<int32>(std::min<u32>(def.send_rate, 100u << 20));
+			utils.SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_SendRateMin, rate);
+			utils.SetGlobalConfigValueInt32(k_ESteamNetworkingConfig_SendRateMax, rate);
+		}
+
 		s_sockets.store(api, std::memory_order_release);
 		return {};
 	}
@@ -393,6 +409,9 @@ namespace ember::net
 
 	ValveTransport::~ValveTransport() noexcept
 	{
+		if (m_held != nullptr)
+			static_cast<SteamNetworkingMessage_t*>(std::exchange(m_held, nullptr))->Release();
+
 		if (!ready())
 			return;
 
@@ -536,24 +555,53 @@ namespace ember::net
 		sockets().CloseConnection(connection, end_code(reason), enum_name(reason), false);
 	}
 
-	void ValveTransport::send(PeerId peer, Span<const u8> data, Delivery delivery, f64 /*now*/) noexcept
+	bool ValveTransport::send(PeerId peer, Span<const u8> data, Delivery delivery, f64 /*now*/) noexcept
 	{
-		EMBER_ASSERT(data.size() <= MAX_PACKET_BYTES && "larger than a transport carries in one piece");
+		const u32 most = delivery == Delivery::Bulk ? MAX_BULK_BYTES : MAX_PACKET_BYTES;
+		EMBER_ASSERT(data.size() <= most && "larger than a transport carries in one piece");
 
 		const u32 connection = connection_of(peer);
-		if (connection == k_HSteamNetConnection_Invalid || data.size() > MAX_PACKET_BYTES)
-			return;
+		if (connection == k_HSteamNetConnection_Invalid || data.size() > most)
+			return false;
 
-		const int flags = delivery == Delivery::Reliable ? k_nSteamNetworkingSend_ReliableNoNagle
-														 : k_nSteamNetworkingSend_UnreliableNoNagle;
+		if (delivery != Delivery::Bulk)
+		{
+			const int flags = delivery == Delivery::Reliable ? k_nSteamNetworkingSend_ReliableNoNagle
+															 : k_nSteamNetworkingSend_UnreliableNoNagle;
 
-		sockets().SendMessageToConnection(connection, data.data(), static_cast<uint32>(data.size()), flags, nullptr);
+			return sockets().SendMessageToConnection(connection, data.data(), static_cast<uint32>(data.size()), flags,
+													 nullptr) == k_EResultOK;
+		}
+
+		// Only SendMessages() takes a lane. Nagle stays on: bulk wants full packets, not a quick start.
+		SteamNetworkingMessage_t* message = SteamNetworkingUtils()->AllocateMessage(static_cast<int>(data.size()));
+		if (message == nullptr)
+			return false;
+
+		std::memcpy(message->m_pData, data.data(), data.size());
+		message->m_conn	   = connection;
+		message->m_nFlags  = k_nSteamNetworkingSend_Reliable;
+		message->m_idxLane = BULK_LANE;
+
+		// -k_EResultLimitExceeded is the send buffer (512 KB by default) full: the caller paces on
+		// PeerStats::pending_reliable, so it is its budget that is wrong, not the weather.
+		int64 result = 0;
+		sockets().SendMessages(1, &message, &result, true);
+
+		if (result < 0)
+			EMBER_WARN("bulk send of {} bytes refused (EResult {})", data.size(), -result);
+
+		return result > 0;
 	}
 
 	bool ValveTransport::poll(f64 now, TransportEvent& event) noexcept
 	{
 		if (!ready())
 			return false;
+
+		// The bulk message handed out last is done with.
+		if (m_held != nullptr)
+			static_cast<SteamNetworkingMessage_t*>(std::exchange(m_held, nullptr))->Release();
 
 		// Connection changes for every transport in the process, each queued on its own transport.
 		sockets().RunCallbacks();
@@ -578,26 +626,34 @@ namespace ember::net
 			const PeerId peer	= static_cast<PeerId>(message->m_nConnUserData);
 			const u32 size		= message->m_cbSize > 0 ? static_cast<u32>(message->m_cbSize) : 0;
 			const bool reliable = (message->m_nFlags & k_nSteamNetworkingSend_Reliable) != 0;
+			const bool bulk		= message->m_idxLane == BULK_LANE;
 
 			// Arrival is stamped on the library's receive thread; carry the message's age over to the caller's clock.
 			const SteamNetworkingMicroseconds age =
 				SteamNetworkingUtils()->GetLocalTimestamp() - message->m_usecTimeReceived;
 
-			const bool ours = peer != NO_PEER && size <= MAX_PACKET_BYTES;
-			if (ours)
+			// A bulk message is read where the library put it, and held until the next poll; a packet
+			// is copied out. Anything larger is not from this protocol.
+			const bool ours = peer != NO_PEER && size <= (bulk ? MAX_BULK_BYTES : MAX_PACKET_BYTES);
+			if (ours && bulk)
+				m_held = message;
+			else if (ours)
 				std::memcpy(m_received.data(), message->m_pData, size);
 
-			message->Release();
+			if (!ours || !bulk)
+				message->Release();
 
 			if (!ours)
-				continue; // more than any packet: not from this protocol
+				continue;
 
 			event = {
 				.kind	  = TransportEventKind::Received,
 				.peer	  = peer,
 				.time	  = now - static_cast<f64>(std::max<SteamNetworkingMicroseconds>(age, 0)) * 1e-6,
-				.data	  = Span<const u8>(m_received.data(), size),
-				.delivery = reliable ? Delivery::Reliable : Delivery::Unreliable,
+				.data	  = Span<const u8>(bulk ? static_cast<const u8*>(message->m_pData) : m_received.data(), size),
+				.delivery = bulk	   ? Delivery::Bulk
+							: reliable ? Delivery::Reliable
+									   : Delivery::Unreliable,
 			};
 
 			return true;
@@ -686,6 +742,10 @@ namespace ember::net
 
 		sockets().SetConnectionUserData(connection, static_cast<int64>(id));
 		sockets().SetConnectionPollGroup(connection, m_poll_group);
+
+		// Files go on a lane of their own, behind the game's packets and messages. Each end configures
+		// what it sends; nothing about the lanes crosses the wire but the index on each message.
+		(void)sockets().ConfigureConnectionLanes(connection, LANE_COUNT, LANE_PRIORITIES, nullptr);
 
 		std::scoped_lock lock(m_lock);
 		m_peers.push_back({.id = id, .connection = connection, .connected = connected, .incoming = incoming});

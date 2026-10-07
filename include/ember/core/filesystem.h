@@ -232,6 +232,14 @@ namespace ember::fs
 
 		void reset() noexcept;
 
+		/**
+		 * `size` bytes of uninitialised storage from `memory`, owned the way a read's are: for bytes
+		 * that come from somewhere other than a whole file, such as a slice of a pack or a copy made
+		 * for a loader. NoSpace when the resource cannot provide them.
+		 */
+		[[nodiscard]] static Result<FileData, FileError> allocate(size_t size, std::pmr::memory_resource& memory,
+																  size_t alignment = FILE_DATA_ALIGNMENT) noexcept;
+
 	private:
 		friend Result<FileData, FileError> read_file(StringView, std::pmr::memory_resource&,
 													 const ReadFileOptions&) noexcept;

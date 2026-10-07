@@ -17,15 +17,6 @@ namespace ember::anim
 			const Span<const u8> bytes = load.bytes();
 			return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
 		}
-
-		/** Another asset's file: its name under the root this asset's file is under. */
-		[[nodiscard]] String file_of(const AssetLoad& load, StringView name)
-		{
-			const StringView file = load.file();
-			String path(file.substr(0, file.size() - load.path().size()), &load.heap());
-			path += name;
-			return path;
-		}
 	}
 
 	bool SheetAsset::load(AssetLoad& load, SheetAsset& out) noexcept
@@ -40,15 +31,15 @@ namespace ember::anim
 			return false;
 		}
 
-		// The image twice: as a texture for drawing, and its pixels here, to measure each sprite. A
-		// save to the image reloads the sheet too. A cooked sheet will carry both, decoded once.
+		// The image twice: as a texture for drawing, and its pixels here, to measure each sprite,
+		// read by name through whatever source holds it, which makes a save to the image reload the
+		// sheet too. A cooked sheet will carry both, decoded once.
 		out.texture = load.load<TextureAsset>(image_name);
-		load.depends_on(image_name);
 
-		const auto file = fs::read_file(file_of(load, image_name), load.heap());
+		const auto file = load.read(image_name);
 		if (!file)
 		{
-			EMBER_ERROR("{}: cannot read '{}'", load.path(), image_name);
+			EMBER_ERROR("{}: cannot read '{}' ({})", load.path(), image_name, enum_name(file.error().code));
 			return false;
 		}
 

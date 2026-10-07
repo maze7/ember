@@ -7,7 +7,9 @@ endif()
 ember_add_module(Assets
 	SOURCES
 		asset_manager.cpp
+		asset_source.cpp
 		bank_asset.cpp
+		pack_source.cpp
 		texture_asset.cpp
 		file_watcher.cpp
 		material_asset.cpp

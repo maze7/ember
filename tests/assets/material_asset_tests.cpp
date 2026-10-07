@@ -1,4 +1,5 @@
 #include <ember/assets/material_asset.h>
+#include <ember/assets/pack_source.h>
 #include <ember/core/filesystem.h>
 #include <ember/gpu/device.h>
 #include <ember/jobs/job_system.h>
@@ -101,8 +102,11 @@ struct Glow : IMaterial
 			jobs::initialize({.worker_count = 4});
 
 			m_registry.init(m_device, {.max_types = 16, .max_materials = 64, .initial_records = 4});
-			m_assets.init(m_device,
-						  {.root = m_root.c_str(), .max_assets = 64, .hot_reload = watching(), .reload_delay_ms = 0});
+			m_assets.init(m_device, {.root			  = m_root.c_str(),
+									 .max_assets	  = 64,
+									 .hot_reload	  = watching(),
+									 .reload_delay_ms = 0,
+									 .record_changes  = true});
 			m_materials.init(m_assets, m_registry, {.engine_dir = m_engine.c_str(), .cooked = cooked()});
 
 			// A ship build reads cooked pairs only: the tests that compile have nothing to test there.
@@ -234,6 +238,56 @@ struct Glow : IMaterial
 		EXPECT_EQ(glow->type, handle);
 		EXPECT_EQ(m_registry.generation(handle), generation + 1);
 		EXPECT_NE(material::find_param(m_registry.type(handle)->record, "pulse"), nullptr);
+	}
+
+	TEST_F(MaterialTypeAssets, ACompileWritesTheTypesPairBesideItsSource)
+	{
+		write_asset("materials/glow.slang", GLOW);
+
+		const AssetRef<MaterialTypeAsset> glow = m_assets.load<MaterialTypeAsset>("materials/glow.slang");
+		glow.wait();
+		ASSERT_TRUE(glow);
+
+		// What a cooked build, or another machine, reads: the pair, and it is the type that was built.
+		const auto type_file = fs::read_file(m_root + "/materials/glow.type", memory::heap(MemoryTag::Engine));
+		const auto spirv	 = fs::read_file(m_root + "/materials/glow.spv", memory::heap(MemoryTag::Engine));
+		ASSERT_TRUE(type_file.has_value());
+		ASSERT_TRUE(spirv.has_value());
+
+		material::Type cooked;
+		String error;
+		ASSERT_TRUE(material::read_cooked(type_file->text(), spirv->bytes(), cooked, error)) << error;
+		EXPECT_EQ(cooked.name, "Glow");
+		EXPECT_EQ(cooked.hash, m_registry.type(glow->type)->hash);
+
+		// The cook announced what it wrote, so a host sends the pair on without waiting on the watcher.
+		Vector<AssetChange> changes(&memory::heap(MemoryTag::Engine));
+		m_assets.pump(++m_frame);
+		m_assets.take_changed(changes);
+		std::vector<std::string> announced;
+		for (const AssetChange& change : changes)
+			announced.emplace_back(change.name);
+		std::sort(announced.begin(), announced.end());
+		ASSERT_EQ(announced.size(), 2u);
+		EXPECT_EQ(announced[0], "materials/glow.spv");
+		EXPECT_EQ(announced[1], "materials/glow.type");
+
+		// A save that changes nothing observable leaves the pair as it was: nothing to send on.
+		std::string commented(GLOW);
+		commented.insert(0, "// a comment\n");
+		write_asset("materials/glow.slang", commented);
+		reload_now("materials/glow.slang");
+
+		const auto type_again  = fs::read_file(m_root + "/materials/glow.type", memory::heap(MemoryTag::Engine));
+		const auto spirv_again = fs::read_file(m_root + "/materials/glow.spv", memory::heap(MemoryTag::Engine));
+		ASSERT_TRUE(type_again.has_value() && spirv_again.has_value());
+		EXPECT_EQ(type_again->text(), type_file->text());
+		EXPECT_TRUE(std::equal(spirv->bytes().begin(), spirv->bytes().end(), spirv_again->bytes().begin(),
+							   spirv_again->bytes().end()));
+
+		// And nothing was announced for it: an unchanged pair is nothing to send.
+		m_assets.take_changed(changes);
+		EXPECT_TRUE(changes.empty());
 	}
 
 	TEST_F(MaterialTypeAssets, ABrokenSaveKeepsTheLastGoodBuildDrawing)
@@ -538,6 +592,47 @@ struct Card : IMaterial
 		EXPECT_EQ(read<f32>(leaf->material, "cutoff"), 0.25f);
 		EXPECT_EQ(texture_index(leaf->material, "albedo"),
 				  bindless_index(m_registry.builtin(material::BuiltinTexture::Flat)));
+	}
+
+	/// A cooked build whose game content is one pack, as a shipped build's might be.
+	class PackedMaterialFiles : public CookedMaterialFiles
+	{
+	protected:
+		PackSource m_pack; // outlives the manager, which TearDown shuts down first
+	};
+
+	TEST_F(PackedMaterialFiles, ACookedTypeAndItsMaterialLoadFromAPack)
+	{
+		// Cooked as loose files first, then packed, and the loose files taken away: only the pack has them.
+		cook("materials/glow.slang", GLOW);
+
+		const auto type_file = fs::read_file(m_root + "/materials/glow.type", memory::heap(MemoryTag::Engine));
+		const auto spirv	 = fs::read_file(m_root + "/materials/glow.spv", memory::heap(MemoryTag::Engine));
+		ASSERT_TRUE(type_file.has_value() && spirv.has_value());
+
+		const std::string_view hero =
+			R"({"type": "pack/materials/glow.slang", "values": {"strength": 4, "albedo": "white"}})";
+		const PackEntry entries[] = {
+			{"materials/glow.type", type_file->bytes()},
+			{"materials/glow.spv", spirv->bytes()},
+			{"materials/hero.material", {reinterpret_cast<const u8*>(hero.data()), hero.size()}},
+		};
+
+		const std::string pack_path = m_scratch + "/game.pack";
+		ASSERT_TRUE(PackSource::write(pack_path, entries).has_value());
+		ASSERT_TRUE(fs::remove_file(m_root + "/materials/glow.type").has_value());
+		ASSERT_TRUE(fs::remove_file(m_root + "/materials/glow.spv").has_value());
+
+		ASSERT_TRUE(m_pack.open(pack_path).has_value());
+		m_assets.mount("pack", m_pack);
+
+		const AssetRef<MaterialAsset> loaded = m_assets.load<MaterialAsset>("pack/materials/hero.material");
+		loaded.wait();
+
+		ASSERT_TRUE(loaded);
+		ASSERT_TRUE(loaded->type);
+		EXPECT_EQ(m_registry.type(loaded->type->type)->name, "Glow");
+		EXPECT_EQ(read<f32>(loaded->material, "strength"), 4.0f);
 	}
 
 	/// With the watch on, the stock types' sources are loaded too, so an edit reaches the stock type.

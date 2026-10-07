@@ -18,7 +18,8 @@ namespace ember::net
 	 *
 	 * Unreliable datagrams meet each sender's LinkConditions; reliable ones are never lost or
 	 * repeated and arrive in the order sent, after the latency and jitter, as a transport that
-	 * resends would deliver them. The dice come from one seeded generator, so a test that drives
+	 * resends would deliver them. Bulk sends are reliable too, in order among themselves and never
+	 * holding the other two up, as a lane of their own. The dice come from one seeded generator, so a test that drives
 	 * both ends from one thread replays exactly. Datagrams are copied, so the ends may live on
 	 * different threads; one lock guards every queue.
 	 *
@@ -39,7 +40,8 @@ namespace ember::net
 	private:
 		friend class LoopbackTransport;
 
-		using Payload = std::array<u8, MAX_PACKET_BYTES>;
+		/// Sized to what it holds: a packet, or a bulk message of up to MAX_BULK_BYTES.
+		using Payload = Vector<u8>;
 
 		struct Pending
 		{
@@ -84,7 +86,7 @@ namespace ember::net
 		[[nodiscard]] Result<void, TransportError> listen(StringView address) noexcept override;
 		[[nodiscard]] Result<PeerId, TransportError> connect(StringView address, f64 now) noexcept override;
 		void disconnect(PeerId peer, DisconnectReason reason, f64 now) noexcept override;
-		void send(PeerId peer, Span<const u8> data, Delivery delivery, f64 now) noexcept override;
+		bool send(PeerId peer, Span<const u8> data, Delivery delivery, f64 now) noexcept override;
 		bool poll(f64 now, TransportEvent& event) noexcept override;
 		PeerStats stats(PeerId peer) const noexcept override;
 
@@ -101,6 +103,7 @@ namespace ember::net
 			PeerId other_peer		 = NO_PEER; // the far end's id for it
 			f64 last_arrival		 = 0.0;		// latest unreliable arrival scheduled, for in-order delivery
 			f64 last_reliable		 = 0.0;		// latest reliable arrival scheduled; reliable never reorders
+			f64 last_bulk			 = 0.0;		// the same for bulk, which keeps its own order
 		};
 
 		// Everything below runs under the network's lock.
@@ -119,6 +122,6 @@ namespace ember::net
 		Vector<LoopbackNetwork::Pending> m_inbox;
 
 		/** The bytes poll() handed out last; the event's span points here until the next poll(). */
-		LoopbackNetwork::Payload m_received = {};
+		LoopbackNetwork::Payload m_received;
 	};
 }

@@ -32,10 +32,13 @@ namespace ember
 	 * drawing; a type that never built is a failed asset, and materials that name it draw the error
 	 * type until a save fixes it.
 	 *
-	 * Builds with the compiler compile the source, and hot reload follows every file the compile
-	 * read: the type's own imports and the engine modules it links against. Ship builds, and dev
-	 * builds that ask to, read the pair ember_cook wrote beside the source. A stock type's path names
-	 * the engine's own type: its source is compiled only to hot reload it, into the stock handle.
+	 * Builds with the compiler are cooks: a save compiles the source, and hot reload follows every
+	 * file the compile read, the type's own imports and the engine modules it links against. A game
+	 * type's build is also written beside its source as the pair ember_cook writes, so what a dev
+	 * build runs is on disk for a cooked build, and for another machine to be sent. Ship builds, and
+	 * dev builds that ask to, read that pair by name through whatever source holds it, a pack
+	 * included, and hot reload follows the pair. A stock type's path names the engine's own type:
+	 * its source is compiled only to hot reload it, into the stock handle, and never written.
 	 */
 	struct MaterialTypeAsset
 	{
@@ -151,6 +154,9 @@ namespace ember
 
 		/// Read cooked pairs even though the compiler is here: a dev build running as a ship build does.
 		bool cooked = false;
+
+		/// In a build that compiles: write each game type's pair beside its source as it builds, as ember_cook does.
+		bool write_pairs = true;
 	};
 
 	/**
@@ -191,17 +197,27 @@ namespace ember
 		[[nodiscard]] bool builds_stock() const noexcept { return m_build_stock; }
 
 		/**
-		 * Builds a type from the file behind its asset: compiles it, or reads the cooked pair beside
-		 * it. On the IO thread, one build at a time. False with the reasons in `problems`; the files a
-		 * build read are in `out.dependencies` either way.
+		 * Compiles a type from its source file and, for a game type with write_pairs, writes its pair
+		 * beside the source. On the IO thread, one build at a time, in builds that compile only. False
+		 * with the reasons in `problems`; the files the compile read are in `out.dependencies` either
+		 * way.
 		 */
-		[[nodiscard]] bool build(StringView file, material::Type& out, String& problems) noexcept;
+		/** Which of a type's pair a build wrote: the files that changed, which a host sends on. */
+		struct PairWritten
+		{
+			bool type  = false;
+			bool spirv = false;
+		};
+
+		[[nodiscard]] bool build(StringView file, bool stock, material::Type& out, String& problems,
+								 PairWritten& written) noexcept;
 
 	private:
 		render::MaterialRegistry* m_registry = nullptr;
 		AssetRef<MaterialTypeAsset> m_stock_sources[static_cast<size_t>(render::StockType::Count)];
 		bool m_cooked	   = true;
 		bool m_build_stock = false;
+		bool m_write_pairs = false;
 
 		// Builds with the compiler only. The compiler is made at init and started by the first build.
 		shader::Compiler* m_compiler = nullptr;

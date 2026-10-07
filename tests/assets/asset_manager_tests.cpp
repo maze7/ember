@@ -1,4 +1,5 @@
 #include <ember/assets/asset.h>
+#include <ember/assets/pack_source.h>
 #include <ember/assets/texture_asset.h>
 #include <ember/core/filesystem.h>
 #include <ember/gpu/device.h>
@@ -890,5 +891,345 @@ namespace
 		EXPECT_TRUE(pump_until(ref, 30, 2));
 		m_assets.wait_idle();
 		(void)fs::remove_tree(engine);
+	}
+
+	/// A payload made of another file it reads by name: its file holds that name, and it keeps the
+	/// bytes' size, so a test sees the other file's change reach it.
+	struct ReaderAsset
+	{
+		std::string other;
+		size_t other_size = 0;
+
+		inline static std::atomic<u32> loads{0};
+
+		static bool load(AssetLoad& load, ReaderAsset& out) noexcept
+		{
+			loads.fetch_add(1);
+			out.other = std::string(text_of(load.bytes()));
+
+			const auto bytes = load.read(out.other);
+			if (!bytes)
+				return false;
+
+			out.other_size = bytes->size();
+			return true;
+		}
+
+		static void unload(AssetServices&, ReaderAsset&) noexcept {}
+	};
+
+	/// A manager that records changes and takes deliveries under its mounts: what a syncing client runs.
+	class DeliveringAssetManagerTest : public AssetManagerTest
+	{
+	protected:
+		AssetManagerDef def() const override
+		{
+			return {.root			   = m_root.c_str(),
+					.max_assets		   = 64,
+					.hot_reload		   = false,
+					.reload_delay_ms   = 0,
+					.record_changes	   = true,
+					.deliver_to_mounts = true};
+		}
+
+		void SetUp() override
+		{
+			AssetManagerTest::SetUp();
+			m_assets.register_type<ReaderAsset>("reader");
+			ReaderAsset::loads = 0;
+		}
+
+		/// Pumps until the condition holds, or a few seconds pass: a delivery runs on a job of its own.
+		template <class Done> bool pump_until(Done&& done, f64 seconds = 5.0)
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<f64>(seconds);
+
+			while (std::chrono::steady_clock::now() < deadline)
+			{
+				pump();
+				m_assets.wait_idle();
+				pump();
+
+				if (done())
+					return true;
+
+				std::this_thread::sleep_for(std::chrono::milliseconds(2));
+			}
+
+			return done();
+		}
+
+		static std::vector<u8> bytes_of(size_t size, u8 seed)
+		{
+			std::vector<u8> bytes(size);
+			for (size_t i = 0; i < size; ++i)
+				bytes[i] = static_cast<u8>(seed + i);
+			return bytes;
+		}
+	};
+
+	/// A manager with a long quiet time, so the tests can tell a change that waits from one that does not.
+	class SlowAssetManagerTest : public AssetManagerTest
+	{
+	protected:
+		AssetManagerDef def() const override
+		{
+			return {.root			 = m_root.c_str(),
+					.max_assets		 = 64,
+					.hot_reload		 = false,
+					.reload_delay_ms = 10000,
+					.record_changes	 = true};
+		}
+	};
+
+	TEST_F(SlowAssetManagerTest, AWrittenFileReloadsAtOnceAndTheWatchersEchoIsNotCountedAgain)
+	{
+		write("a.bin", 100, 1);
+		const AssetRef<BytesAsset> ref = m_assets.load<BytesAsset>("a.bin");
+		ref.wait();
+
+		// A save waits for quiet; a file written whole does not.
+		write("a.bin", 100, 2);
+		m_assets.notify_changed("a.bin");
+		pump();
+		m_assets.wait_idle();
+		pump();
+		EXPECT_TRUE(matches(ref, 100, 1)) << "a save reloads only once the file has been quiet";
+
+		m_assets.notify_written("a.bin");
+		pump();
+		m_assets.wait_idle();
+		pump();
+		EXPECT_TRUE(matches(ref, 100, 2));
+
+		Vector<AssetChange> changes(&memory::heap(MemoryTag::Engine));
+		m_assets.take_changed(changes);
+		ASSERT_EQ(changes.size(), 1u);
+		EXPECT_EQ(StringView(changes[0].name), "a.bin");
+
+		// The watcher's report of that same write, a moment later, is nothing new.
+		m_assets.notify_changed("a.bin");
+		pump();
+		m_assets.wait_idle();
+		pump();
+		m_assets.take_changed(changes);
+		EXPECT_TRUE(changes.empty());
+
+		// Another file written whole is recorded on its own, at once.
+		write("b.bin", 10, 3);
+		m_assets.notify_written("b.bin");
+		pump();
+		m_assets.take_changed(changes);
+		ASSERT_EQ(changes.size(), 1u);
+		EXPECT_EQ(StringView(changes[0].name), "b.bin");
+	}
+
+	TEST_F(DeliveringAssetManagerTest, AChangeByNameIsRecordedOnceItHasReloaded)
+	{
+		write("a.bin", 100, 1);
+		const AssetRef<BytesAsset> ref = m_assets.load<BytesAsset>("a.bin");
+		ref.wait();
+
+		write("a.bin", 100, 2);
+		m_assets.notify_changed("a.bin");
+		pump();
+		m_assets.wait_idle();
+		pump();
+		EXPECT_TRUE(matches(ref, 100, 2));
+
+		Vector<AssetChange> changes(&memory::heap(MemoryTag::Engine));
+		m_assets.take_changed(changes);
+		ASSERT_EQ(changes.size(), 1u);
+		EXPECT_EQ(StringView(changes[0].name), "a.bin");
+		EXPECT_EQ(changes[0].id, asset_id("a.bin"));
+		EXPECT_FALSE(changes[0].mounted);
+
+		m_assets.take_changed(changes);
+		EXPECT_TRUE(changes.empty());
+
+		// By id alone there is no name to send on.
+		m_assets.notify_changed(asset_id("a.bin"));
+		pump();
+		m_assets.wait_idle();
+		pump();
+		m_assets.take_changed(changes);
+		EXPECT_TRUE(changes.empty());
+
+		// A name nothing here loaded is still recorded: another machine may hold it.
+		m_assets.notify_changed("textures/unknown.png");
+		pump();
+		m_assets.take_changed(changes);
+		ASSERT_EQ(changes.size(), 1u);
+		EXPECT_EQ(StringView(changes[0].name), "textures/unknown.png");
+	}
+
+	TEST_F(DeliveringAssetManagerTest, DeliveredBytesLandUnderTheRootAndReloadTheAsset)
+	{
+		write("a.bin", 500, 1);
+		const AssetRef<BytesAsset> ref = m_assets.load<BytesAsset>("a.bin");
+		ref.wait();
+		ASSERT_TRUE(matches(ref, 500, 1));
+
+		const std::vector<u8> fresh = bytes_of(300, 9);
+		ASSERT_TRUE(m_assets.deliver("a.bin", fresh));
+		EXPECT_TRUE(pump_until([&] { return matches(ref, 300, 9); }));
+
+		const auto on_disk = fs::read_file(m_root + "/a.bin", memory::heap(MemoryTag::Engine));
+		ASSERT_TRUE(on_disk.has_value());
+		EXPECT_EQ(on_disk->size(), 300u);
+
+		// A delivery is recorded like a save, so a host that relays passes it on.
+		Vector<AssetChange> changes(&memory::heap(MemoryTag::Engine));
+		m_assets.take_changed(changes);
+		ASSERT_EQ(changes.size(), 1u);
+		EXPECT_EQ(StringView(changes[0].name), "a.bin");
+
+		// A name nothing loaded is written too, directories and all, for whoever loads it later.
+		ASSERT_TRUE(m_assets.deliver("deep/er/new.bin", fresh));
+		EXPECT_TRUE(pump_until(
+			[&]
+			{
+				const auto there = fs::exists(m_root + "/deep/er/new.bin");
+				return there && there.value();
+			}));
+
+		const AssetRef<BytesAsset> later = m_assets.load<BytesAsset>("deep/er/new.bin");
+		later.wait();
+		EXPECT_TRUE(matches(later, 300, 9));
+
+		// Nothing climbs out.
+		EXPECT_FALSE(m_assets.deliver("../escape.bin", fresh));
+		EXPECT_FALSE(m_assets.deliver("/escape.bin", fresh));
+		EXPECT_FALSE(m_assets.deliver("", fresh));
+	}
+
+	TEST_F(AssetManagerTest, ADeliveryUnderAMountNeedsAskingFor)
+	{
+		String scratch(&memory::heap(MemoryTag::Engine));
+		ASSERT_TRUE(fs::temporary_directory(scratch).has_value());
+		const std::string outside =
+			std::string(scratch.data(), scratch.size()) + "/ember_asset_tests_mount_" + std::to_string(process_id());
+		ASSERT_TRUE(fs::create_directories(outside).has_value());
+
+		m_assets.mount("ext", outside);
+
+		const std::vector<u8> bytes(10, 1);
+		EXPECT_FALSE(m_assets.deliver("ext/x.bin", bytes))
+			<< "a mount is someone else's files unless the def says otherwise";
+		EXPECT_TRUE(m_assets.is_mounted("ext/x.bin"));
+
+		(void)fs::remove_tree(outside);
+	}
+
+	TEST_F(DeliveringAssetManagerTest, ALoaderReadsAnotherFileByNameAndFollowsIt)
+	{
+		write("other.bin", 40, 1);
+		write_text("reader.txt", "other.bin");
+
+		const AssetRef<ReaderAsset> ref = m_assets.load<ReaderAsset>("reader.txt");
+		ref.wait();
+		ASSERT_TRUE(ref);
+		EXPECT_EQ(ref->other_size, 40u);
+		EXPECT_EQ(ReaderAsset::loads, 1u);
+
+		// The other file is a dependency by having been read.
+		write("other.bin", 64, 2);
+		reload_now("other.bin");
+		EXPECT_EQ(ref->other_size, 64u);
+		EXPECT_EQ(ReaderAsset::loads, 2u);
+
+		// A name no source holds fails the load, which keeps the last good payload.
+		write_text("reader.txt", "nowhere.bin");
+		reload_now("reader.txt");
+		EXPECT_EQ(ref->other_size, 64u);
+		EXPECT_EQ(ref.state(), AssetState::Loaded);
+	}
+
+	TEST_F(DeliveringAssetManagerTest, APackServesItsNamesAndTakesDeliveriesIntoAnOverlay)
+	{
+		const std::vector<u8> a	  = bytes_of(100, 1);
+		const std::vector<u8> b	  = bytes_of(5000, 2);
+		const std::vector<u8> c	  = bytes_of(1, 3);
+		const PackEntry entries[] = {{"a.bin", a}, {"sub/b.bin", b}, {"c.bin", c}};
+
+		const std::string pack_path = m_root + "/game.pack";
+		ASSERT_TRUE(PackSource::write(pack_path, entries).has_value());
+
+		PackSource pack;
+		ASSERT_TRUE(pack.open(pack_path).has_value());
+		EXPECT_EQ(pack.count(), 3u);
+		EXPECT_TRUE(pack.contains("sub/b.bin"));
+		EXPECT_FALSE(pack.contains("none.bin"));
+
+		m_assets.mount("pack", pack);
+
+		AssetRef<BytesAsset> ra		 = m_assets.load<BytesAsset>("pack/a.bin");
+		AssetRef<BytesAsset> rb		 = m_assets.load<BytesAsset>("pack/sub/b.bin");
+		AssetRef<BytesAsset> rc		 = m_assets.load<BytesAsset>("pack/c.bin");
+		AssetRef<BytesAsset> missing = m_assets.load<BytesAsset>("pack/none.bin");
+		ra.wait();
+		rb.wait();
+		rc.wait();
+		missing.wait();
+
+		EXPECT_TRUE(matches(ra, 100, 1));
+		EXPECT_TRUE(matches(rb, 5000, 2));
+		EXPECT_TRUE(matches(rc, 1, 3));
+		EXPECT_EQ(missing.state(), AssetState::Failed);
+		EXPECT_TRUE(m_assets.is_mounted("pack/a.bin"));
+		EXPECT_FALSE(m_assets.is_mounted("a.bin"));
+		EXPECT_EQ(m_assets.file_hash("pack/sub/b.bin"), hash_bytes(b));
+		EXPECT_FALSE(m_assets.file_hash("pack/none.bin").has_value());
+
+		// Delivered bytes shadow the pack's and reload the asset; the pack file itself is untouched.
+		const auto before = fs::read_file(pack_path, memory::heap(MemoryTag::Engine));
+		ASSERT_TRUE(before.has_value());
+
+		const std::vector<u8> fresh = bytes_of(77, 5);
+		ASSERT_TRUE(m_assets.deliver("pack/a.bin", fresh));
+		EXPECT_TRUE(pump_until([&] { return matches(ra, 77, 5); }));
+		EXPECT_EQ(pack.overlaid(), 1u);
+		EXPECT_EQ(m_assets.file_hash("pack/a.bin"), hash_bytes(fresh));
+
+		const auto after = fs::read_file(pack_path, memory::heap(MemoryTag::Engine));
+		ASSERT_TRUE(after.has_value());
+		EXPECT_EQ(after->size(), before->size());
+
+		// The pack outlives the manager: everything that read through it goes first.
+		ra.reset();
+		rb.reset();
+		rc.reset();
+		missing.reset();
+		m_assets.shutdown();
+	}
+
+	TEST(PackSource, WhatIsNotAPackIsRefused)
+	{
+		String scratch(&memory::heap(MemoryTag::Engine));
+		ASSERT_TRUE(fs::temporary_directory(scratch).has_value());
+		const std::string path =
+			std::string(scratch.data(), scratch.size()) + "/ember_asset_tests_notapack_" + std::to_string(process_id());
+
+		const char junk[] = "this is no pack at all, whatever its name says";
+		ASSERT_TRUE(fs::write_file(path, {reinterpret_cast<const u8*>(junk), sizeof(junk)}).has_value());
+
+		PackSource pack;
+		const auto opened = pack.open(path);
+		ASSERT_FALSE(opened.has_value());
+		EXPECT_EQ(opened.error().code, fs::FileErrorCode::InvalidArgument);
+
+		// A pack cut short: its index points past its end.
+		const std::vector<u8> bytes(3000, 7);
+		const PackEntry entries[] = {{"big.bin", bytes}};
+		ASSERT_TRUE(PackSource::write(path, entries).has_value());
+
+		const auto whole = fs::read_file(path, memory::heap(MemoryTag::Engine));
+		ASSERT_TRUE(whole.has_value());
+		ASSERT_TRUE(fs::write_file(path, whole->bytes().subspan(0, whole->size() / 2)).has_value());
+
+		PackSource torn;
+		EXPECT_FALSE(torn.open(path).has_value());
+
+		(void)fs::remove_file(path);
 	}
 }

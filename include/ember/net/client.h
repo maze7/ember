@@ -34,6 +34,7 @@ namespace ember::net
 		Joined,	 // welcomed: start the tick clock at `tick` and send a command every tick
 		Left,	 // the connection is over: refused, kicked, timed out, or the server went away
 		Message, // the server's game message, delivered once and in order
+		Bulk,	 // the server's bulk message, once and in order with its other bulk sends: a file's bytes
 		Count
 	};
 
@@ -43,7 +44,7 @@ namespace ember::net
 		u8 slot					= 0;					  // Joined: the seat the server gave
 		Tick tick				= NO_TICK;				  // Joined: the tick to start the clock at
 		DisconnectReason reason = DisconnectReason::None; // Left: why
-		Span<const u8> data		= {};					  // Message: the bytes, valid until the next poll()
+		Span<const u8> data		= {};					  // Message, Bulk: the bytes, valid until the next poll()
 	};
 
 	/**
@@ -115,6 +116,13 @@ namespace ember::net
 		/** A game message for the server: reliable, in order. At most MAX_MESSAGE_BYTES. Ignored until Playing. */
 		void send_message(Span<const u8> data, f64 now) noexcept;
 
+		/**
+		 * A bulk message for the server: reliable, in order with the other bulk sends, on the lane behind
+		 * the game's traffic, up to MAX_BULK_BYTES whole. False until Playing, and when the transport did
+		 * not take it: a full send buffer, to try again next tick, pacing on stats().
+		 */
+		[[nodiscard]] bool send_bulk(Span<const u8> data, f64 now) noexcept;
+
 		ClientState state() const noexcept { return m_state; }
 
 		/** The seat the server gave; meaningful once Playing. */
@@ -166,5 +174,5 @@ namespace ember::net
 namespace ember
 {
 	EMBER_ENUM_NAMES(net::ClientState, "Idle", "Connecting", "Greeting", "Playing");
-	EMBER_ENUM_NAMES(net::ClientEventKind, "Joined", "Left", "Message");
+	EMBER_ENUM_NAMES(net::ClientEventKind, "Joined", "Left", "Message", "Bulk");
 }

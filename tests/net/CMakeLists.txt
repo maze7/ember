@@ -2,6 +2,8 @@ ember_add_test_suite(ember_net_tests net
 	"${CMAKE_CURRENT_LIST_DIR}/../main.cpp"
 	command_stream_tests.cpp
 	connection_tests.cpp
+	endpoint_tests.cpp
+	file_courier_tests.cpp
 	loopback_tests.cpp
 	serialize_tests.cpp
 	session_clock_tests.cpp
@@ -10,6 +12,7 @@ ember_add_test_suite(ember_net_tests net
 	time_dilation_tests.cpp
 	replication_tests.cpp
 )
+
 
 target_link_libraries(ember_net_tests PRIVATE Ember::Net)
 

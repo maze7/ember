@@ -419,6 +419,102 @@ namespace
 		sockets.CloseConnection(hostile, 0, nullptr, false);
 	}
 
+	TEST_F(Valve, BulkArrivesWholeInOrderAndBehindTheGamesTraffic)
+	{
+		End server;
+		End client;
+
+		// Through the network, so the library's pacing and lanes are in play.
+		const PeerId to_server = client.transport.connect_local(server.transport, true, wall_clock()).value();
+		ASSERT_TRUE(pump(server, client, [&] { return server.count(TransportEventKind::Connected) == 1; }));
+
+		// Six of the largest bulk messages: well under the library's send buffer, and a second or so
+		// on the wire at its default rate. Each carries its number first, then a pattern of its own.
+		constexpr u32 BULK_COUNT = 6;
+		std::vector<std::vector<u8>> sent;
+		for (u32 i = 0; i < BULK_COUNT; ++i)
+		{
+			std::vector<u8> bytes(MAX_BULK_BYTES);
+			const std::array<u8, 4> head = datagram(i);
+			std::copy(head.begin(), head.end(), bytes.begin());
+			for (size_t b = 4; b < bytes.size(); ++b)
+				bytes[b] = static_cast<u8>(b * 13 + i);
+
+			ASSERT_TRUE(client.transport.send(to_server, bytes, Delivery::Bulk, wall_clock()));
+			sent.push_back(std::move(bytes));
+		}
+
+		// Then the game's traffic: it goes on lane 0, ahead of what is still queued on the bulk lane.
+		client.transport.send(to_server, datagram(42), Delivery::Reliable, wall_clock());
+		client.transport.send(to_server, datagram(43), Delivery::Unreliable, wall_clock());
+
+		ASSERT_TRUE(pump(
+			server, client,
+			[&]
+			{
+				return server.received(Delivery::Bulk).size() == BULK_COUNT &&
+					   !server.received(Delivery::Reliable).empty();
+			},
+			20.0));
+
+		size_t reliable_at	= 0;
+		size_t last_bulk_at = 0;
+		u32 bulk_seen		= 0;
+		for (size_t i = 0; i < server.events.size(); ++i)
+		{
+			const Polled& event = server.events[i];
+			if (event.kind != TransportEventKind::Received)
+				continue;
+
+			if (event.delivery == Delivery::Bulk)
+			{
+				ASSERT_LT(bulk_seen, BULK_COUNT);
+				EXPECT_EQ(event.data, sent[bulk_seen]) << "bulk message " << bulk_seen;
+				++bulk_seen;
+				last_bulk_at = i;
+			}
+			else if (event.delivery == Delivery::Reliable)
+			{
+				reliable_at = i;
+			}
+		}
+
+		EXPECT_EQ(bulk_seen, BULK_COUNT);
+		EXPECT_LT(reliable_at, last_bulk_at) << "the reliable message waited behind the bulk lane";
+	}
+
+	TEST_F(Valve, ABulkSendTheBufferCannotTakeIsRefusedAndNothingIsLost)
+	{
+		End server;
+		End client;
+
+		const PeerId to_server = client.transport.connect_local(server.transport, true, wall_clock()).value();
+		ASSERT_TRUE(pump(server, client, [&] { return server.count(TransportEventKind::Connected) == 1; }));
+
+		// Faster than the wire: the send buffer (512 KB by default) fills, and send() says so.
+		u32 accepted = 0;
+		for (u32 i = 0; i < 32; ++i)
+		{
+			std::vector<u8> bytes(MAX_BULK_BYTES);
+			const std::array<u8, 4> head = datagram(i);
+			std::copy(head.begin(), head.end(), bytes.begin());
+
+			if (!client.transport.send(to_server, bytes, Delivery::Bulk, wall_clock()))
+				break;
+
+			++accepted;
+		}
+
+		EXPECT_GE(accepted, 4u);
+		EXPECT_LT(accepted, 32u) << "the send buffer never filled";
+
+		ASSERT_TRUE(pump(server, client, [&] { return server.received(Delivery::Bulk).size() == accepted; }, 20.0));
+
+		const std::vector<u32> bulk = server.received(Delivery::Bulk);
+		for (u32 i = 0; i < accepted; ++i)
+			EXPECT_EQ(bulk[i], i);
+	}
+
 	TEST_F(Valve, SimulatedLossDropsUnreliableSendsAndNeverReliableOnes)
 	{
 		simulate({.loss = 0.5f});

@@ -6,6 +6,8 @@
 #include <fmod_errors.h>
 #include <fmod_studio.hpp>
 
+#include <limits>
+
 // From 2.04 FMOD says how far an event carries with its spatialisers' overrides counted, which earshot is judged by.
 static_assert(FMOD_VERSION >= 0x00020400, "Ember::Audio needs FMOD 2.04 or later");
 
@@ -561,6 +563,39 @@ namespace ember::audio
 		}
 
 		impl.banks.push_back({.file = path, .bank = bank, .loading = true, .preload = preload});
+		++impl.loading;
+		impl.settle();
+
+		if (stepped && preload)
+			(void)impl.studio->flushSampleLoading();
+		return true;
+	}
+
+	bool Engine::load_bank(StringView name, Span<const u8> bytes, bool preload) noexcept
+	{
+		if (m_impl == nullptr || bytes.empty() || bytes.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
+			return false;
+
+		Impl& impl = *m_impl;
+		unload_bank(name);
+
+		const bool stepped = impl.def.output == Output::Stepped;
+		const FMOD_STUDIO_LOAD_BANK_FLAGS mode =
+			stepped ? FMOD_STUDIO_LOAD_BANK_NORMAL : FMOD_STUDIO_LOAD_BANK_NONBLOCKING;
+
+		// FMOD_STUDIO_LOAD_MEMORY copies the bytes before returning; the caller's buffer is free to go.
+		const String key(name, &memory::heap(MemoryTag::Audio));
+		FMOD::Studio::Bank* bank = nullptr;
+		const FMOD_RESULT result =
+			impl.studio->loadBankMemory(reinterpret_cast<const char*>(bytes.data()), static_cast<int>(bytes.size()),
+										FMOD_STUDIO_LOAD_MEMORY, mode, &bank);
+		if (result != FMOD_OK)
+		{
+			EMBER_ERROR("audio: cannot load {} from memory: {}", name, FMOD_ErrorString(result));
+			return false;
+		}
+
+		impl.banks.push_back({.file = key, .bank = bank, .loading = true, .preload = preload});
 		++impl.loading;
 		impl.settle();
 

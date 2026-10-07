@@ -142,6 +142,14 @@ namespace ember::audio
 		 * again reloads it: what plays from the old bank stops, and what is asked for still starts again.
 		 */
 		bool load_bank(StringView file, bool preload = true) noexcept;
+
+		/**
+		 * The same from memory: a bank's bytes under a name of the caller's, which unload_bank() and a
+		 * later load_bank() of the same name refer to. The engine copies the bytes; the caller's may
+		 * go as soon as this returns. How a bank in a pack, or one delivered over the network, loads.
+		 */
+		bool load_bank(StringView name, Span<const u8> bytes, bool preload = true) noexcept;
+
 		void unload_bank(StringView file) noexcept;
 
 		/**

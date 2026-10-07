@@ -284,4 +284,54 @@ namespace
 		EXPECT_FLOAT_EQ(stats.quality_remote, 1.0f);
 		EXPECT_EQ(client.stats(to_server + 1).ping, 0.0f) << "an unknown peer has no path";
 	}
+
+	TEST(Loopback, BulkSendsArriveWholeAndInOrderOnAStreamOfTheirOwn)
+	{
+		// Jitter and reordering: unreliable datagrams may overtake each other, bulk sends never do.
+		Pair pair({.latency = 0.05, .jitter = 0.04, .reorder = true}, 7);
+
+		std::vector<std::vector<u8>> sent;
+		for (u32 i = 0; i < 3; ++i)
+		{
+			std::vector<u8> bytes(i == 1 ? MAX_BULK_BYTES : 1500 + 700 * i);
+			for (size_t b = 0; b < bytes.size(); ++b)
+				bytes[b] = static_cast<u8>(b * 31 + i);
+
+			EXPECT_TRUE(pair.client.send(pair.to_server, bytes, Delivery::Bulk, 0.0));
+			EXPECT_TRUE(pair.client.send(pair.to_server, datagram(i), Delivery::Unreliable, 0.0));
+			sent.push_back(std::move(bytes));
+		}
+
+		const std::vector<Polled> events = drain(pair.server, 1.0);
+
+		std::vector<const Polled*> bulk;
+		for (const Polled& event : events)
+			if (event.delivery == Delivery::Bulk)
+				bulk.push_back(&event);
+
+		ASSERT_EQ(bulk.size(), 3u);
+		for (u32 i = 0; i < 3; ++i)
+			EXPECT_EQ(bulk[i]->data, sent[i]);
+
+		EXPECT_LE(bulk[0]->time, bulk[1]->time);
+		EXPECT_LE(bulk[1]->time, bulk[2]->time);
+	}
+
+	TEST(Loopback, SendSaysWhetherTheTransportTookIt)
+	{
+		Pair pair;
+
+		const std::vector<u8> largest(MAX_BULK_BYTES, 0xAB);
+		EXPECT_TRUE(pair.server.send(pair.to_client, largest, Delivery::Bulk, 0.0));
+		EXPECT_FALSE(pair.server.send(999, largest, Delivery::Bulk, 0.0)) << "no such peer";
+
+		const std::vector<Polled> events = drain(pair.client, 1.0);
+		ASSERT_EQ(events.size(), 1u);
+		EXPECT_EQ(events[0].delivery, Delivery::Bulk);
+		EXPECT_EQ(events[0].data, largest);
+
+		// A closed link takes nothing more.
+		pair.client.disconnect(pair.to_server, DisconnectReason::Requested, 1.0);
+		EXPECT_FALSE(pair.client.send(pair.to_server, largest, Delivery::Bulk, 1.0));
+	}
 }

@@ -25,6 +25,7 @@ namespace ember::net
 		Joined,	 // a client was welcomed into a slot: its commands start arriving
 		Left,	 // a client is gone, the slot is free again
 		Message, // a client's game message, delivered once and in order
+		Bulk,	 // a client's bulk message, once and in order with its other bulk sends: a file's bytes
 		Count
 	};
 
@@ -33,7 +34,7 @@ namespace ember::net
 		ServerEventKind kind	= ServerEventKind::Message;
 		u8 slot					= 0;
 		DisconnectReason reason = DisconnectReason::None; // Why they left
-		Span<const u8> data		= {};					  // Message: the bytes, valid until the next poll()
+		Span<const u8> data		= {};					  // Message, Bulk: the bytes, valid until the next poll()
 	};
 
 	/**
@@ -97,6 +98,14 @@ namespace ember::net
 
 		/** A game message for a seat's client: reliable, in order. At most MAX_MESSAGE_BYTES. */
 		void send_message(u8 slot, Span<const u8> data, f64 now) noexcept;
+
+		/**
+		 * A bulk message for a seat's client: reliable, in order with its other bulk sends, on the lane
+		 * behind the game's traffic, up to MAX_BULK_BYTES whole. False when the transport did not take
+		 * it, which for a send buffer that is full means try again next tick: pace on the seat's
+		 * PeerStats::pending_reliable.
+		 */
+		[[nodiscard]] bool send_bulk(u8 slot, Span<const u8> data, f64 now) noexcept;
 
 		/** Removes a seat's client; it sees Left with the reason. No Left event follows here. */
 		void kick(u8 slot, DisconnectReason reason, f64 now) noexcept;
@@ -163,5 +172,5 @@ namespace ember::net
 
 namespace ember
 {
-	EMBER_ENUM_NAMES(net::ServerEventKind, "Joined", "Left", "Message");
+	EMBER_ENUM_NAMES(net::ServerEventKind, "Joined", "Left", "Message", "Bulk");
 }

@@ -108,6 +108,6 @@ namespace ember::detail
 		std::memcpy(name + size, filename.data(), filename.size());
 		size += filename.size();
 
-		m_sink.notify_changed(asset_id(StringView(name, size)));
+		m_sink.notify_changed(StringView(name, size));
 	}
 }

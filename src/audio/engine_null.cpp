@@ -16,6 +16,7 @@ namespace ember::audio
 	void Engine::update() noexcept {}
 
 	bool Engine::load_bank(StringView, bool) noexcept { return false; }
+	bool Engine::load_bank(StringView, Span<const u8>, bool) noexcept { return false; }
 	void Engine::unload_bank(StringView) noexcept {}
 	u32 Engine::unloads() const noexcept { return 0; }
 	bool Engine::has(Event) const noexcept { return false; }

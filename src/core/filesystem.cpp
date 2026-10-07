@@ -448,6 +448,19 @@ namespace ember::fs
 
 	FileData::~FileData() noexcept { reset(); }
 
+	Result<FileData, FileError> FileData::allocate(size_t size, std::pmr::memory_resource& memory,
+												   size_t alignment) noexcept
+	{
+		if (size == 0)
+			return FileData{};
+
+		u8* allocation = static_cast<u8*>(memory.allocate(size, alignment));
+		if (allocation == nullptr)
+			return fail(FileError{.code = FileErrorCode::NoSpace, .op = FileOp::Read});
+
+		return FileData{allocation, size, alignment, memory};
+	}
+
 	FileData::FileData(FileData&& other) noexcept
 		: m_data(std::exchange(other.m_data, nullptr)), m_size(std::exchange(other.m_size, 0)),
 		  m_alignment(std::exchange(other.m_alignment, 0)), m_memory(std::exchange(other.m_memory, nullptr))

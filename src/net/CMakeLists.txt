@@ -5,6 +5,7 @@ ember_add_module(Net
 	SOURCES
 		command_stream.cpp
 		connection.cpp
+		file_courier.cpp
 		loopback.cpp
 		valve_transport.cpp
 		time_dilation.cpp
@@ -21,6 +22,7 @@ ember_add_module(Net
 	PRIVATE_DEPS
 		Valve::NetworkingSockets
 )
+
 
 target_compile_definitions(ember_net PUBLIC EMBER_USE_STEAM=$<BOOL:${EMBER_USE_STEAM}>)
 

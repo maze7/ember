@@ -61,7 +61,7 @@ namespace ember::net
 
 	u32 LoopbackNetwork::store(Span<const u8> bytes) noexcept
 	{
-		EMBER_ASSERT(bytes.size() <= MAX_PACKET_BYTES);
+		EMBER_ASSERT(bytes.size() <= MAX_BULK_BYTES);
 
 		u32 slot = 0;
 		if (!m_free_payloads.empty())
@@ -71,11 +71,12 @@ namespace ember::net
 		}
 		else
 		{
+			// The outer vector's allocator reaches the inner one through uses-allocator construction.
 			slot = static_cast<u32>(m_payloads.size());
 			m_payloads.emplace_back();
 		}
 
-		std::memcpy(m_payloads[slot].data(), bytes.data(), bytes.size());
+		m_payloads[slot].assign(bytes.begin(), bytes.end());
 		return slot;
 	}
 
@@ -83,7 +84,7 @@ namespace ember::net
 
 	LoopbackTransport::LoopbackTransport(LoopbackNetwork& network) noexcept
 		: m_network(network), m_address(&memory::heap(network.m_tag)), m_links(&memory::heap(network.m_tag)),
-		  m_inbox(&memory::heap(network.m_tag))
+		  m_inbox(&memory::heap(network.m_tag)), m_received(&memory::heap(network.m_tag))
 	{
 		std::scoped_lock lock(m_network.m_lock);
 		m_network.m_transports.push_back(this);
@@ -214,20 +215,21 @@ namespace ember::net
 		remove_link(peer);
 	}
 
-	void LoopbackTransport::send(PeerId peer, Span<const u8> data, Delivery delivery, f64 now) noexcept
+	bool LoopbackTransport::send(PeerId peer, Span<const u8> data, Delivery delivery, f64 now) noexcept
 	{
-		EMBER_ASSERT(data.size() <= MAX_PACKET_BYTES && "larger than a transport carries in one piece");
+		const u32 most = delivery == Delivery::Bulk ? MAX_BULK_BYTES : MAX_PACKET_BYTES;
+		EMBER_ASSERT(data.size() <= most && "larger than a transport carries in one piece");
 
-		if (data.size() > MAX_PACKET_BYTES)
-			return;
+		if (data.size() > most)
+			return false;
 
 		std::scoped_lock lock(m_network.m_lock);
 
 		Link* link = find_link(peer);
 		if (link == nullptr || link->other == nullptr)
-			return;
+			return false;
 
-		// Reliable sends always arrive, once; unreliable ones take their chances.
+		// Reliable and bulk sends always arrive, once; unreliable ones take their chances.
 		u32 copies = 1;
 		if (delivery == Delivery::Unreliable)
 		{
@@ -244,6 +246,8 @@ namespace ember::net
 											  .payload	= m_network.store(data),
 											  .size		= static_cast<u32>(data.size())});
 		}
+
+		return true;
 	}
 
 	bool LoopbackTransport::poll(f64 now, TransportEvent& event) noexcept
@@ -261,7 +265,7 @@ namespace ember::net
 			if (pending.kind == TransportEventKind::Received)
 			{
 				if (open)
-					std::memcpy(m_received.data(), m_network.m_payloads[pending.payload].data(), pending.size);
+					m_received = m_network.m_payloads[pending.payload];
 
 				m_network.release(pending.payload);
 			}
@@ -338,6 +342,14 @@ namespace ember::net
 		{
 			time			   = std::max(time, link.last_reliable);
 			link.last_reliable = time;
+			return time;
+		}
+
+		// Its own stream: in order with other bulk sends, and never in the way of the rest.
+		if (delivery == Delivery::Bulk)
+		{
+			time		   = std::max(time, link.last_bulk);
+			link.last_bulk = time;
 			return time;
 		}
 

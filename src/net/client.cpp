@@ -93,6 +93,15 @@ namespace ember::net
 						if (received_message(incoming, now, event))
 							return true;
 					}
+					else if (incoming.delivery == Delivery::Bulk)
+					{
+						// The bytes are the game's, untouched. Before the Welcome there is nothing bulk to hear.
+						if (m_state != ClientState::Playing)
+							return leave(DisconnectReason::Malformed, now, event);
+
+						event = {.kind = ClientEventKind::Bulk, .data = incoming.data};
+						return true;
+					}
 					else if (m_state == ClientState::Playing)
 					{
 						received_packet(incoming);
@@ -124,6 +133,16 @@ namespace ember::net
 		Message message = {.kind = MessageKind::Game, .size = static_cast<u32>(data.size())};
 		std::copy(data.begin(), data.end(), message.payload.begin());
 		net::send_message(m_transport, m_peer, message, now);
+	}
+
+	bool Client::send_bulk(Span<const u8> data, f64 now) noexcept
+	{
+		EMBER_ASSERT(data.size() <= MAX_BULK_BYTES && "larger than a bulk message carries");
+
+		if (m_state != ClientState::Playing || data.size() > MAX_BULK_BYTES)
+			return false;
+
+		return m_transport.send(m_peer, data, Delivery::Bulk, now);
 	}
 
 	void Client::send_packet(f64 now) noexcept

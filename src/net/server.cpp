@@ -74,6 +74,18 @@ namespace ember::net
 						if (received_message(incoming, now, event))
 							return true;
 					}
+					else if (incoming.delivery == Delivery::Bulk)
+					{
+						// The bytes are the game's, untouched. Before the Welcome, a client has nothing bulk to say.
+						if (Client* client = client_of(incoming.peer); client != nullptr)
+						{
+							event = {.kind = ServerEventKind::Bulk, .slot = slot_of(*client), .data = incoming.data};
+							return true;
+						}
+
+						if (greeting_of(incoming.peer) != nullptr)
+							refuse(incoming.peer, DisconnectReason::Malformed, now);
+					}
 					else if (Client* client = client_of(incoming.peer); client != nullptr)
 					{
 						received_packet(*client, incoming);
@@ -136,6 +148,16 @@ namespace ember::net
 		Message message = {.kind = MessageKind::Game, .size = static_cast<u32>(data.size())};
 		std::copy(data.begin(), data.end(), message.payload.begin());
 		net::send_message(m_transport, m_clients[slot].peer, message, now);
+	}
+
+	bool Server::send_bulk(u8 slot, Span<const u8> data, f64 now) noexcept
+	{
+		EMBER_ASSERT(data.size() <= MAX_BULK_BYTES && "larger than a bulk message carries");
+
+		if (!playing(slot) || data.size() > MAX_BULK_BYTES)
+			return false;
+
+		return m_transport.send(m_clients[slot].peer, data, Delivery::Bulk, now);
 	}
 
 	void Server::kick(u8 slot, DisconnectReason reason, f64 now) noexcept

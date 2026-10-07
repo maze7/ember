@@ -11,7 +11,9 @@
 #include <algorithm>
 #include <bit>
 #include <chrono>
+#include <cstring>
 #include <mutex>
+#include <optional>
 
 namespace
 {
@@ -47,13 +49,28 @@ namespace ember
 			m_dependencies.push_back(id);
 	}
 
+	void AssetLoad::notify_written(StringView name) noexcept { m_manager->notify_written(name); }
+
+	Result<fs::FileData, fs::FileError> AssetLoad::read(StringView name) noexcept
+	{
+		AssetManager::Resolved resolved(*m_heap);
+
+		if (!m_manager->resolve(name, resolved))
+			return tl::unexpected(fs::FileError{.code = fs::FileErrorCode::NotFound, .op = fs::FileOp::ResolvePath});
+
+		// Made of it, whether or not the read works: a file that arrives later must bring this asset.
+		depends_on(resolved.name);
+		return m_manager->read_source(*resolved.source, resolved.local);
+	}
+
 	AssetManager::AssetManager() noexcept
 		: m_root(&memory::heap(MemoryTag::Assets)), m_mounts(&memory::heap(MemoryTag::Assets)),
 		  m_slots(MemoryTag::Assets), m_by_id(&memory::heap(MemoryTag::Assets)),
 		  m_file_dependencies(&memory::heap(MemoryTag::Assets)), m_fresh(&memory::heap(MemoryTag::Assets)),
 		  m_refresh(&memory::heap(MemoryTag::Assets)), m_retired(&memory::heap(MemoryTag::Assets)),
 		  m_due(&memory::heap(MemoryTag::Assets)), m_requests(MemoryTag::Assets), m_unreferenced(MemoryTag::Assets),
-		  m_changes(MemoryTag::Assets), m_pending(&memory::heap(MemoryTag::Assets))
+		  m_changes(MemoryTag::Assets), m_pending(&memory::heap(MemoryTag::Assets)),
+		  m_changed(&memory::heap(MemoryTag::Assets))
 	{
 	}
 
@@ -65,10 +82,12 @@ namespace ember
 		EMBER_ASSERT(def.max_assets != 0 && def.max_assets <= SlotPool::MAX_CAPACITY);
 		EMBER_ASSERT(def.max_changes >= 2);
 
-		m_gpu			  = &gpu;
-		m_heap			  = &memory::heap(MemoryTag::Assets);
-		m_reload_delay_ns = u64{def.reload_delay_ms} * 1'000'000;
-		m_loader_count	  = def.loaders != 0 ? def.loaders : std::max(1u, jobs::worker_count() / 2);
+		m_gpu				= &gpu;
+		m_heap				= &memory::heap(MemoryTag::Assets);
+		m_reload_delay_ns	= u64{def.reload_delay_ms} * 1'000'000;
+		m_loader_count		= def.loaders != 0 ? def.loaders : std::max(1u, jobs::worker_count() / 2);
+		m_record_changes	= def.record_changes;
+		m_deliver_to_mounts = def.deliver_to_mounts;
 
 		// The root is resolved once, here, and kept with its separator: every load joins onto it
 		// and every change the watcher reports begins with it, so the two name a file the same
@@ -81,6 +100,8 @@ namespace ember
 
 		if (m_root.empty() || m_root.back() != '/')
 			m_root += '/';
+
+		m_root_source = memory::new_object<DirectorySource>(MemoryTag::Assets, StringView(m_root));
 
 		// A slot is queued once at a time and unreferenced once at a time, so a cell per slot means
 		// neither queue can ever be full.
@@ -176,7 +197,17 @@ namespace ember
 		m_fresh.clear();
 		m_refresh.clear();
 		m_pending.clear();
+		m_changed.clear();
+
+		// The sources go last: an unload above may still have read through one.
+		for (Mount& mount : m_mounts)
+			if (mount.owned)
+				memory::delete_object(MemoryTag::Assets, static_cast<DirectorySource*>(mount.source));
+
 		m_mounts.clear();
+		memory::delete_object(MemoryTag::Assets, m_root_source);
+		m_root_source = nullptr;
+
 		m_type_count = 0;
 		m_gpu		 = nullptr;
 		m_heap		 = nullptr;
@@ -193,77 +224,101 @@ namespace ember
 
 	void AssetManager::mount(StringView prefix, StringView directory) noexcept
 	{
-		EMBER_ASSERT(m_gpu != nullptr && "mount after init");
-		EMBER_ASSERT(m_slots.empty() && "mount before the first load");
-		EMBER_ASSERT(!prefix.empty() && prefix.find('/') == StringView::npos && prefix != "." && prefix != "..");
+		String absolute(m_heap);
 
-		Mount mount{String(prefix, m_heap), String(m_heap)};
-
-		if (!fs::absolute(directory, mount.directory))
+		if (!fs::absolute(directory, absolute))
 		{
 			EMBER_ERROR("asset mount '{}': '{}' is not a usable path", prefix, directory);
 			return;
 		}
 
-		if (mount.directory.back() != '/')
-			mount.directory += '/';
+		if (absolute.back() != '/')
+			absolute += '/';
 
-		// A mount the OS will not watch still serves its files; its saves just go unnoticed.
-		if (m_watcher != nullptr)
-			(void)m_watcher->watch(mount.directory, mount.prefix);
+		mount_source(prefix, *memory::new_object<DirectorySource>(MemoryTag::Assets, StringView(absolute)), true);
+	}
 
-		m_mounts.push_back(std::move(mount));
+	void AssetManager::mount(StringView prefix, AssetSource& source) noexcept { mount_source(prefix, source, false); }
+
+	void AssetManager::mount_source(StringView prefix, AssetSource& source, bool owned) noexcept
+	{
+		EMBER_ASSERT(m_gpu != nullptr && "mount after init");
+		EMBER_ASSERT(m_slots.empty() && "mount before the first load");
+		EMBER_ASSERT(!prefix.empty() && prefix.find('/') == StringView::npos && prefix != "." && prefix != "..");
+
+		// A source the OS cannot watch still serves its files; its saves, if it has any, go unnoticed.
+		const StringView directory = source.watch_directory();
+		if (m_watcher != nullptr && !directory.empty())
+			(void)m_watcher->watch(directory, prefix);
+
+		m_mounts.push_back({.prefix = String(prefix, m_heap), .source = &source, .owned = owned});
 	}
 
 	AssetServices AssetManager::services(const Type& type) const noexcept { return {*m_gpu, *m_heap, type.context}; }
 
-	bool AssetManager::resolve(StringView path, String& name, String& file) const noexcept
+	bool AssetManager::resolve(StringView path, Resolved& out) const noexcept
 	{
 		// A name is relative and stays below what it names. Normalising it first means two spellings
 		// of one file meet at one id, and one that climbs out is refused rather than resolved.
+		String& name = out.name;
 		if (path.empty() || fs::is_absolute(path) || !fs::normalize_lexical(path, name) || name.empty() ||
 			name == "." || name == ".." || name.starts_with("../"))
 			return false;
 
+		out.source	= m_root_source;
+		out.mounted = false;
+		out.local	= name;
+
 		for (const Mount& mount : m_mounts)
 		{
 			if (name.size() > mount.prefix.size() && name.starts_with(mount.prefix) && name[mount.prefix.size()] == '/')
-				return fs::join(file, mount.directory, StringView(name).substr(mount.prefix.size() + 1)).has_value();
+			{
+				out.source	= mount.source;
+				out.mounted = true;
+				out.local.assign(StringView(name).substr(mount.prefix.size() + 1));
+				break;
+			}
 		}
 
-		return fs::join(file, m_root, name).has_value();
+		// A source without files, a pack, leaves the file empty: nothing a loader needs.
+		if (!out.source->file_of(out.local, out.file))
+			out.file.clear();
+
+		return true;
 	}
 
 	bool AssetManager::name_of(StringView file, String& name) const noexcept
 	{
 		if (!fs::is_absolute(file))
 		{
-			String unused(m_heap);
-			return resolve(file, name, unused);
+			Resolved resolved(*m_heap);
+			if (!resolve(file, resolved))
+				return false;
+
+			name = std::move(resolved.name);
+			return true;
 		}
 
-		String normal(m_heap);
-		if (!fs::normalize_lexical(file, normal))
-			return false;
+		String rest(m_heap);
 
 		for (const Mount& mount : m_mounts)
 		{
-			if (normal.size() > mount.directory.size() && normal.starts_with(mount.directory))
+			if (mount.source->name_of(file, rest))
 			{
 				name = mount.prefix;
 				name += '/';
-				name += StringView(normal).substr(mount.directory.size());
+				name += rest;
 				return true;
 			}
 		}
 
-		if (normal.size() > m_root.size() && normal.starts_with(m_root))
-		{
-			name.assign(StringView(normal).substr(m_root.size()));
-			return true;
-		}
+		return m_root_source->name_of(file, name);
+	}
 
-		return false;
+	bool AssetManager::is_mounted(StringView name) const noexcept
+	{
+		Resolved resolved(*m_heap);
+		return resolve(name, resolved) && resolved.mounted;
 	}
 
 	AssetManager::Slot* AssetManager::request(u16 type, StringView path, u32 parent) noexcept
@@ -271,17 +326,16 @@ namespace ember
 		EMBER_ASSERT(type != NO_TYPE && "register the type before loading it");
 		EMBER_ASSERT(m_gpu != nullptr && "load before init");
 
-		// The name and the file first, outside the lock.
-		String name(m_heap);
-		String file(m_heap);
+		// The name, its source and the file first, outside the lock.
+		Resolved resolved(*m_heap);
 
-		if (!resolve(path, name, file))
+		if (!resolve(path, resolved))
 		{
 			EMBER_ERROR("asset '{}': not a path inside the asset root or a mount", path);
 			return nullptr;
 		}
 
-		const AssetId id = asset_id(name);
+		const AssetId id = asset_id(resolved.name);
 
 		std::lock_guard lock(m_lock);
 
@@ -300,7 +354,8 @@ namespace ember
 		}
 		else
 		{
-			handle = m_slots.emplace(type, id, std::move(name), std::move(file));
+			handle = m_slots.emplace(type, id, std::move(resolved.name), std::move(resolved.local),
+									 std::move(resolved.file), resolved.source);
 
 			if (handle.is_null())
 			{
@@ -387,10 +442,30 @@ namespace ember
 		(void)m_slots.erase(handle);
 	}
 
+	void AssetManager::notify_changed(StringView name) noexcept { queue_named(name, false); }
+
+	void AssetManager::notify_written(StringView name) noexcept { queue_named(name, true); }
+
+	void AssetManager::queue_named(StringView name, bool settled) noexcept
+	{
+		Change change{.id = asset_id(name), .time_ns = now_ns(), .size = 0, .settled = settled, .name = {}};
+
+		if (name.size() < sizeof(change.name))
+		{
+			std::memcpy(change.name, name.data(), name.size());
+			change.size = static_cast<u16>(name.size());
+		}
+
+		record_change(change);
+	}
+
 	void AssetManager::notify_changed(AssetId id) noexcept
 	{
-		const Change change{.id = id, .time_ns = now_ns()};
+		record_change({.id = id, .time_ns = now_ns(), .size = 0, .settled = false, .name = {}});
+	}
 
+	void AssetManager::record_change(const Change& change) noexcept
+	{
 		// A refused push is usually the pump mid pop; a queue that is really full drops the
 		// change, and the next save of that file brings another.
 		for (u32 spins = 0; !m_changes.try_push(change); ++spins)
@@ -403,6 +478,97 @@ namespace ember
 
 			detail::cpu_relax(spins);
 		}
+	}
+
+	void AssetManager::take_changed(Vector<AssetChange>& out) noexcept
+	{
+		EMBER_ASSERT(jobs::is_main() && "take_changed() on the owner thread, after pump()");
+
+		// Copied, not swapped: the caller's vector may live on another heap. It gets the changes and nothing else.
+		out.clear();
+		for (AssetChange& change : m_changed)
+			out.push_back(
+				{.name = String(change.name, out.get_allocator()), .id = change.id, .mounted = change.mounted});
+
+		m_changed.clear();
+	}
+
+	bool AssetManager::deliver(StringView name, Span<const u8> bytes) noexcept
+	{
+		// The same rule a load obeys: relative, normalised, below the root or a mount; and a mount
+		// only when asked, since a mount is usually someone else's files.
+		Resolved resolved(*m_heap);
+		if (!resolve(name, resolved) || (resolved.mounted && !m_deliver_to_mounts))
+			return false;
+
+		struct Delivery
+		{
+			AssetManager* manager;
+			AssetSource* source;
+			String name;
+			String local;
+			Vector<u8> bytes;
+			Result<void, fs::FileError> result;
+		};
+
+		Delivery* delivery = memory::new_object<Delivery>(
+			MemoryTag::Assets, this, resolved.source, std::move(resolved.name), std::move(resolved.local),
+			Vector<u8>(bytes.begin(), bytes.end(), m_heap), Result<void, fs::FileError>{});
+
+		// A job, so the caller never waits on the disk: it hands the bytes to the source on the IO
+		// thread, parks, and then names the file to the manager exactly as the watcher would.
+		jobs::kick({.fn =
+						[](void* data) noexcept
+					{
+						Delivery& delivery = *static_cast<Delivery*>(data);
+						jobs::Counter done;
+
+						const auto submitted = jobs::submit_io(
+							{
+								.fn =
+									[](void* data) noexcept
+								{
+									Delivery& delivery = *static_cast<Delivery*>(data);
+									delivery.result	   = delivery.source->deliver(delivery.local, delivery.bytes);
+								},
+								.data	  = &delivery,
+								.name	  = "deliver asset",
+								.priority = jobs::JobPriority::Low,
+							},
+							done);
+
+						if (submitted)
+							jobs::wait(done);
+
+						if (submitted && delivery.result)
+							delivery.manager->notify_written(delivery.name);
+						else if (submitted)
+							EMBER_ERROR("asset '{}': delivery failed ({})", delivery.name,
+										enum_name(delivery.result.error().code));
+						else
+							EMBER_ERROR("asset '{}': delivery refused ({})", delivery.name,
+										enum_name(submitted.error()));
+
+						memory::delete_object(MemoryTag::Assets, &delivery);
+					},
+					.data	  = delivery,
+					.name	  = "deliver asset",
+					.priority = jobs::JobPriority::Low});
+
+		return true;
+	}
+
+	std::optional<u64> AssetManager::file_hash(StringView name) noexcept
+	{
+		Resolved resolved(*m_heap);
+		if (!resolve(name, resolved))
+			return std::nullopt;
+
+		const auto data = resolved.source->read(resolved.local, *m_heap);
+		if (!data)
+			return std::nullopt;
+
+		return hash_bytes(data->bytes());
 	}
 
 	void AssetManager::reload(AssetId id) noexcept
@@ -534,7 +700,13 @@ namespace ember
 		m_due.clear();
 
 		// Debounce: the watcher reports every step of an editor's save; the asset reloads once the
-		// file has been quiet for reload_delay.
+		// file has been quiet for reload_delay. A settled change, a file written whole by this process
+		// or delivered to it, is due at once, and the watcher's report of that same write, which comes
+		// within the delay, is nothing new.
+		const u64 now = now_ns();
+
+		std::erase_if(m_settled, [&](const Settled& settled) { return now - settled.time_ns >= m_reload_delay_ns; });
+
 		Change change;
 		while (m_changes.try_pop(change))
 		{
@@ -542,22 +714,40 @@ namespace ember
 										 [&](const Change& pending) { return pending.id == change.id; });
 
 			if (it != m_pending.end())
+			{
 				it->time_ns = change.time_ns;
-			else
+				it->settled |= change.settled;
+				continue;
+			}
+
+			const bool echo =
+				!change.settled && std::any_of(m_settled.begin(), m_settled.end(),
+											   [&](const Settled& settled) { return settled.id == change.id; });
+			if (!echo)
 				m_pending.push_back(change);
 		}
 
-		const u64 now = now_ns();
-
 		for (u32 i = 0; i < m_pending.size();)
 		{
-			if (now - m_pending[i].time_ns < m_reload_delay_ns)
+			if (!m_pending[i].settled && now - m_pending[i].time_ns < m_reload_delay_ns)
 			{
 				++i;
 				continue;
 			}
 
-			reload(m_pending[i].id);
+			const Change& change = m_pending[i];
+			reload(change.id);
+
+			if (change.settled)
+				m_settled.push_back({.id = change.id, .time_ns = now});
+
+			// Kept for take_changed(), name and all: a change reported by id alone has nothing to send on.
+			if (m_record_changes && change.size != 0)
+			{
+				const StringView name(change.name, change.size);
+				m_changed.push_back({.name = String(name, m_heap), .id = change.id, .mounted = is_mounted(name)});
+			}
+
 			m_pending[i] = m_pending.back();
 			m_pending.pop_back();
 		}
@@ -717,29 +907,57 @@ namespace ember
 
 	bool AssetManager::read_file(const Slot& slot, fs::FileData& out) noexcept
 	{
-		// Submitted to the IO thread and waited for on this fiber. The worker underneath runs other
-		// jobs meanwhile, and this code resumes wherever one is free.
-		jobs::FileRead read{.path = slot.file, .memory = m_heap};
-		jobs::Counter done;
+		auto read = read_source(*slot.source, slot.local);
 
-		if (const auto submitted = jobs::read_file(read, done); !submitted)
+		if (!read)
 		{
-			EMBER_ERROR("asset '{}': read refused ({})", slot.path, enum_name(submitted.error()));
-			return false;
-		}
-
-		jobs::wait(done);
-
-		if (!read.result)
-		{
-			const fs::FileError& error = read.result.error();
+			const fs::FileError& error = read.error();
 			EMBER_ERROR("asset '{}': read failed ({} in {}, native {})", slot.path, enum_name(error.code),
 						enum_name(error.op), error.native_code);
 			return false;
 		}
 
-		out = std::move(read.result.value());
+		out = std::move(read.value());
 		return true;
+	}
+
+	Result<fs::FileData, fs::FileError> AssetManager::read_source(AssetSource& source, StringView local) noexcept
+	{
+		// Submitted to the IO thread and waited for on this fiber. The worker underneath runs other
+		// jobs meanwhile, and this code resumes wherever one is free.
+		struct Read
+		{
+			AssetSource* source;
+			StringView local;
+			Heap* heap;
+			Result<fs::FileData, fs::FileError> result;
+		};
+
+		Read read{&source, local, m_heap, {}};
+		jobs::Counter done;
+
+		const auto submitted = jobs::submit_io(
+			{
+				.fn =
+					[](void* data) noexcept
+				{
+					Read& read	= *static_cast<Read*>(data);
+					read.result = read.source->read(read.local, *read.heap);
+				},
+				.data	  = &read,
+				.name	  = "read asset",
+				.priority = jobs::JobPriority::Low,
+			},
+			done);
+
+		if (!submitted)
+		{
+			EMBER_ERROR("asset read refused ({})", enum_name(submitted.error()));
+			return tl::unexpected(fs::FileError{.code = fs::FileErrorCode::Busy, .op = fs::FileOp::Read});
+		}
+
+		jobs::wait(done);
+		return std::move(read.result);
 	}
 
 	void AssetManager::publish(Slot& slot, SlotHandle handle, void* payload) noexcept

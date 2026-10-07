@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ember/assets/asset_source.h>
 #include <ember/containers/mpmc_queue.h>
 #include <ember/containers/pool.h>
 #include <ember/containers/span.h>
@@ -14,6 +15,7 @@
 
 #include <array>
 #include <atomic>
+#include <optional>
 #include <type_traits>
 #include <utility>
 
@@ -26,27 +28,19 @@ namespace ember
 {
 	class AssetManager;
 
-	using AssetId = u64;
-
-	/**
-	 * An asset's name as a number: FNV-1a over its path below the root or a mount, reading either
-	 * separator as '/', so a path spelt the Windows way names the same asset.
-	 */
-	[[nodiscard]] constexpr AssetId asset_id(StringView path) noexcept
-	{
-		u64 hash = HASH_SEED;
-
-		for (const char c : path)
-			hash = (hash ^ static_cast<u8>(c == '\\' ? '/' : c)) * 0x100000001b3ull;
-
-		return hash;
-	}
-
 	enum class AssetState : u8
 	{
 		Loading, // the first load has not finished
 		Loaded,	 // a payload exists; a reload may be in flight behind it
 		Failed,	 // the first load failed; get() is null until a reload succeeds
+	};
+
+	/** A file below the root or a mount that changed and went quiet: what pump() reloaded for. */
+	struct AssetChange
+	{
+		String name; // as assets name it: "textures/tiles.png", "ember/materials/sprite.slang"
+		AssetId id	 = 0;
+		bool mounted = false; // under a mount rather than the root: a game decides whether those travel
 	};
 
 	namespace detail
@@ -230,6 +224,21 @@ namespace ember
 		 */
 		void depends_on(StringView path) noexcept;
 
+		/**
+		 * Another file by name, through whichever source serves it, read on the IO thread while this
+		 * loader parks: the image a sheet measures, the pair a cooked type is read from. A change to
+		 * it reloads this asset, as depends_on() would arrange. Names are as assets are named, below
+		 * the root or a mount; one no source holds reads as NotFound.
+		 */
+		[[nodiscard]] Result<fs::FileData, fs::FileError> read(StringView name) noexcept;
+
+		/**
+		 * A file this load wrote whole, by name, as a cook writes its pair: it reloads, and is recorded
+		 * for take_changed(), at the next pump rather than after the quiet time a save gets, and the
+		 * watcher's own report of the write is not counted again.
+		 */
+		void notify_written(StringView name) noexcept;
+
 	private:
 		friend class AssetManager;
 
@@ -359,6 +368,12 @@ namespace ember
 		 * and the first event sees a half written file.
 		 */
 		u32 reload_delay_ms = 150;
+
+		/** Keep the quiet changes pump() reloads for, by name, for take_changed(): a host that syncs clients. */
+		bool record_changes = false;
+
+		/** deliver() may write under a mount, not only the root: a mount is usually someone else's checkout. */
+		bool deliver_to_mounts = false;
 	};
 
 	/**
@@ -386,15 +401,22 @@ namespace ember
 	 * load again, for the asset the file is and for every asset that said it depends on the file.
 	 * A reload that fails keeps the old payload, so a broken save never takes the game down.
 	 *
-	 * Names are paths below the root, or below a mount: a directory outside the root served under
-	 * a prefix, such as the engine's shaders in a dev build, and watched along with the root.
+	 * Names are paths below the root, or below a mount: another source served under a prefix, such
+	 * as the engine's shaders in a dev build, or a pack. Every source is an AssetSource; the root is a
+	 * DirectorySource of its own. Loaders read by name through the manager and never learn which
+	 * source answered, so a game's files may live in a directory while it is made and in a pack when
+	 * it ships, with no loader the wiser. A directory is watched along with the root.
+	 *
+	 * Files reach a source from another machine too: deliver() hands bytes to the source a name
+	 * belongs to and then reloads as a save would, and take_changed() names what the watcher saw go
+	 * quiet, so a host can send its saves on. Together they are hot reload across machines.
 	 *
 	 * THREADING
 	 *   load(): any thread. References: copy, drop, read from any thread; wait as the type allows.
-	 *   notify_changed(): any thread, the watcher's included.
+	 *   notify_changed(), deliver(): any thread, the watcher's included.
 	 *   register_type(): the owner thread, before anything loads the type.
 	 *   mount(): the owner thread, before the first load.
-	 *   pump(), wait_idle(), shutdown(): the owner thread, between frames.
+	 *   pump(), wait_idle(), take_changed(), file_hash(), shutdown(): the owner thread, between frames.
 	 */
 	class AssetManager final
 	{
@@ -470,6 +492,12 @@ namespace ember
 		void mount(StringView prefix, StringView directory) noexcept;
 
 		/**
+		 * Serves a source of the game's own, a pack say, as `prefix/...`. The source outlives the
+		 * manager. Before the first load.
+		 */
+		void mount(StringView prefix, AssetSource& source) noexcept;
+
+		/**
 		 * The asset at path, loading it if nothing holds it yet. Returns at  once; wait() on the
 		 * reference for the first load, or read it when it turns true. The same path is the same
 		 * asset while a reference to it lives; asking for it as another type is a bug and asserts.
@@ -481,8 +509,46 @@ namespace ember
 			return AssetRef<T>(request(s_type_index<T>, path, 0), typename AssetRef<T>::Adopt{});
 		}
 
-		/** A file changed on disk. Any thread; the watcher calls this. Unknown ids are ignored. */
+		/**
+		 * A file changed on disk, by the name an asset loads it by. Any thread; the watcher calls
+		 * this. A name nothing loaded reloads nothing, but is still recorded for take_changed().
+		 */
+		void notify_changed(StringView name) noexcept;
+
+		/** The same by id alone: reloads as above, and is recorded without a name, which take_changed() skips. */
 		void notify_changed(AssetId id) noexcept;
+
+		/**
+		 * A file written whole by this process, or delivered from another: nothing of it is half
+		 * written, so it reloads at the next pump instead of waiting reload_delay for quiet, and the
+		 * watcher's report of the same write, which follows within that delay, is dropped. Any thread.
+		 */
+		void notify_written(StringView name) noexcept;
+
+		/**
+		 * The changes pump() has reloaded for since the last call, taken out into `out`, which holds
+		 * them and nothing else after: a host hands them on to other machines. Owner thread, after
+		 * pump(). Empty unless AssetManagerDef::record_changes.
+		 */
+		void take_changed(Vector<AssetChange>& out) noexcept;
+
+		/**
+		 * Bytes for a name that arrived from another machine: handed to the source the name belongs
+		 * to, on the IO thread, and then reloaded as a save would be. False at once for a name no
+		 * source serves, one that climbs out, or one under a mount unless def.deliver_to_mounts. The
+		 * bytes are copied. Any thread.
+		 */
+		[[nodiscard]] bool deliver(StringView name, Span<const u8> bytes) noexcept;
+
+		/**
+		 * hash_bytes() of what a name reads as now, or nothing when it cannot be read: how a joiner
+		 * tells which of a host's files it already has. Reads on the calling thread: for a few names
+		 * at a time, on the owner thread.
+		 */
+		[[nodiscard]] std::optional<u64> file_hash(StringView name) noexcept;
+
+		/** True for a name under a mount rather than the root. */
+		[[nodiscard]] bool is_mounted(StringView name) const noexcept;
 
 		/**
 		 * Once per frame on the owner thread, before the frame's update is kicked: unloads assets
@@ -572,16 +638,18 @@ namespace ember
 		 */
 		struct Slot : detail::AssetSlot
 		{
-			Slot(u16 type, AssetId id, String&& path, String&& file) noexcept
-				: type(type), id(id), path(std::move(path)), file(std::move(file)),
-				  dependents(this->path.get_allocator())
+			Slot(u16 type, AssetId id, String&& path, String&& local, String&& file, AssetSource* source) noexcept
+				: type(type), id(id), path(std::move(path)), local(std::move(local)), file(std::move(file)),
+				  source(source), dependents(this->path.get_allocator())
 			{
 			}
 
 			u16 type;
 			AssetId id;
 			String path;		   // the name: below the root or under a mount's prefix
-			String file;		   // absolute; the in flight read points at it
+			String local;		   // the name below its source: the prefix taken off
+			String file;		   // absolute, for a type that reads its own files; empty when the source has none
+			AssetSource* source;   // what reads it; outlives the slot
 			void* fresh = nullptr; // a payload waiting for the pump: a reload, or a first to publish; under the lock
 
 			// Under the lock: the slots that loaded this one through AssetLoad::load(), which hear
@@ -607,7 +675,21 @@ namespace ember
 			u32 slot; // SlotHandle bits
 		};
 
+		/// The name rides along for take_changed(); longer than the cell holds, it is reported by id alone.
+		/// `settled`: written whole, so due at the next pump rather than after the quiet time.
 		struct Change
+		{
+			AssetId id;
+			u64 time_ns;
+			u16 size;
+			bool settled;
+			char name[237];
+		};
+
+		static_assert(sizeof(Change) == 256);
+
+		/** A settled change the pump took: the watcher's report of the same write is dropped for a while. */
+		struct Settled
 		{
 			AssetId id;
 			u64 time_ns;
@@ -620,11 +702,24 @@ namespace ember
 			u64 frame	  = 0; // pump index at retirement; unloaded RETIRE_GRACE pumps on
 		};
 
-		/** A directory served under a name that is not below the root. */
+		/** A source served under a name that is not below the root. */
 		struct Mount
 		{
-			String prefix;	  // without a separator: "ember"
-			String directory; // absolute, ending in a separator
+			String prefix;		 // without a separator: "ember"
+			AssetSource* source; // the game's, or a DirectorySource of this manager's own
+			bool owned;			 // made by mount(prefix, directory): deleted at shutdown
+		};
+
+		/** A name taken apart: its source, what it is called there, and the file behind it if any. */
+		struct Resolved
+		{
+			explicit Resolved(Heap& heap) noexcept : name(&heap), local(&heap), file(&heap) {}
+
+			String name;  // normalised, as assets are named
+			String local; // below the source
+			String file;  // absolute; empty for a source without files
+			AssetSource* source = nullptr;
+			bool mounted		= false;
 		};
 
 		/** A file that is no asset, and a slot made from it. */
@@ -638,8 +733,13 @@ namespace ember
 
 		[[nodiscard]] u16 add_type(const Type& type) noexcept;
 		[[nodiscard]] AssetServices services(const Type& type) const noexcept;
-		[[nodiscard]] bool resolve(StringView path, String& name, String& file) const noexcept;
+		[[nodiscard]] bool resolve(StringView path, Resolved& out) const noexcept;
 		[[nodiscard]] bool name_of(StringView file, String& name) const noexcept;
+		void mount_source(StringView prefix, AssetSource& source, bool owned) noexcept;
+		[[nodiscard]] Result<fs::FileData, fs::FileError> read_source(AssetSource& source,
+																	  StringView local) noexcept; // parks the caller
+		void queue_named(StringView name, bool settled) noexcept;
+		void record_change(const Change& change) noexcept;
 		[[nodiscard]] Slot* request(u16 type, StringView path, u32 parent) noexcept;
 		void unreferenced(detail::AssetSlot& slot) noexcept;
 		void wait(detail::AssetSlot& slot) noexcept;
@@ -661,7 +761,10 @@ namespace ember
 		gpu::Device* m_gpu = nullptr;
 		Heap* m_heap	   = nullptr;
 		String m_root;
-		u64 m_reload_delay_ns = 0;
+		DirectorySource* m_root_source = nullptr; // the root as a source, owned
+		u64 m_reload_delay_ns		   = 0;
+		bool m_record_changes		   = false;
+		bool m_deliver_to_mounts	   = false;
 
 		// Slots, loaders and waiters read a type by index without the lock, and a loader holds on to
 		// one for a whole load, so the table grows in place and never moves: a type added while
@@ -686,7 +789,9 @@ namespace ember
 		MpmcQueue<Request> m_requests; // one cell per slot, so it can never be full
 		MpmcQueue<u32> m_unreferenced; // slots whose last reference went; one entry per slot at most
 		MpmcQueue<Change> m_changes;
-		Vector<Change> m_pending; // pump only: changes waiting to go quiet
+		Vector<Change> m_pending;	   // pump only: changes waiting to go quiet
+		Vector<Settled> m_settled;	   // pump only: settled changes taken lately, whose echoes are dropped
+		Vector<AssetChange> m_changed; // owner thread: what pump() reloaded for, until take_changed()
 
 		std::atomic<u64> m_frame{0}; // the last pump's index, for retire stamps
 		std::atomic<u32> m_running{0};

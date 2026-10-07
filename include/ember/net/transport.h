@@ -25,6 +25,14 @@ namespace ember::net
 	struct NetDef
 	{
 		Role role = Role::Client;
+
+		/**
+		 * Bytes a second each connection sends at most: the library's pacing for everything on it.
+		 * Zero keeps the library's own default, 256 KB a second, which is plenty for a tick's packets
+		 * and slow for files; a game that syncs assets asks for more. Taken as the library starts, for
+		 * the connections made after. A cap on pacing, not a floor.
+		 */
+		u32 send_rate = 0;
 	};
 
 	enum class TransportError : u8
@@ -62,8 +70,17 @@ namespace ember::net
 	{
 		Unreliable, // may be lost or arrive out of order: the protocol's own packets, wich acks track
 		Reliable,	// arrives once and in order with the other reliable sends: the session's messages
+		Bulk,		// arrives once and in order with the other bulk sends only, behind everything else: files
 		Count,
 	};
+
+	/**
+	 * The largest bulk send: one message the transport carries whole, on a lane of its own, behind
+	 * the game's packets and messages. Many of them make a file. Well under what the library
+	 * fragments and reassembles itself (512 KB), so a few are in flight at once without filling its
+	 * send buffer; the sender paces on PeerStats::pending_reliable.
+	 */
+	inline constexpr u32 MAX_BULK_BYTES = 64 * 1024;
 
 	enum class TransportEventKind : u8
 	{
@@ -145,8 +162,11 @@ namespace ember::net
 		/** Closes a connection. The peer sees Disconnected with the reason; this end sees nothing. */
 		virtual void disconnect(PeerId peer, DisconnectReason reason, f64 now) noexcept = 0;
 
-		/** Sends up to MAX_PACKET_BYTES. A send to an unknown or closed peer is dropped. */
-		virtual void send(PeerId peer, Span<const u8> data, Delivery delivery, f64 now) noexcept = 0;
+		/**
+		 * Sends up to MAX_PACKET_BYTES, or MAX_BULK_BYTES for Bulk. False when nothing left: an unknown
+		 * or closed peer, or for Bulk a send buffer that is full, which a sender tries again next tick.
+		 */
+		virtual bool send(PeerId peer, Span<const u8> data, Delivery delivery, f64 now) noexcept = 0;
 
 		/** The next event due by now; false once there is none. Its data lives until the next call. */
 		virtual bool poll(f64 now, TransportEvent& event) noexcept = 0;
@@ -166,7 +186,7 @@ namespace ember
 	EMBER_ENUM_NAMES(net::Role, "Client", "Server");
 	EMBER_ENUM_NAMES(net::TransportError, "AlreadyInitialized", "NotInitialized", "LibraryFailed", "SteamNotRunning",
 					 "BadAddress", "AlreadyListening", "AddressInUse", "Unreachable", "Unsupported");
-	EMBER_ENUM_NAMES(net::Delivery, "Unreliable", "Reliable");
+	EMBER_ENUM_NAMES(net::Delivery, "Unreliable", "Reliable", "Bulk");
 	EMBER_ENUM_NAMES(net::TransportEventKind, "Connected", "Disconnected", "Received");
 	EMBER_ENUM_NAMES(net::DisconnectReason, "None", "Requested", "TimedOut", "Rejected", "ProtocolMismatch",
 					 "ServerFull", "Kicked", "Malformed", "Transport", "Shutdown");
