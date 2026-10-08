@@ -166,7 +166,7 @@ namespace ember::net
 		const PrefabId prefab	  = static_cast<PrefabId>(registry.get<ecs::PrefabRef>(entity).id);
 		const PrefabInfo& info	  = m_schema.prefab(prefab);
 		const Owner* owner		  = registry.try_get<Owner>(entity);
-		const ecs::Prefab& values = m_world.prefabs()[prefab];
+		const ecs::Prefab& values = m_world.prefab_of(prefab);
 
 		EMBER_ASSERT((owner == nullptr || owner->seat == NO_OWNER || owner->seat < m_viewers.size()) &&
 					 "an Owner seat the server has");

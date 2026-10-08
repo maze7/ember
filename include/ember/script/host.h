@@ -5,6 +5,7 @@
 #include <ember/ecs/world.h>
 #include <ember/memory/memory.h>
 #include <ember/memory/unique.h>
+#include <ember/physics/space.h>
 #include <ember/script/binding.h>
 #include <ember/script/problem.h>
 #include <ember/script/source.h>
@@ -40,13 +41,83 @@ namespace ember::script
 		u64 transitions = 0; // stategraph states entered
 		f64 simulate_us	 = 0.0; // the latest run of every simulate point
 		f64 present_us	 = 0.0; // the latest present point
+		f64 present_shows_us = 0.0; // of which, the shows
 		u32 modules		 = 0;
 		u32 systems		 = 0;
 		u32 stategraphs	 = 0;
+		u32 stories			 = 0; // declared
+		u32 threads			 = 0; // running
 		u32 disabled	 = 0; // systems off until their module reloads
 		u32 problems	 = 0;
 		size_t lua_bytes = 0; // the VM's heap
 		u64 hash		 = 0; // over the loaded modules' text: equal on two machines running the same scripts
+	};
+
+	/** One story an entity runs, for a panel: where it waits. */
+	struct StoryReport
+	{
+		StringView story;
+		StringView waiting; // "wait", "wait_until", "wait_for", "done", "failed", or empty while it runs
+		StringView event;	// what a wait_for waits for
+		u32 line = 0;		// the line of run it stands at
+		u32 wake = 0;		// the tick a wait ends, when it is one
+	};
+
+	/**
+	 * What an inspector shows of one entity, as a world's host has it: each graph slot's state and marks, its
+	 * stories, its modifiers, and, while it is watched, its last transitions. Owned strings: it crosses from a
+	 * server's thread to the panel's.
+	 */
+	struct Inspection
+	{
+		struct Mark
+		{
+			String name;
+			u32 at = 0;
+		};
+
+		struct Slot
+		{
+			String graph;
+			String state;
+			u32 since	  = 0;
+			u32 elapsed	  = 0;
+			bool disabled = false;
+			Vector<String> states; // every state the graph has, for a push into one
+			Vector<Mark> marks;	   // the state's
+		};
+
+		struct Story
+		{
+			String name;
+			String waiting;
+			String event;
+			u32 line = 0;
+			u32 wake = 0;
+		};
+
+		struct Step
+		{
+			u8 slot = 0;
+			String from;
+			String to;
+			u32 tick = 0;
+		};
+
+		struct Modifier
+		{
+			String name;
+			u32 stacks = 0;
+			f32 power  = 0.0f;
+			u32 left   = 0; // ticks; 0 for one that lasts
+		};
+
+		u32 tick   = 0; // the world's, when it was made
+		bool found = false;
+		Vector<Slot> slots;
+		Vector<Story> stories;
+		Vector<Step> history; // oldest first: only while the entity is watched
+		Vector<Modifier> modifiers;
 	};
 
 	/**
@@ -77,6 +148,7 @@ namespace ember::script
 		[[nodiscard]] Binding& binding() noexcept { return m_binding; }
 		[[nodiscard]] const Binding& binding() const noexcept { return m_binding; }
 		[[nodiscard]] ecs::World& world() noexcept { return m_world; }
+		[[nodiscard]] const ecs::World& world() const noexcept { return m_world; }
 
 		/**
 		 * Loads these sources, fresh versions of modules it has or new ones, each after what it requires
@@ -92,18 +164,76 @@ namespace ember::script
 		/** A script point: the systems declared for this stage, in path order, then the collector's step. */
 		void simulate(u8 stage, ecs::Commands& commands) noexcept;
 
-		/** The Present point: a client's per-frame systems. */
+		/**
+		 * The moments a client draws this frame, in ticks, fractions included: what it predicts (its own
+		 * player) at `predicted`, everything else at `interpolated`, a little behind the server. Before
+		 * each Present: the shows fire as those moments reach what the simulation did.
+		 */
+		void set_present(f64 predicted, f64 interpolated) noexcept;
+
+		/** The Present point: the shows, then a client's per-frame systems. */
 		void present(ecs::Commands& commands) noexcept;
+
+		/**
+		 * A number the game reads, as an entity's modifiers change it: `base`, plus each modifier's adds, then times
+		 * its muls, per stack, in the order of their names. `base` itself when nothing changes it, to the bit. Any
+		 * thread, while no script point runs: it reads the world and the declarations, and calls no script.
+		 */
+		[[nodiscard]] f32 stat(ecs::Entity entity, u64 stat, f32 base = 1.0f) const noexcept;
+
+		/** The hurtboxes a Trigger touches this tick, for sense_triggers(); then sense_done() once every one has been
+		 * told. */
+		void sense(ecs::Entity trigger, Span<const physics::Touch> inside) noexcept;
+		void sense_done() noexcept;
+
+		/**
+		 * The panels the client scripts declared, `panel "name" { frame = fn }`, sorted by name: a game's debug UI
+		 * lists them and draws each open one in a window, running its frame inside with run_panel(). Main thread,
+		 * between the world's runs, inside the UI frame. False when the frame failed; it stays off until its
+		 * module reloads, and panel_failed() says so.
+		 */
+		[[nodiscard]] u32 panel_count() const noexcept;
+		[[nodiscard]] StringView panel_name(u32 index) const noexcept;
+		[[nodiscard]] bool panel_failed(u32 index) const noexcept;
+		bool run_panel(u32 index) noexcept;
+
+		/** Whether a panel's frame is running: what the ui library's functions ask before they draw. */
+		[[nodiscard]] bool in_panel() const noexcept;
+
+		/** The commands of the running script point, for a game's own functions; null between points. */
+		[[nodiscard]] ecs::Commands* commands() noexcept { return m_commands; }
 
 		/**
 		 * Raises an event on an entity, as a script's e:event("hurt") does: its prefab's event of that
 		 * name swaps component groups at the next script point, and its stategraph's state answers to
 		 * it there. From a system, with the entity that caused it when there is one.
 		 */
-		void event(ecs::Entity entity, StringView name, ecs::Entity source = ecs::NO_ENTITY) noexcept;
+		void event(ecs::Entity entity, StringView name, ecs::Entity source = ecs::NO_ENTITY, f32 value = 0.0f) noexcept;
 
-		/** The name of the state an entity's stategraph is in, for a panel; empty when it has none. */
-		[[nodiscard]] StringView state_of(ecs::Entity entity) const noexcept;
+		/** The name of the state an entity's stategraph is in, for a panel; empty when it has none. slot: which of its
+		 * graphs. */
+		[[nodiscard]] StringView state_of(ecs::Entity entity, u32 slot = 0) const noexcept;
+
+		/** The stories an entity runs here and where each waits, for a panel. */
+		void stories_of(ecs::Entity entity, Vector<StoryReport>& out) const noexcept;
+
+		/** Everything an inspector shows of an entity, into `out`. */
+		void inspect(ecs::Entity entity, Inspection& out) const noexcept;
+
+		/** The entity an inspector watches, whose transitions the host keeps: NO_ENTITY for none. */
+		void watch(ecs::Entity entity) noexcept;
+
+		/**
+		 * An inspector's push: the entity's graph in this slot goes into the named state at its next step, its
+		 * exit then the new state's entry, whatever the state it is in answers. False when there is no such state.
+		 */
+		bool force_state(ecs::Entity entity, u32 slot, StringView state) noexcept;
+
+		/**
+		 * Prefabs the latest reload() retuned live (World::retune_prefab): a game hands each to its replicator,
+		 * so new entities start from the new values on every machine. Emptied by the next reload().
+		 */
+		[[nodiscard]] Span<const ecs::PrefabId> retuned() const noexcept;
 
 		[[nodiscard]] bool started() const noexcept { return m_L != nullptr; }
 		[[nodiscard]] u64 hash() const noexcept { return m_hash; }

@@ -186,6 +186,25 @@ namespace ember::ecs
 						}
 						break;
 					}
+					case FieldType::Entity:
+					{
+						u32 value = Stream::IsWriting ? read_as<u32>(p) : 0;
+						serialize_bits(stream, value, 32);
+						if (Stream::IsReading)
+							store_as<u32>(p, value);
+						break;
+					}
+					case FieldType::Name:
+					{
+						const u64 bits = Stream::IsWriting ? read_as<u64>(p) : 0;
+						u32 low		   = static_cast<u32>(bits);
+						u32 high	   = static_cast<u32>(bits >> 32);
+						serialize_bits(stream, low, 32);
+						serialize_bits(stream, high, 32);
+						if (Stream::IsReading)
+							store_as<u64>(p, (static_cast<u64>(high) << 32) | low);
+						break;
+					}
 					default:
 						break;
 				}
@@ -285,7 +304,12 @@ namespace ember::ecs
 
 		out.defaults.assign(size, 0);
 		for (size_t i = 0; i < def.fields.size(); ++i)
-			write_field(out.fields[i], out.defaults.data(), def.fields[i].value, def.fields[i].y);
+		{
+			if (def.fields[i].type == FieldType::Name)
+				write_field_bits(out.fields[i], out.defaults.data(), def.fields[i].bits);
+			else
+				write_field(out.fields[i], out.defaults.data(), def.fields[i].value, def.fields[i].y);
+		}
 		return true;
 	}
 
@@ -390,6 +414,10 @@ namespace ember::ecs
 			case FieldType::F32:
 			case FieldType::Vec2:
 				return read_as<f32>(p);
+			case FieldType::Entity:
+				return read_as<u32>(p);
+			case FieldType::Name:
+				return static_cast<f64>(read_as<u64>(p)); // rounded: compare names with read_field_bits()
 			default:
 				return 0.0;
 		}
@@ -422,7 +450,44 @@ namespace ember::ecs
 				store_as<f32>(p, static_cast<f32>(value));
 				store_as<f32>(p + 4, y);
 				return;
+			case FieldType::Entity:
+				store_as<u32>(p, static_cast<u32>(std::clamp(value, 0.0, 4294967295.0)));
+				return;
+			case FieldType::Name:
+				store_as<u64>(p, static_cast<u64>(std::clamp(value, 0.0, 18446744073709551615.0)));
+				return;
 			default:
+				return;
+		}
+	}
+
+	u64 read_field_bits(const FieldInfo& field, const void* component) noexcept
+	{
+		const u8* p = static_cast<const u8*>(component) + field.offset;
+		switch (field.type)
+		{
+			case FieldType::Entity:
+				return read_as<u32>(p);
+			case FieldType::Name:
+				return read_as<u64>(p);
+			default:
+				return static_cast<u64>(read_field(field, component));
+		}
+	}
+
+	void write_field_bits(const FieldInfo& field, void* component, u64 bits) noexcept
+	{
+		u8* p = static_cast<u8*>(component) + field.offset;
+		switch (field.type)
+		{
+			case FieldType::Entity:
+				store_as<u32>(p, static_cast<u32>(bits));
+				return;
+			case FieldType::Name:
+				store_as<u64>(p, bits);
+				return;
+			default:
+				write_field(field, component, static_cast<f64>(bits));
 				return;
 		}
 	}

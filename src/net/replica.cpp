@@ -418,7 +418,7 @@ namespace ember::net
 	void Replica::spawn(const Staged& staged) noexcept
 	{
 		entt::registry& registry  = m_world.registry;
-		const ecs::Prefab& prefab = m_world.prefabs()[staged.prefab];
+		const ecs::Prefab& prefab = m_world.prefab_of(staged.prefab);
 
 		Slot& slot		= m_entities[staged.index];
 		slot			= {};

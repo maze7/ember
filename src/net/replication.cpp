@@ -109,6 +109,20 @@ namespace ember::net
 		m_component_bits = bits_for(component_count());
 	}
 
+	void Schema::retune(PrefabId id, const ecs::Prefab& prefab) noexcept
+	{
+		const PrefabInfo& info = m_prefabs[id];
+		u32 at				   = info.first;
+		for (ComponentMask left = info.components; left != 0; ++at)
+		{
+			const ecs::ComponentInfo& type	  = *m_components[detail::take_lowest(left)];
+			const ecs::PrefabComponent* value = prefab.find(type.id);
+			EMBER_ASSERT(value != nullptr && "a retuned prefab keeps its components");
+			if (value != nullptr)
+				(void)written_bits(type, value->value.data(), 0, &m_wires[at]);
+		}
+	}
+
 	const ComponentBits& Schema::prefab_wire(PrefabId id, ComponentId component) const noexcept
 	{
 		const PrefabInfo& info = m_prefabs[id];

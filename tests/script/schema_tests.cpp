@@ -1,6 +1,7 @@
 #include <ember/anim/components.h>
 #include <ember/core/filesystem.h>
 #include <ember/ecs/system.h>
+#include <ember/net/replication.h>
 #include <ember/net/serialize.h>
 #include <ember/script/components.h>
 #include <ember/script/host.h>
@@ -381,7 +382,8 @@ namespace schema_test
 			   {"scripts/sim/prefabs/hopper.luau", "prefab \"hopper\" { extends = \"dummy\", Hops = {} }"}});
 		EXPECT_TRUE(m_host->problems().empty());
 
-		// Saved while the game runs: a new value, a new type, a new prefab. Each is for the next start.
+		// Saved while the game runs: a new type's value, a new type, a new prefab are for the next start; a
+		// prefab's new value goes in live.
 		Vector<Source> fresh(&memory::heap(MemoryTag::Scripting));
 		fresh.push_back(make("scripts/sim/components/hops.luau", "component \"Hops\" { kind = \"Server\", reach = tiles(3) }"));
 		fresh.push_back(make("scripts/sim/components/wings.luau", "component \"Wings\" { kind = \"Sim\", span = 2 }"));
@@ -393,13 +395,124 @@ namespace schema_test
 		EXPECT_EQ(problem_with("component Hops changed")->severity, Severity::Warning);
 		EXPECT_EQ(problem_with("component Hops changed")->path, "scripts/sim/components/hops.luau");
 		EXPECT_NE(problem_with("component Wings is new: restart to apply it"), nullptr);
-		EXPECT_NE(problem_with("prefab hopper changed: restart to apply it"), nullptr);
+		EXPECT_EQ(problem_with("prefab hopper changed"), nullptr) << "a value is tuned live, not reported";
+		EXPECT_EQ(m_host->retuned().size(), 1u);
 		EXPECT_NE(problem_with("prefab flyer is new: restart to apply it"), nullptr);
 		EXPECT_EQ(m_host->stats().modules, 3u) << "warnings load";
 
 		m_host->reload(fresh);
 		EXPECT_EQ(problem_with("component Hops changed")->count, 1u) << "a reload clears the file's problems first";
+		EXPECT_EQ(m_host->retuned().size(), 0u) << "the same values again retune nothing";
 		EXPECT_EQ(type("Wings"), nullptr) << "nothing registers while the game runs";
+	}
+
+	TEST_F(SchemaTest, APrefabsNewValuesGoInLiveAndEntitiesStillAtTheOldOnesFollow)
+	{
+		build({{"scripts/sim/components/hops.luau",
+				"component \"Hops\" { kind = \"Server\", reach = tiles(2), hopped = count(0) }"},
+			   {"scripts/sim/prefabs/hopper.luau",
+				"prefab \"hopper\" { extends = \"dummy\", Hops = { hopped = count(1) } }"}});
+		const ecs::ComponentInfo& hops = *type("Hops");
+		const ecs::Prefab& prefab	   = *m_registry.prefab_types().find("hopper");
+
+		const ecs::Entity fresh = m_world->spawn(prefab);
+		const ecs::Entity moved = m_world->spawn(prefab);
+		ecs::write_field(*hops.field("hopped"), const_cast<void*>(bytes_of(hops, moved)),
+						 7.0); // the game moved this one
+
+		Vector<Source> saved(&memory::heap(MemoryTag::Scripting));
+		saved.push_back(
+			make("scripts/sim/prefabs/hopper.luau",
+				 "prefab \"hopper\" { extends = \"dummy\", Hops = { reach = tiles(5), hopped = count(2) } }"));
+		m_host->reload(saved);
+		EXPECT_TRUE(m_host->problems().empty());
+		ASSERT_EQ(m_host->retuned().size(), 1u);
+		EXPECT_EQ(m_host->retuned()[0], prefab.id);
+
+		// The world's prefab, and the entity still at the old values, carry the file's; a field the game moved keeps
+		// its own, while the rest of its component follows.
+		EXPECT_EQ(field(hops, "reach", m_world->prefab_of(prefab.id).find(hops.id)->value.data()), 80.0);
+		EXPECT_EQ(field(hops, "reach", bytes_of(hops, fresh)), 80.0);
+		EXPECT_EQ(field(hops, "hopped", bytes_of(hops, fresh)), 2.0);
+		EXPECT_EQ(field(hops, "reach", bytes_of(hops, moved)), 80.0);
+		EXPECT_EQ(field(hops, "hopped", bytes_of(hops, moved)), 7.0);
+		EXPECT_EQ(field(hops, "reach", m_registry.prefab_types()[prefab.id].find(hops.id)->value.data()), 32.0)
+			<< "the registry is as it was: every world retunes its own";
+
+		// A new entity starts from the new values.
+		const ecs::Entity later = m_world->spawn(prefab);
+		EXPECT_EQ(field(hops, "reach", bytes_of(hops, later)), 80.0);
+		EXPECT_EQ(field(hops, "hopped", bytes_of(hops, later)), 2.0);
+
+		// Another component in the file is for the next start.
+		saved.clear();
+		saved.push_back(make("scripts/sim/prefabs/hopper.luau",
+							 "prefab \"hopper\" { extends = \"dummy\", Hops = {}, Playing = {} }"));
+		m_host->reload(saved);
+		EXPECT_NE(problem_with("prefab hopper changed its components: restart to apply it"), nullptr);
+		EXPECT_EQ(m_host->retuned().size(), 0u);
+	}
+
+	TEST_F(SchemaTest, EntityAndNameFieldsHoldAnotherEntityAndAName)
+	{
+		build({{"scripts/sim/components/target.luau",
+				"component \"Target\" { kind = \"Server\", who = entity(), clip = name(\"idle\") }"},
+			   {"scripts/sim/prefabs/seeker.luau",
+				"prefab \"seeker\" { extends = \"dummy\", Target = {}, Playing = {} }"},
+			   {"scripts/server/rules/seek.luau", R"(
+				system("Act", function()
+					local seekers = {}
+					for e, t in world:query(Target) do
+						table.insert(seekers, e)
+					end
+					table.sort(seekers, function(a, b) return a:id() < b:id() end)
+					-- Each looks at the next; the last at the first. Read back at once, and through the other.
+					for i, e in seekers do
+						e.Target.who = seekers[i % #seekers + 1]
+					end
+					for i, e in seekers do
+						local other = e.Target.who
+						e.Scratch.flag = other ~= nil and other:id() == seekers[i % #seekers + 1]:id()
+						e.Scratch.value = if tostring(e.Target.clip) == "idle" then 1 else 0
+					end
+					-- A name field takes a string, and hands its name to play().
+					seekers[1].Target.clip = "squat"
+					seekers[1]:play(seekers[1].Target.clip)
+					seekers[1].Scratch.wide = if seekers[1].Target.clip == name("squat") then 1 else 0
+				end)
+			)"}});
+		const ecs::ComponentInfo& target = *type("Target");
+		ASSERT_EQ(target.field("who")->type, ecs::FieldType::Entity);
+		ASSERT_EQ(target.field("clip")->type, ecs::FieldType::Name);
+		EXPECT_EQ(ecs::read_field_bits(*target.field("clip"), target.defaults.data()), hash_text("idle"));
+
+		const ecs::Prefab& prefab = *m_registry.prefab_types().find("seeker");
+		const ecs::Entity a		  = m_world->spawn(prefab);
+		const ecs::Entity b		  = m_world->spawn(prefab);
+		const ecs::Entity c		  = m_world->spawn(prefab);
+		m_world->registry.emplace<net::NetId>(a, net::NetId::make(5, 1));
+		m_world->registry.emplace<net::NetId>(b, net::NetId::make(9, 1)); // c has no id yet
+		tick();
+		EXPECT_TRUE(m_host->problems().empty())
+			<< (m_host->problems().empty() ? "" : m_host->problems().front().message.c_str());
+
+		const auto who = [&](ecs::Entity e) { return ecs::read_field_bits(*target.field("who"), bytes_of(target, e)); };
+		for (const ecs::Entity e : {a, b, c})
+		{
+			EXPECT_TRUE(m_world->registry.get<Scratch>(e).flag) << "read back as the entity it was given";
+			EXPECT_EQ(m_world->registry.get<Scratch>(e).value, 1u) << "a Name prints as its text";
+		}
+		EXPECT_EQ(who(a), net::NetId::make(9, 1).value);
+		EXPECT_EQ(who(b), 0u) << "c has no network id yet: the ref waits";
+		EXPECT_EQ(who(c), net::NetId::make(5, 1).value);
+		EXPECT_EQ(m_world->registry.get<Scratch>(a).wide, 1.0);
+		EXPECT_EQ(m_world->registry.get<anim::Playing>(a).clip, anim::name("squat"));
+		EXPECT_EQ(ecs::read_field_bits(*target.field("clip"), bytes_of(target, a)), hash_text("squat"));
+
+		// Once c has its id, the waiting ref is written at the next point.
+		m_world->registry.emplace<net::NetId>(c, net::NetId::make(2, 1));
+		tick();
+		EXPECT_EQ(who(b), net::NetId::make(2, 1).value);
 	}
 
 	TEST_F(SchemaTest, MistakesInDeclarationsAreNamed)
@@ -418,7 +531,7 @@ namespace schema_test
 			   {"scripts/sim/rules/l.luau", "system(\"Act\", function() component \"Late\" {} end)"}});
 
 		EXPECT_NE(schema_problem_with("component Hops is declared twice"), nullptr);
-		EXPECT_NE(schema_problem_with("field 'reach' takes a number, true or false, a vector or a unit value"), nullptr);
+		EXPECT_NE(schema_problem_with("field 'reach' takes a number, true or false, a vector, a unit value"), nullptr);
 		EXPECT_NE(schema_problem_with("exactly one of Sim, Server and Client"), nullptr);
 		EXPECT_NE(schema_problem_with("component Position: a C++ component has that name"), nullptr);
 		EXPECT_NE(schema_problem_with("ticks() takes a whole number, not 1.5"), nullptr);
@@ -493,14 +606,35 @@ namespace schema_test
 		ASSERT_TRUE(read.has_value());
 		const StringView text(reinterpret_cast<const char*>(read->data()), read->size());
 
-		for (const char* expected :
-			 {"declare extern type Hops with", "\treach: number", "\tready: boolean", "\tway: vector", "declare Hops: Component<Hops>",
-			  "\tHops: Hops\n", "declare extern type Stategraph with", "\tfunction tick_of(self, mark: string): number",
-			  "\tfunction go(self, state: string): ()", "declare extern type Playing with", "declare extern type Rng with",
-			  "\trng: Rng", "\tfunction play(self, clip: string): ()", "\tfunction event(self, name: string, source: Entity?): ()",
-			  "declare function component(name: string): (def: ComponentDef) -> ()",
-			  "declare function stategraph(name: string): (def: StategraphDef) -> ()", "export type StateDef = {",
-			  "\tnext: (string | (e: Entity) -> ...any)?,", "declare function tiles(x: number): number"})
+		for (const char* expected : {"declare extern type Hops with",
+									 "\treach: number",
+									 "\tready: boolean",
+									 "\tway: vector",
+									 "declare Hops: Component<Hops>",
+									 "\tHops: Hops\n",
+									 "declare extern type Stategraph with",
+									 "\tfunction tick_of(self, mark: string, slot: number?): number",
+									 "\tfunction go(self, state: string): ()",
+									 "declare extern type Playing with",
+									 "declare extern type Rng with",
+									 "\trng: Rng",
+									 "\tfunction play(self, clip: string | Name): ()",
+									 "\tfunction event(self, name: string, args: (Entity | EventArgs)?): ()",
+									 "declare extern type Shown with",
+									 "\tfunction squash(self, x: number, y: number, seconds: number): ()",
+									 "declare function show(prefab: string): (def: ShowDef) -> ()",
+									 "declare extern type Name with",
+									 "declare function name(text: string): Name",
+									 "declare function entity(): Entity?",
+									 "declare function component(name: string): (def: ComponentDef) -> ()",
+									 "declare function stategraph(name: string): (def: GraphDef) -> Graph<any>",
+									 "export type StateDef<S> = {",
+									 "\tnext: (S | (e: Entity) -> ...S?)?,",
+									 "export type Graph<S> = {",
+									 "declare function to(state: string): (e: Entity, ...Event) -> ...any",
+									 "\tfunction strike(self, def: StrikeDef): ()",
+									 "\tstate: Stategraph",
+									 "declare function tiles(x: number): number"})
 			EXPECT_NE(text.find(expected), StringView::npos) << expected;
 	}
 }

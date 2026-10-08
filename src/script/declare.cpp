@@ -31,10 +31,12 @@ namespace ember::script
 			Count,	 // a small whole number, u16
 			Tick,	 // a moment: a tick number, u32, 0 for none
 			Int,	 // a whole number that may go below zero, i32
+			Name,	 // a name's hash, u64: name("idle")
+			Entity,	 // another entity, by network id, u32: entity() is none
 			Count_
 		};
 
-		constexpr const char* UNIT_NAMES[] = {"tiles", "ticks", "seconds", "count", "tick", "int"};
+		constexpr const char* UNIT_NAMES[] = {"tiles", "ticks", "seconds", "count", "tick", "int", "name", "entity"};
 		static_assert(std::size(UNIT_NAMES) == static_cast<size_t>(Unit::Count_));
 
 		[[nodiscard]] ecs::FieldType type_of(Unit unit) noexcept
@@ -51,6 +53,10 @@ namespace ember::script
 					return ecs::FieldType::U32;
 				case Unit::Int:
 					return ecs::FieldType::I32;
+				case Unit::Name:
+					return ecs::FieldType::Name;
+				case Unit::Entity:
+					return ecs::FieldType::Entity;
 				default:
 					return ecs::FieldType::F32;
 			}
@@ -122,6 +128,35 @@ namespace ember::script
 		{
 			Host& host		= HostAccess::of(L);
 			const Unit unit = static_cast<Unit>(lua_tointeger(L, lua_upvalueindex(1)));
+
+			// name("idle") and entity(): a hash, and none. Running, a Name handle and nil; in the schema pass,
+			// the unit value a component declaration reads its field type and starting value from.
+			if (unit == Unit::Name || unit == Unit::Entity)
+			{
+				const u64 bits = unit == Unit::Name ? check_name(L, 1) : 0;
+				if (HostAccess::def(host).schema == nullptr)
+				{
+					if (unit == Unit::Name)
+						push_name(L, bits);
+					else
+						lua_pushlightuserdatatagged(L, nullptr, TAG_NO_ENTITY); // never nil: a table keeps the key
+					return 1;
+				}
+				lua_createtable(L, 0, 3);
+				lua_pushinteger(L, static_cast<int>(unit));
+				lua_setfield(L, -2, "__unit");
+				lua_pushnumber(L, 0.0);
+				lua_setfield(L, -2, "n");
+				if (unit == Unit::Name)
+				{
+					lua_pushvalue(L, 1);
+					lua_setfield(L, -2, "s");
+				}
+				lua_getref(L, static_cast<int>(lua_tointeger(L, lua_upvalueindex(2))));
+				lua_setmetatable(L, -2);
+				return 1;
+			}
+
 			const f64 x		= unit == Unit::Tick ? luaL_optnumber(L, 1, 0.0) : luaL_checknumber(L, 1);
 			const f64 value = convert(L, HostAccess::binding(host), unit, x);
 
@@ -264,20 +299,45 @@ namespace ember::script
 					out.y		 = v[1];
 					return;
 				}
+				case LUA_TLIGHTUSERDATA:
+				{
+					// Running, name() and entity() give their handles rather than unit values.
+					const int tag = lua_lightuserdatatag(L, index);
+					if (tag == TAG_NAME)
+					{
+						out.type = ecs::FieldType::Name;
+						out.bits = check_name(L, index);
+						return;
+					}
+					if (tag == TAG_NO_ENTITY)
+					{
+						out.type = ecs::FieldType::Entity;
+						return;
+					}
+					break;
+				}
 				case LUA_TTABLE:
 				{
 					const Unit unit = unit_of(L, index);
 					if (unit == Unit::Count_)
 						break;
-					out.type  = type_of(unit);
+					out.type = type_of(unit);
+					if (unit == Unit::Name)
+					{
+						lua_rawgetfield(L, index, "s");
+						out.bits = lua_isstring(L, -1) ? intern_name(HostAccess::of(L), lua_tostring(L, -1)) : 0;
+						lua_pop(L, 1);
+						return;
+					}
 					out.value = number_or_unit(L, index, "a field");
 					return;
 				}
 				default:
 					break;
 			}
-			luaL_error(L, "component %s: field '%s' takes a number, true or false, a vector or a unit value such as "
-						  "tiles(2) or ticks(12), not %s",
+			luaL_error(L,
+					   "component %s: field '%s' takes a number, true or false, a vector, a unit value such as "
+					   "tiles(2) or ticks(12), name(\"idle\") or entity(), not %s",
 					   component, out.name.c_str(), luaL_typename(L, index));
 		}
 
@@ -301,7 +361,11 @@ namespace ember::script
 			}
 			// At run time the unit declarators give plain numbers, so a number matches any numeric type: the
 			// types themselves are the schema pass's to check, at start.
-			const auto numeric = [](ecs::FieldType type) { return type != ecs::FieldType::Bool && type != ecs::FieldType::Vec2; };
+			const auto numeric = [](ecs::FieldType type)
+			{
+				return type != ecs::FieldType::Bool && type != ecs::FieldType::Vec2 && type != ecs::FieldType::Name &&
+					   type != ecs::FieldType::Entity;
+			};
 			for (const ecs::FieldDef& field : def.fields)
 			{
 				const ecs::FieldInfo* known = info.field(field.name);
@@ -309,6 +373,15 @@ namespace ember::script
 				{
 					why = "field '" + field.name + "' changed";
 					return false;
+				}
+				if (known->type == ecs::FieldType::Name || known->type == ecs::FieldType::Entity)
+				{
+					if (ecs::read_field_bits(*known, info.defaults.data()) != field.bits)
+					{
+						why = "field '" + field.name + "' starts at another value";
+						return false;
+					}
+					continue;
 				}
 				const f64 value = ecs::read_field(*known, info.defaults.data());
 				const f64 y		= field.type == ecs::FieldType::Vec2
@@ -435,17 +508,33 @@ namespace ember::script
 			out.bytes.assign(info.defaults.begin(), info.defaults.end());
 			out.mask.assign(info.size, 0);
 
-			// Stategraph = "name": the graph by its number, which is the component's first field; the rest stays as
-			// the type starts, with no state entered.
-			if (lua_isstring(L, table) && component == "Stategraph")
+			// Stategraph = "name", or { "a", "b" }: each slot's graph by its number; no state is entered yet.
+			if (component == "Stategraph" && (lua_isstring(L, table) || lua_istable(L, table)))
 			{
-				const StringView graph = lua_tostring(L, table);
-				const u32 id		   = static_cast<u32>(hash_text(graph));
-				static_assert(offsetof(Stategraph, graph) == 0);
-				if (out.bytes.size() >= sizeof(id))
+				Stategraph graphs;
+				if (lua_isstring(L, table))
 				{
-					std::memcpy(out.bytes.data(), &id, sizeof(id));
-					std::fill(out.mask.begin(), out.mask.begin() + sizeof(id), u8{1});
+					graphs.slots[0].graph = graph_id(lua_tostring(L, table));
+				}
+				else
+				{
+					const int count = lua_objlen(L, table);
+					if (count < 1 || count > static_cast<int>(Stategraph::SLOTS))
+						luaL_error(L, "prefab %s: Stategraph names one graph, or a list of up to %u", prefab,
+								   Stategraph::SLOTS);
+					for (int i = 1; i <= count; ++i)
+					{
+						lua_rawgeti(L, table, i);
+						if (!lua_isstring(L, -1))
+							luaL_error(L, "prefab %s: Stategraph %d is not a name", prefab, i);
+						graphs.slots[static_cast<size_t>(i - 1)].graph = graph_id(lua_tostring(L, -1));
+						lua_pop(L, 1);
+					}
+				}
+				if (out.bytes.size() >= sizeof(graphs))
+				{
+					std::memcpy(out.bytes.data(), &graphs, sizeof(graphs));
+					std::fill(out.mask.begin(), out.mask.begin() + sizeof(graphs), u8{1});
 				}
 				return;
 			}
@@ -612,28 +701,85 @@ namespace ember::script
 			}
 		}
 
-		/** Whether a registered prefab is what a declaration composes now: the same components at the same bytes. */
-		[[nodiscard]] bool prefab_matches(const ecs::World& world, const ecs::Prefab& registered, const PrefabDecl& decl)
+		enum class PrefabDiff : u8
+		{
+			Same,	// what this world makes already
+			Values, // the same components at other values: tuned live
+			Shape,	// another set of components, or one that cannot be composed: for the next start
+		};
+
+		/** What a declaration composes now against what this world makes the prefab from. */
+		[[nodiscard]] PrefabDiff prefab_diff(const ecs::World& world, const ecs::Prefab& current,
+											 const PrefabDecl& decl, Vector<ecs::PrefabComponent>& composed)
 		{
 			const ecs::Prefab* base = decl.extends.empty() ? nullptr : world.prefabs().find(StringView(decl.extends));
 			if (!decl.extends.empty() && base == nullptr)
-				return false;
+				return PrefabDiff::Shape;
 
-			Vector<ecs::PrefabComponent> composed(&heap());
 			String why(&heap());
 			if (!compose_prefab(world.components(), base, decl, true, composed, why))
-				return false;
-			if (composed.size() != registered.components.size())
-				return false;
+				return PrefabDiff::Shape;
+			if (composed.size() != current.components.size())
+				return PrefabDiff::Shape;
+
+			PrefabDiff diff = PrefabDiff::Same;
 			for (size_t i = 0; i < composed.size(); ++i)
 			{
 				const ecs::PrefabComponent& a = composed[i];
-				const ecs::PrefabComponent& b = registered.components[i];
-				if (a.id != b.id || a.value.size() != b.value.size() ||
-					std::memcmp(a.value.data(), b.value.data(), a.value.size()) != 0)
-					return false;
+				const ecs::PrefabComponent& b = current.components[i];
+				if (a.id != b.id || a.value.size() != b.value.size())
+					return PrefabDiff::Shape;
+				if (std::memcmp(a.value.data(), b.value.data(), a.value.size()) != 0)
+					diff = PrefabDiff::Values;
 			}
-			return true;
+			return diff;
+		}
+
+		/**
+		 * The prefab's new values onto this world, and onto every entity made from it that still holds the old
+		 * ones: field by field for a component scripts see, so a field the game has moved since keeps its value
+		 * and the rest follow the file; whole for the others.
+		 */
+		void retune(Host& host, const ecs::Prefab& registered, Vector<ecs::PrefabComponent> composed)
+		{
+			ecs::World& world		 = host.world();
+			const ecs::Prefab before = world.prefab_of(registered.id); // a copy: the old values
+			world.retune_prefab(registered.id, std::move(composed));
+			const ecs::Prefab& after = world.prefab_of(registered.id);
+
+			u32 entities = 0;
+			for (const auto [entity, ref] : world.registry.view<const ecs::PrefabRef>().each())
+			{
+				if (ref.id != registered.id)
+					continue;
+				++entities;
+				for (const ecs::PrefabComponent& fresh : after.components)
+				{
+					const ecs::PrefabComponent* old = before.find(fresh.id);
+					if (old == nullptr || old->value == fresh.value)
+						continue;
+					const ecs::ComponentInfo& info = world.components()[fresh.id];
+					u8* bytes					   = static_cast<u8*>(info.get(info, world.registry, entity));
+					if (bytes == nullptr)
+						continue;
+
+					const Exposed* exposed = HostAccess::binding(host).exposed(fresh.id);
+					if (exposed != nullptr && !exposed->fields.empty())
+					{
+						for (const Field& field : exposed->fields)
+							if (std::memcmp(bytes + field.offset, old->value.data() + field.offset, field.size) == 0)
+								std::memcpy(bytes + field.offset, fresh.value.data() + field.offset, field.size);
+					}
+					else if (std::memcmp(bytes, old->value.data(), info.size) == 0)
+					{
+						std::memcpy(bytes, fresh.value.data(), info.size);
+					}
+				}
+			}
+
+			HostAccess::brains(host).retuned.push_back(registered.id);
+			EMBER_INFO("script prefab {} retuned live: {} entit{} follow", StringView(registered.name), entities,
+					   entities == 1 ? "y" : "ies");
 		}
 
 		/** The groups and events of a prefab the running host keeps, for e:event(). */
@@ -735,9 +881,20 @@ namespace ember::script
 				return 0;
 			}
 
-			if (!prefab_matches(host.world(), *registered, decl))
-				HostAccess::report(host, decl.path, 0, Severity::Warning,
-								   "prefab " + decl.name + " changed: restart to apply it");
+			// New values go in live; new or missing components are for the next start.
+			Vector<ecs::PrefabComponent> composed(&heap());
+			switch (prefab_diff(host.world(), host.world().prefab_of(registered->id), decl, composed))
+			{
+				case PrefabDiff::Same:
+					break;
+				case PrefabDiff::Values:
+					retune(host, *registered, std::move(composed));
+					break;
+				case PrefabDiff::Shape:
+					HostAccess::report(host, decl.path, 0, Severity::Warning,
+									   "prefab " + decl.name + " changed its components: restart to apply it");
+					break;
+			}
 
 			record_extras(host, *registered, decl);
 			return 0;
@@ -751,45 +908,6 @@ namespace ember::script
 			return 1;
 		}
 
-		// --- stategraph -----------------------------------------------------------------------------
-
-		int stategraph_body(lua_State* L)
-		{
-			Host& host		 = HostAccess::of(L);
-			const char* name = lua_tostring(L, lua_upvalueindex(1));
-			check_declaring(L, host, "stategraph");
-			luaL_checktype(L, 1, LUA_TTABLE);
-
-			const Context context = HostAccess::loading_context(host);
-			if (context != Context::Sim && context != Context::Server)
-				luaL_error(L, "stategraph %s: a stategraph runs in the simulation, from scripts/sim or scripts/server", name);
-
-			if (Schema* schema = HostAccess::def(host).schema; schema != nullptr)
-			{
-				for (const String& known : schema->stategraphs)
-					if (known == name)
-						luaL_error(L, "stategraph %s is declared twice", name);
-				schema->stategraphs.push_back(String(name, &heap()));
-				return 0;
-			}
-
-			Graph graph;
-			graph.name	   = String(name, &heap());
-			graph.id.value = static_cast<u32>(hash_text(name));
-			graph.module   = static_cast<u32>(HostAccess::loading_module(host));
-			graph.context  = context;
-			read_graph(L, host, 1, graph);
-			HostAccess::brains(host).staging.push_back(std::move(graph));
-			return 0;
-		}
-
-		int lua_stategraph(lua_State* L)
-		{
-			luaL_checkstring(L, 1);
-			lua_pushvalue(L, 1);
-			lua_pushcclosure(L, stategraph_body, "stategraph", 1);
-			return 1;
-		}
 	}
 
 	f64 declared_number(lua_State* L, int index, const char* what) { return number_or_unit(L, index, what); }
@@ -832,8 +950,6 @@ namespace ember::script
 		lua_setglobal(L, "component");
 		lua_pushcfunction(L, lua_prefab, "prefab");
 		lua_setglobal(L, "prefab");
-		lua_pushcfunction(L, lua_stategraph, "stategraph");
-		lua_setglobal(L, "stategraph");
 	}
 
 	void Host::finish_schema() noexcept
@@ -923,16 +1039,21 @@ namespace ember::script
 					continue;
 				Stategraph value;
 				std::memcpy(&value, entry.bytes.data(), sizeof(value));
-				bool declared = false;
-				for (const String& graph : schema->stategraphs)
-					declared = declared || static_cast<u32>(hash_text(graph)) == value.graph.value;
-				if (!declared)
+				for (const Stategraph::Slot& slot : value.slots)
 				{
-					Problem problem;
-					problem.path	 = decl.path;
-					problem.severity = Severity::Warning;
-					problem.message	 = "prefab " + decl.name + " names a stategraph no script declares";
-					schema->problems.push_back(std::move(problem));
+					if (slot.graph.value == 0)
+						continue;
+					bool declared = false;
+					for (const String& graph : schema->stategraphs)
+						declared = declared || graph_id(graph) == slot.graph;
+					if (!declared)
+					{
+						Problem problem;
+						problem.path	 = decl.path;
+						problem.severity = Severity::Warning;
+						problem.message	 = "prefab " + decl.name + " names a stategraph no script declares";
+						schema->problems.push_back(std::move(problem));
+					}
 				}
 			}
 		}

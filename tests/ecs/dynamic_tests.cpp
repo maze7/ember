@@ -40,6 +40,8 @@ namespace
 		def.fields.push_back({.name = "ready", .type = FieldType::Bool, .value = 1.0});
 		def.fields.push_back({.name = "way", .type = FieldType::Vec2, .value = 1.0, .y = 0.0f});
 		def.fields.push_back({.name = "hopped", .type = FieldType::I32, .value = -3.0});
+		def.fields.push_back({.name = "target", .type = FieldType::Entity, .value = 0.0});
+		def.fields.push_back({.name = "clip", .type = FieldType::Name, .bits = 0x123456789abcdef0ull});
 		return def;
 	}
 
@@ -54,14 +56,16 @@ namespace
 		EXPECT_EQ(info.name, "Hops");
 		EXPECT_TRUE(info.dynamic);
 		EXPECT_EQ(info.kind, Kind::Interpolated | Kind::Replicated | Kind::Sim);
-		ASSERT_EQ(info.fields.size(), 5u);
+		ASSERT_EQ(info.fields.size(), 7u);
 		EXPECT_EQ(info.fields[0].offset, 0u);  // f32 reach
 		EXPECT_EQ(info.fields[1].offset, 4u);  // u16 hold
 		EXPECT_EQ(info.fields[2].offset, 6u);  // bool ready
 		EXPECT_EQ(info.fields[3].offset, 8u);  // vec2 way, aligned to 4
 		EXPECT_EQ(info.fields[4].offset, 16u); // i32 hopped
-		EXPECT_EQ(info.size, 24u);
-		EXPECT_EQ(info.defaults.size(), 24u);
+		EXPECT_EQ(info.fields[5].offset, 20u); // entity target: a u32
+		EXPECT_EQ(info.fields[6].offset, 24u); // name clip: a u64, aligned to 8
+		EXPECT_EQ(info.size, 32u);
+		EXPECT_EQ(info.defaults.size(), 32u);
 
 		EXPECT_EQ(read_field(*info.field("reach"), info.defaults.data()), 40.0);
 		EXPECT_EQ(read_field(*info.field("hold"), info.defaults.data()), 12.0);
@@ -209,6 +213,8 @@ namespace
 		write_field(*hops.field("ready"), value.data(), 0.0);
 		write_field(*hops.field("way"), value.data(), -1.0, 0.5f);
 		write_field(*hops.field("hopped"), value.data(), -77.0);
+		write_field_bits(*hops.field("target"), value.data(), 4000000001ull);
+		write_field_bits(*hops.field("clip"), value.data(), 0xfedcba9876543210ull);
 
 		alignas(8) u8 packet[256] = {};
 		serialize::WriteStream writer(packet, sizeof(packet));
@@ -219,7 +225,10 @@ namespace
 		serialize::ReadStream reader(packet, static_cast<int>((writer.GetBitsProcessed() + 7) / 8));
 		ASSERT_TRUE(hops.read(hops, reader, back.data()));
 		EXPECT_EQ(std::memcmp(value.data(), back.data(), hops.size), 0);
-		EXPECT_EQ(static_cast<u32>(writer.GetBitsProcessed()), 32u + 16u + 1u + 64u + 32u);
+		EXPECT_EQ(static_cast<u32>(writer.GetBitsProcessed()), 32u + 16u + 1u + 64u + 32u + 32u + 64u);
+		EXPECT_EQ(read_field_bits(*hops.field("target"), back.data()), 4000000001ull);
+		EXPECT_EQ(read_field_bits(*hops.field("clip"), back.data()), 0xfedcba9876543210ull);
+		EXPECT_EQ(read_field_bits(*hops.field("clip"), hops.defaults.data()), 0x123456789abcdef0ull);
 
 		// Halfway: floats and the vector move, the whole numbers and the flag hold the earlier sample.
 		Vector<u8> out(hops.size, u8{0});
@@ -229,6 +238,7 @@ namespace
 		EXPECT_EQ(read_field(*hops.field("ready"), out.data()), 1.0);
 		EXPECT_EQ(read_field(*hops.field("way"), out.data()), 0.0);
 		EXPECT_EQ(read_field(*hops.field("hopped"), out.data()), -3.0);
+		EXPECT_EQ(read_field_bits(*hops.field("target"), out.data()), 0u) << "a ref holds the earlier sample";
 		hops.interpolate(hops, hops.defaults.data(), value.data(), 1.0f, out.data());
 		EXPECT_EQ(std::memcmp(value.data(), out.data(), hops.size), 0);
 	}

@@ -168,60 +168,69 @@ namespace ember::script
 		}
 
 		/**
-		 * world:spawn("prefab", { Position = { value = vector.create(8, 8, 0) } }): a prefab's entity at the end of
-		 * the stage, with the fields given over the prefab's. The server's: what it spawns reaches every
-		 * client through replication, so a predicting client never spawns alongside it.
+		 * world:spawn("prefab", { Position = { value = vector.create(8, 8, 0) } }): a prefab's entity, now, with the
+		 * fields given over the prefab's, handed back so the script can go on with it. The script point runs
+		 * alone, so the world is its to add to; a query under way never visits what it adds. The server's:
+		 * what it spawns reaches every client through replication, so a predicting client never spawns.
 		 */
 		int world_spawn(lua_State* L)
 		{
 			Host& host		  = HostAccess::of(L);
 			ecs::World& world = host.world();
 			check_context(L, host, ContextMask::Server, "world:spawn");
-			ecs::Commands& commands = check_commands(L, host, "world:spawn");
+			(void)check_commands(L, host, "world:spawn"); // inside a point
 
 			const char* name		 = luaL_checkstring(L, 2);
 			const ecs::Prefab* prefab = world.prefabs().find(name);
 			if (prefab == nullptr)
 				luaL_error(L, "no prefab named '%s'", name);
 
-			const ecs::Spawned spawned = commands.spawn(*prefab);
+			const ecs::Entity entity = world.create(*prefab, world.role() != ecs::Role::Client);
 			++HostAccess::stats(host).writes;
 
-			if (lua_isnoneornil(L, 3))
-				return 0;
-			luaL_checktype(L, 3, LUA_TTABLE);
-
-			const bool checks = HostAccess::def(host).checks;
-			Vector<u8> bytes(&heap());
-
-			lua_pushnil(L);
-			while (lua_next(L, 3) != 0)
+			if (!lua_isnoneornil(L, 3))
 			{
-				// { Position = { ... } }: the key is the component's name, as the entity's fields are.
-				int atom		= -1;
-				const char* key = lua_tostringatom(L, -2, &atom);
-				if (key == nullptr)
-					luaL_error(L, "world:spawn's overrides are keyed by component name, not %s", luaL_typename(L, -2));
-				const ecs::ComponentId id = HostAccess::component_of_atom(host, atom);
-				if (id == ecs::NO_COMPONENT)
-					luaL_error(L, "world:spawn: '%s' is not a component", key);
-				const Exposed* exposed = HostAccess::binding(host).exposed(id);
-				if (exposed == nullptr)
-					luaL_error(L, "component %s is not exposed to scripts", key);
-				if (!lua_istable(L, -1))
-					luaL_error(L, "world:spawn: %s takes a table of fields, not %s", key, luaL_typename(L, -1));
+				luaL_checktype(L, 3, LUA_TTABLE);
+				const bool checks = HostAccess::def(host).checks;
 
-				// The prefab's value for the type, or the type's defaults when the prefab lacks it; then the fields.
-				const ecs::ComponentInfo& info	 = *exposed->info;
-				const ecs::PrefabComponent* base = prefab->find(id);
-				bytes.assign(base != nullptr ? base->value.begin() : info.defaults.begin(),
-							 base != nullptr ? base->value.end() : info.defaults.end());
-				fill_component(L, *exposed, lua_gettop(L), bytes.data(), checks);
-				commands.add(spawned, id, bytes.data());
+				lua_pushnil(L);
+				while (lua_next(L, 3) != 0)
+				{
+					// { Position = { ... } }: the key is the component's name, as the entity's fields are.
+					int atom		= -1;
+					const char* key = lua_tostringatom(L, -2, &atom);
+					if (key == nullptr)
+						luaL_error(L, "world:spawn's overrides are keyed by component name, not %s",
+								   luaL_typename(L, -2));
+					const ecs::ComponentId id = HostAccess::component_of_atom(host, atom);
+					if (id == ecs::NO_COMPONENT)
+						luaL_error(L, "world:spawn: '%s' is not a component", key);
+					const Exposed* exposed = HostAccess::binding(host).exposed(id);
+					if (exposed == nullptr)
+						luaL_error(L, "component %s is not exposed to scripts", key);
+					if (!lua_istable(L, -1))
+						luaL_error(L, "world:spawn: %s takes a table of fields, not %s", key, luaL_typename(L, -1));
 
-				lua_pop(L, 1);
+					// Over the entity's value, which is the prefab's, or the type's defaults when the prefab lacks it.
+					const ecs::ComponentInfo& info = *exposed->info;
+					if (!ecs::lives_in(info.kind, world.role()))
+					{
+						lua_pop(L, 1);
+						continue;
+					}
+					void* bytes = info.get(info, world.registry, entity);
+					if (bytes == nullptr)
+					{
+						info.emplace(info, world.registry, entity, info.defaults.data());
+						bytes = info.get(info, world.registry, entity);
+					}
+					fill_component(L, *exposed, lua_gettop(L), bytes, checks, nullptr);
+					lua_pop(L, 1);
+				}
 			}
-			return 0;
+
+			push_entity(L, entity);
+			return 1;
 		}
 
 		int filter_tostring(lua_State* L)

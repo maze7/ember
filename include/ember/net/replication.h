@@ -147,6 +147,9 @@ namespace ember::net
 		/** A prefab's value for one of its components, as the bits it writes. */
 		[[nodiscard]] const ComponentBits& prefab_wire(PrefabId id, ComponentId component) const noexcept;
 
+		/** A prefab's values again, after World::retune_prefab(): the same components, new bits. */
+		void retune(PrefabId id, const ecs::Prefab& prefab) noexcept;
+
 		/** Whether entities made from a prefab replicate: whether it has a Replicated component. */
 		[[nodiscard]] bool replicated(PrefabId id) const noexcept { return m_prefabs[id].components != 0; }
 

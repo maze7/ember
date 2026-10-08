@@ -163,6 +163,9 @@ namespace ember::anim
 		f32 lean	   = 0.0f; // radians, clockwise on screen whichever way it faces: tipped about its origin
 		f64 held_from  = 0.0;  // a hitstop, on the animation clock: see hold()
 		f64 held_until = 0.0;
+		glm::vec2 squashed = {1.0f, 1.0f}; // a squash: the scale it starts at, easing back to 1 over squash_seconds
+		f64 squash_from	   = 0.0;
+		f32 squash_seconds = 0.0f;
 
 		/** The entity's own rig plays a clip. */
 		void play(StringView clip, Play how = {}) noexcept { start(playhead(0), name(clip), how); }
@@ -215,6 +218,29 @@ namespace ember::anim
 		{
 			held_from  = from;
 			held_until = until;
+		}
+
+		/**
+		 * A squash from `since`: every part scaled by `scale`, easing back to its own size over `seconds`.
+		 * A later squash takes the place of an earlier one.
+		 */
+		void squash(glm::vec2 scale, f64 since, f32 seconds) noexcept
+		{
+			squashed	   = scale;
+			squash_from	   = since;
+			squash_seconds = seconds;
+		}
+
+		/** The squash's scale at a moment: 1 before it, after it, and when there is none. */
+		[[nodiscard]] glm::vec2 squash_at(f64 now) const noexcept
+		{
+			if (squash_seconds <= 0.0f || now < squash_from)
+				return {1.0f, 1.0f};
+			const f32 t = static_cast<f32>((now - squash_from) / static_cast<f64>(squash_seconds));
+			if (t >= 1.0f)
+				return {1.0f, 1.0f};
+			const f32 left = (1.0f - t) * (1.0f - t);
+			return {1.0f + (squashed.x - 1.0f) * left, 1.0f + (squashed.y - 1.0f) * left};
 		}
 
 		/** A number the rigs read: the aim a weapon turns to, in radians, clockwise on screen. */

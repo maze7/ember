@@ -27,6 +27,8 @@ namespace ember::script
 		TAG_QUERY		   = 5, // userdata: a query under iteration
 		TAG_SHAPE		   = 6, // userdata: a physics::Shape
 		TAG_RNG			   = 7, // lightuserdata: an entity's dice, e.rng
+		TAG_NAME		   = 8, // lightuserdata: a Name, a 64 bit text hash: a clip, a prefab, a sound
+		TAG_NO_ENTITY	   = 9, // lightuserdata: entity(), the empty value of an Entity field in a declaration
 		TAG_GAME		   = 16,
 	};
 
@@ -47,6 +49,15 @@ namespace ember::script
 	void push_component_type(lua_State* L, ecs::ComponentId component) noexcept;
 	[[nodiscard]] ecs::ComponentId to_component_type(lua_State* L, int index) noexcept; // NO_COMPONENT when not one
 	[[nodiscard]] ecs::ComponentId check_component_type(lua_State* L, int index);
+
+	/**
+	 * Names: a string's hash as a Name handle, and back. A string given where a Name is wanted is hashed
+	 * and remembered, so the handle prints as its text; check_name() takes either.
+	 */
+	void push_name(lua_State* L, u64 name) noexcept;					 // nil for 0
+	[[nodiscard]] u64 check_name(lua_State* L, int index);				 // a string or a Name; raises for anything else
+	[[nodiscard]] u64 opt_name(lua_State* L, int index);				 // the same, 0 for none or nil
+	[[nodiscard]] StringView name_text(lua_State* L, u64 name) noexcept; // its text, when the host has seen it
 
 	/** glm vectors as Luau's native vector, z at zero. */
 	void push_vec2(lua_State* L, glm::vec2 value) noexcept;

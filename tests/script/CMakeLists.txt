@@ -19,3 +19,12 @@ if(EMBER_ENABLE_ASSETS)
 
 	target_link_libraries(ember_script_asset_tests PRIVATE Ember::ScriptAssets Ember::Jobs Ember::Gpu)
 endif()
+
+if(EMBER_ENABLE_IMGUI AND EMBER_ENABLE_GRAPHICS)
+	ember_add_test_suite(ember_script_ui_tests script
+		"${CMAKE_CURRENT_LIST_DIR}/../main.cpp"
+		ui_tests.cpp
+	)
+
+	target_link_libraries(ember_script_ui_tests PRIVATE Ember::ScriptUi Ember::Jobs imgui::imgui)
+endif()

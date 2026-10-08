@@ -11,11 +11,15 @@ ember_add_module(Script
 		definitions.cpp
 		dmath.cpp
 		host.cpp
+		modifier.cpp
+		panel.cpp
 		physics_binding.cpp
+		present.cpp
 		query.cpp
 		schema.cpp
 		source.cpp
 		stategraph.cpp
+		story.cpp
 	PUBLIC_DEPS
 		Ember::Core
 		Ember::Ecs
@@ -44,5 +48,19 @@ if(EMBER_ENABLE_ASSETS)
 			Ember::Assets
 		PRIVATE_DEPS
 			Ember::Jobs
+	)
+endif()
+
+# Ember::ScriptUi: a client's debug UI for its scripts, in Dear ImGui: the `ui` library `panel` frames draw
+# with, the windows they open in, and an inspector's view of a host's stategraphs, stories and modifiers.
+# A client's tools link it; a dedicated server never does.
+if(EMBER_ENABLE_IMGUI AND EMBER_ENABLE_GRAPHICS)
+	ember_add_module(ScriptUi
+		SOURCES
+			ui.cpp
+		PUBLIC_DEPS
+			Ember::Script
+		PRIVATE_DEPS
+			imgui::imgui
 	)
 endif()

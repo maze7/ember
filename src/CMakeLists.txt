@@ -90,6 +90,7 @@ target_link_libraries(ember INTERFACE
 	$<$<BOOL:${EMBER_ENABLE_ASSETS}>:Ember::ScriptAssets>
 	$<$<BOOL:${EMBER_ENABLE_PLATFORM}>:Ember::Platform>
 	$<$<BOOL:${EMBER_ENABLE_IMGUI}>:Ember::ImGui>
+	$<$<BOOL:${EMBER_ENABLE_IMGUI}>:Ember::ScriptUi>
 	$<$<BOOL:${EMBER_ENABLE_APP}>:Ember::App>
 	$<$<BOOL:${EMBER_ENABLE_GRAPHICS}>:Ember::Gpu>
 	$<$<BOOL:${EMBER_ENABLE_GRAPHICS}>:Ember::Render>

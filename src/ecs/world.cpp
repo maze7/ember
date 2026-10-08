@@ -536,9 +536,27 @@ namespace ember::ecs
 		return z ^ (z >> 31);
 	}
 
-	void World::instantiate(Entity entity, const Prefab& prefab) noexcept
+	const Prefab& World::prefab_of(PrefabId id) const noexcept
+	{
+		const auto retuned = m_retuned.find(id);
+		return retuned != m_retuned.end() ? retuned->second : prefabs()[id];
+	}
+
+	void World::retune_prefab(PrefabId id, Vector<PrefabComponent> components) noexcept
+	{
+		const Prefab& base = prefabs()[id];
+		Prefab retuned;
+		retuned.name	   = base.name;
+		retuned.id		   = base.id;
+		retuned.definition = base.definition;
+		retuned.components = std::move(components);
+		m_retuned.insert_or_assign(id, std::move(retuned));
+	}
+
+	void World::instantiate(Entity entity, const Prefab& given) noexcept
 	{
 		const Components& types = components();
+		const Prefab& prefab	= prefab_of(given.id);
 
 		for (const PrefabComponent& component : prefab.components)
 		{

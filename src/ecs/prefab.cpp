@@ -69,8 +69,10 @@ namespace ember::ecs
 			{
 				hash = hash_value(component.id, hash);
 				// Only what both ends hold: a Client or Server value never crosses the wire, and its bytes may
-				// hold pointers that differ between builds.
-				if (has_any(m_components[component.id].kind, Kind::Sim))
+				// hold pointers that differ between builds. And only a code prefab's values: a data prefab's
+				// are tuned while the game runs (World::retune_prefab), and two machines whose files differ in
+				// a number still speak the same wire.
+				if (prefab.definition != nullptr && has_any(m_components[component.id].kind, Kind::Sim))
 					hash = hash_bytes({component.value.data(), component.value.size()}, hash);
 			}
 		}

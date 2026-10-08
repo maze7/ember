@@ -545,12 +545,15 @@ namespace ember::anim
 				if (m_pose.part_count == Pose::PARTS)
 					return;
 
+				// A squash scales every part about the entity, as it eases back.
+				const glm::vec2 squash			  = m_animator.squash_at(m_now);
 				m_pose.parts[m_pose.part_count++] = {
 					.sheet	  = sheet,
 					.sprite	  = keyed.sprite_index,
-					.position = {m_mirror ? -here.position.x : here.position.x, here.position.y},
+					.position = {(m_mirror ? -here.position.x : here.position.x) * squash.x,
+								 here.position.y * squash.y},
 					.angle	  = m_mirror ? -here.angle : here.angle,
-					.scale	  = here.scale,
+					.scale	  = {here.scale.x * squash.x, here.scale.y * squash.y},
 					.flash	  = std::clamp(keyed.v[index(Channel::Flash)], 0.0f, 1.0f),
 					.order	  = order,
 					.mirror	  = m_mirror,

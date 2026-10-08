@@ -143,6 +143,15 @@ namespace ember::script
 			return value;
 		}
 
+		[[nodiscard]] void* name_handle(u64 name) noexcept
+		{
+			return reinterpret_cast<void*>(static_cast<uintptr_t>(name));
+		}
+		[[nodiscard]] u64 name_of(void* handle) noexcept
+		{
+			return static_cast<u64>(reinterpret_cast<uintptr_t>(handle));
+		}
+
 		/** The exposure of a component a handle names: handles are only ever made for exposed types. */
 		[[nodiscard]] const Exposed& exposed_of(lua_State* L, const Host& host, ecs::ComponentId id)
 		{
@@ -178,6 +187,18 @@ namespace ember::script
 						return 1;
 					}
 
+					// e.state: its first graph's Stategraph, whose methods mean the slot being stepped.
+					if (atom >= 0 && atom == HostAccess::brains(host).atom_state)
+					{
+						const ecs::Entity entity	   = live_entity(L, world, 1);
+						const ecs::ComponentInfo* info = HostAccess::brains(host).stategraph;
+						if (info == nullptr || info->find(*info, world.registry, entity) == nullptr)
+							lua_pushnil(L);
+						else
+							push_component(L, entity, info->id);
+						return 1;
+					}
+
 					// e.Position: the component handle, or nil when the entity has none: `if e.Push then`.
 					const ecs::ComponentId id = HostAccess::component_of_atom(host, atom);
 					if (id == ecs::NO_COMPONENT)
@@ -207,9 +228,13 @@ namespace ember::script
 						luaL_error(L, "the entity no longer has a %s", exposed.info->name.data());
 
 					++HostAccess::stats(host).reads;
-					push_field(L, *field, bytes);
+					push_field(L, host, *field, bytes, entity, static_cast<ecs::ComponentId>(id));
 					return 1;
 				}
+
+				case TAG_NAME:
+					luaL_error(
+						L, "a Name has no fields; compare it, print it, or hand it to play(), spawn() and the rest");
 
 				case TAG_COMPONENT_TYPE:
 				{
@@ -255,12 +280,13 @@ namespace ember::script
 				refuse_write(L, context, exposed, field->name);
 
 			const ecs::Entity entity = live_entity(L, world, 1);
-			void* bytes				 = exposed.info->get(*exposed.info, world.registry, entity);
+			check_sim_target(L, host, entity);
+			void* bytes = exposed.info->get(*exposed.info, world.registry, entity);
 			if (bytes == nullptr)
 				luaL_error(L, "the entity no longer has a %s", exposed.info->name.data());
 
 			++HostAccess::stats(host).writes;
-			write_field(L, exposed, *field, bytes, 3, HostAccess::def(host).checks);
+			write_field(L, exposed, *field, bytes, 3, HostAccess::def(host).checks, entity);
 			return 0;
 		}
 
@@ -272,6 +298,7 @@ namespace ember::script
 			const Context context	  = HostAccess::context(host);
 			if (!may_write(context, exposed))
 				refuse_write(L, context, exposed, "add");
+			check_sim_target(L, host, entity);
 
 			ecs::Commands& commands = check_commands(L, host, "add");
 
@@ -306,6 +333,7 @@ namespace ember::script
 			const Context context	  = HostAccess::context(host);
 			if (!may_write(context, exposed))
 				refuse_write(L, context, exposed, "remove");
+			check_sim_target(L, host, entity);
 
 			check_commands(L, host, "remove").remove(entity, id);
 			++HostAccess::stats(host).writes;
@@ -328,8 +356,15 @@ namespace ember::script
 			{
 				case TAG_ENTITY:
 				{
+					const i16 verb = HostAccess::verb_of_atom(host, atom);
+
+					// exists() is the one question a dead handle may be asked.
+					if (static_cast<Verb>(verb) == Verb::Exists)
+					{
+						lua_pushboolean(L, world.registry.valid(entity_of(bits)));
+						return 1;
+					}
 					const ecs::Entity entity = live_entity(L, world, 1);
-					const i16 verb			 = HostAccess::verb_of_atom(host, atom);
 
 					switch (static_cast<Verb>(verb))
 					{
@@ -355,6 +390,42 @@ namespace ember::script
 							return entity_play(L, host, entity);
 						case Verb::Event:
 							return entity_event(L, host, entity);
+						case Verb::Flash:
+						case Verb::Overlay:
+						case Verb::Squash:
+						case Verb::Lean:
+						case Verb::Hold:
+						case Verb::Sound:
+						case Verb::Mine:
+							return client_verb(L, host, entity, static_cast<Verb>(verb));
+						case Verb::Strike:
+							return entity_strike(L, host, entity);
+						case Verb::Start:
+							return entity_start(L, host, entity);
+						case Verb::Stop:
+							return entity_stop(L, host, entity);
+						case Verb::Inflict:
+							return entity_inflict(L, host, entity);
+						case Verb::Cure:
+							return entity_cure(L, host, entity);
+						case Verb::Modifier:
+							return entity_modifier(L, host, entity);
+						case Verb::Stat:
+							return entity_stat(L, host, entity);
+						case Verb::Prefab:
+						{
+							// The prefab it was made from, by name; nil for one made bare.
+							const ecs::PrefabRef* ref = world.registry.try_get<ecs::PrefabRef>(entity);
+							if (ref == nullptr)
+								lua_pushnil(L);
+							else
+							{
+								const StringView name = world.prefabs()[ref->id].name;
+								lua_pushlstring(L, name.data(), name.size());
+							}
+							return 1;
+						}
+						case Verb::Exists:
 						case Verb::None:
 							luaL_error(L, "an entity has no method '%s'", method);
 						default:
@@ -424,6 +495,15 @@ namespace ember::script
 				case TAG_RNG:
 					lua_pushfstring(L, "Rng of Entity(%u)", static_cast<unsigned>(entt::to_integral(entity_of(bits))));
 					return 1;
+				case TAG_NAME:
+				{
+					const StringView text = name_text(L, bits);
+					if (text.empty())
+						lua_pushfstring(L, "Name(%016llx)", static_cast<unsigned long long>(bits));
+					else
+						lua_pushlstring(L, text.data(), text.size());
+					return 1;
+				}
 				default:
 					lua_pushstring(L, "userdata");
 					return 1;
@@ -553,6 +633,12 @@ namespace ember::script
 					field.kind		= FieldKind::Int;
 					field.is_signed = true;
 					break;
+				case ecs::FieldType::Entity:
+					field.kind = FieldKind::EntityRef;
+					break;
+				case ecs::FieldType::Name:
+					field.kind = FieldKind::Name;
+					break;
 				default:
 					field.kind = FieldKind::Int;
 					break;
@@ -577,10 +663,12 @@ namespace ember::script
 			field.name	 = String(layout.name, &heap());
 			field.offset = layout.offset;
 			field.size	 = ecs::field_size(layout.type);
-			field.kind	 = layout.type == ecs::FieldType::Bool	 ? FieldKind::Bool
-						   : layout.type == ecs::FieldType::F32	 ? FieldKind::Float
-						   : layout.type == ecs::FieldType::Vec2 ? FieldKind::Vec2
-																 : FieldKind::Int;
+			field.kind		= layout.type == ecs::FieldType::Bool	  ? FieldKind::Bool
+							  : layout.type == ecs::FieldType::F32	  ? FieldKind::Float
+							  : layout.type == ecs::FieldType::Vec2	  ? FieldKind::Vec2
+							  : layout.type == ecs::FieldType::Entity ? FieldKind::EntityRef
+							  : layout.type == ecs::FieldType::Name	  ? FieldKind::Name
+																	  : FieldKind::Int;
 			field.is_signed = layout.type == ecs::FieldType::I32;
 			field.atom		= HostAccess::atom(host, field.name);
 			if (!exposed.field_list.empty())
@@ -673,6 +761,92 @@ namespace ember::script
 		return *commands;
 	}
 
+	void check_sim_target(lua_State* L, Host& host, ecs::Entity entity)
+	{
+		ecs::World& world = host.world();
+		if (HostAccess::context(host) == Context::Sim && world.role() == ecs::Role::Client &&
+			!world.registry.all_of<ecs::Simulated>(entity))
+			luaL_error(L,
+					   "Entity(%u) is not simulated on this client: a sim script writes only what this machine "
+					   "predicts, its own player; the server's word would undo this, and nothing would replay it",
+					   static_cast<unsigned>(entt::to_integral(entity)));
+	}
+
+	ecs::Entity entity_of_netid(Host& host, u32 id) noexcept
+	{
+		Host::Brains& brains = HostAccess::brains(host);
+		if (!brains.netids_built)
+		{
+			brains.by_netid.clear();
+			for (const auto [entity, netid] : host.world().registry.view<const net::NetId>().each())
+				brains.by_netid.insert_or_assign(netid.value, entity);
+			brains.netids_built = true;
+		}
+		const auto found = brains.by_netid.find(id);
+		return found != brains.by_netid.end() && host.world().registry.valid(found->second) ? found->second
+																							: ecs::NO_ENTITY;
+	}
+
+	u32 netid_of(Host& host, ecs::Entity entity) noexcept
+	{
+		const net::NetId* id = host.world().registry.try_get<net::NetId>(entity);
+		return id != nullptr ? id->value : 0;
+	}
+
+	void settle_pending_refs(Host& host) noexcept
+	{
+		Host::Brains& brains = HostAccess::brains(host);
+		ecs::World& world	 = host.world();
+		std::erase_if(brains.pending_refs,
+					  [&](const PendingRef& ref)
+					  {
+						  if (!world.registry.valid(ref.holder) || !world.registry.valid(ref.target))
+							  return true;
+						  const u32 id = netid_of(host, ref.target);
+						  if (id == 0)
+							  return false;
+						  const ecs::ComponentInfo& info = world.components()[ref.component];
+						  if (void* bytes = info.get(info, world.registry, ref.holder))
+							  std::memcpy(static_cast<u8*>(bytes) + ref.offset, &id, sizeof(id));
+						  return true;
+					  });
+	}
+
+	u64 intern_name(Host& host, StringView text) noexcept
+	{
+		const u64 name		 = hash_text(text);
+		Host::Brains& brains = HostAccess::brains(host);
+		if (name != 0 && !brains.names.contains(name))
+			brains.names.insert_or_assign(name, String(text, &heap()));
+		return name;
+	}
+
+	void push_name(lua_State* L, u64 name) noexcept
+	{
+		if (name == 0)
+			lua_pushnil(L);
+		else
+			lua_pushlightuserdatatagged(L, name_handle(name), TAG_NAME);
+	}
+
+	u64 check_name(lua_State* L, int index)
+	{
+		if (lua_type(L, index) == LUA_TSTRING)
+			return intern_name(HostAccess::of(L), lua_tostring(L, index));
+		if (lua_lightuserdatatag(L, index) == TAG_NAME)
+			return name_of(lua_tolightuserdatatagged(L, index, TAG_NAME));
+		luaL_typeerror(L, index, "a name: a string, or a Name");
+	}
+
+	u64 opt_name(lua_State* L, int index) { return lua_isnoneornil(L, index) ? 0 : check_name(L, index); }
+
+	StringView name_text(lua_State* L, u64 name) noexcept
+	{
+		const Host::Brains& brains = HostAccess::brains(HostAccess::of(L));
+		const auto found		   = brains.names.find(name);
+		return found != brains.names.end() ? StringView(found->second) : StringView();
+	}
+
 	ecs::Entity live_entity(lua_State* L, ecs::World& world, int index)
 	{
 		const int tag = lua_lightuserdatatag(L, index);
@@ -729,13 +903,42 @@ namespace ember::script
 					lua_pushstring(L, text);
 				return;
 			}
+			case FieldKind::EntityRef:
+				lua_pushnumber(L, read_as<u32>(p));
+				return;
+			case FieldKind::Name:
+				push_name(L, read_as<u64>(p));
+				return;
 			default:
 				lua_pushnil(L);
 				return;
 		}
 	}
 
-	void write_field(lua_State* L, const Exposed& exposed, const Field& field, void* bytes, int index, bool checks)
+	void push_field(lua_State* L, Host& host, const Field& field, const void* bytes, ecs::Entity holder,
+					ecs::ComponentId component)
+	{
+		if (field.kind != FieldKind::EntityRef)
+		{
+			push_field(L, field, bytes);
+			return;
+		}
+
+		// By its id; or, while the target waits for one, the pending ref.
+		const u32 id	   = read_as<u32>(static_cast<const u8*>(bytes) + field.offset);
+		ecs::Entity entity = id != 0 ? entity_of_netid(host, id) : ecs::NO_ENTITY;
+		if (entity == ecs::NO_ENTITY && id == 0)
+			for (const PendingRef& ref : HostAccess::brains(host).pending_refs)
+				if (ref.holder == holder && ref.component == component && ref.offset == field.offset)
+					entity = host.world().registry.valid(ref.target) ? ref.target : ecs::NO_ENTITY;
+		if (entity == ecs::NO_ENTITY)
+			lua_pushnil(L);
+		else
+			push_entity(L, entity);
+	}
+
+	void write_field(lua_State* L, const Exposed& exposed, const Field& field, void* bytes, int index, bool checks,
+					 ecs::Entity holder)
 	{
 		if (index < 0)
 			index = lua_gettop(L) + 1 + index;
@@ -824,6 +1027,44 @@ namespace ember::script
 
 			case FieldKind::Text:
 				luaL_error(L, "%s.%s is read only", exposed.info->name.data(), field.name.c_str());
+
+			case FieldKind::EntityRef:
+			{
+				// nil, or entity(), clears it. An entity is kept by its network id; one that has none yet is written
+				// once it does.
+				if (lua_isnil(L, index) || lua_lightuserdatatag(L, index) == TAG_NO_ENTITY)
+				{
+					store_as<u32>(p, 0);
+					return;
+				}
+				Host& host				 = HostAccess::of(L);
+				const ecs::Entity target = live_entity(L, host.world(), index);
+				const u32 id			 = netid_of(host, target);
+				if (id != 0)
+				{
+					store_as<u32>(p, id);
+					return;
+				}
+				if (holder == ecs::NO_ENTITY)
+					luaL_error(L, "%s.%s: Entity(%u) has no network id yet; it has one from the next tick",
+							   exposed.info->name.data(), field.name.c_str(),
+							   static_cast<unsigned>(entt::to_integral(target)));
+				Host::Brains& brains = HostAccess::brains(host);
+				std::erase_if(brains.pending_refs,
+							  [&](const PendingRef& ref)
+							  {
+								  return ref.holder == holder && ref.component == exposed.info->id &&
+										 ref.offset == field.offset;
+							  });
+				brains.pending_refs.push_back(
+					{.holder = holder, .component = exposed.info->id, .offset = field.offset, .target = target});
+				store_as<u32>(p, 0);
+				return;
+			}
+
+			case FieldKind::Name:
+				store_as<u64>(p, opt_name(L, index));
+				return;
 
 			default:
 				luaL_error(L, "%s.%s cannot be written from a script", exposed.info->name.data(), field.name.c_str());
@@ -956,5 +1197,7 @@ namespace ember::script
 		lua_setlightuserdataname(L, TAG_ENTITY, "Entity");
 		lua_setlightuserdataname(L, TAG_COMPONENT, "Component");
 		lua_setlightuserdataname(L, TAG_COMPONENT_TYPE, "ComponentType");
+		lua_setlightuserdataname(L, TAG_NAME, "Name");
+		lua_setlightuserdataname(L, TAG_NO_ENTITY, "NoEntity");
 	}
 }

@@ -118,6 +118,12 @@ namespace ember::net
 		/** What write() last put in the viewer's packet, and what it left waiting. */
 		[[nodiscard]] const SectionStats& section(u8 viewer) const noexcept { return m_viewers[viewer].section; }
 
+		/**
+		 * The world retuned a prefab (World::retune_prefab): new entities start from its new values, so the
+		 * baseline every client is assumed to share is the new one. Between ticks, after the world's reload.
+		 */
+		void retune(PrefabId prefab) noexcept { m_schema.retune(prefab, m_world.prefab_of(prefab)); }
+
 	private:
 		static constexpr u32 NONE = ~0u;
 

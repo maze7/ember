@@ -71,6 +71,9 @@ namespace ember::script
 	{
 		/** Recomputed every tick by the systems that write it, never carried across ticks, so a sim script may write it too: a hitbox. */
 		bool derived = false;
+
+		/** No fields: a prefab may name it, and scripts reach it only through the engine's verbs. Cues, Modifiers. */
+		bool sealed = false;
 	};
 
 	template <class E> struct Named
@@ -90,7 +93,9 @@ namespace ember::script
 		Enum,
 		Layers,
 		Shape,
-		Text, // const char*: read-only
+		Text,	   // const char*: read-only
+		EntityRef, // a dynamic Entity field: a network id, resolved to the entity by the host
+		Name,	   // a dynamic Name field: a text hash
 		Opaque,
 		Count
 	};
@@ -325,6 +330,8 @@ namespace ember::script
 
 		if constexpr (!std::is_empty_v<T>)
 		{
+			if (how.sealed)
+				return;
 			constexpr auto NAMES = boost::pfr::names_as_array<T>();
 			const T probe{};
 			[&]<size_t... Is>(std::index_sequence<Is...>) { (add_field<T, Is>(exposed, probe, NAMES[Is]), ...); }(

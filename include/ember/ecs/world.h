@@ -378,6 +378,19 @@ namespace ember::ecs
 		 * Server ones on a client. */
 		void instantiate(Entity entity, const Prefab& prefab) noexcept;
 
+		/**
+		 * A prefab's values as this world makes entities from them: the registry's, unless retune_prefab() gave
+		 * this world its own. What instantiate() and the net layer read.
+		 */
+		[[nodiscard]] const Prefab& prefab_of(PrefabId id) const noexcept;
+
+		/**
+		 * New values for a prefab, this world's alone: live tuning of a data prefab while the game runs. The same
+		 * components, in the registry's order; only their bytes differ. Every world that loads the same file
+		 * retunes alike, on its own thread, and the registry stays as it was.
+		 */
+		void retune_prefab(PrefabId id, Vector<PrefabComponent> components) noexcept;
+
 		/** A prefab's entity, with what lives here, its PrefabRef, and Simulated when asked. */
 		Entity create(const Prefab& prefab, bool simulated) noexcept;
 
@@ -432,6 +445,8 @@ namespace ember::ecs
 
 		Role m_role;
 		const Registry& m_registry;
+		HashMap<PrefabId, Prefab> m_retuned{
+			&memory::heap(MemoryTag::ECS)}; // by prefab id: this world's values for a prefab
 		RunMode m_mode = RunMode::Serial;
 		u64 m_random   = 0;
 		SystemContext m_outside;

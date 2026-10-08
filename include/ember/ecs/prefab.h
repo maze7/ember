@@ -35,6 +35,8 @@ namespace ember::ecs
 	/** A prefab's place in its registry: the order they were registered in, the same on every machine. */
 	using PrefabId = u32;
 
+	inline constexpr PrefabId NO_PREFAB = 0xffffffffu;
+
 	/** A prefab as code writes it: a name and its components' values, all known at compile time. */
 	template <Component... Cs> struct PrefabDef
 	{

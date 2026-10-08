@@ -340,6 +340,20 @@ namespace ember::script
 			m_brains->playing = info;
 			m_binding.expose<anim::Playing>();
 		}
+		if (const ecs::ComponentInfo* info = components.find<Cues>())
+		{
+			m_brains->cues = info;
+			m_binding.expose<Cues>({.sealed = true}); // for prefabs: `Cues = {}`; the host writes it
+		}
+		if (const ecs::ComponentInfo* info = components.find<Shown>())
+			m_brains->shown = info;
+		if (const ecs::ComponentInfo* info = components.find<Modifiers>())
+		{
+			m_brains->modifiers_info = info;
+			m_binding.expose<Modifiers>({.sealed = true}); // `Modifiers = {}`; e:inflict() and e:cure() write it
+		}
+		if (components.find<Trigger>() != nullptr)
+			m_binding.expose<Trigger>();
 		for (const ecs::ComponentInfo& info : components.all())
 			if (info.dynamic)
 				m_binding.expose_dynamic(info);
@@ -381,9 +395,20 @@ namespace ember::script
 				method.atom = atom(method.name);
 		}
 
-		const i16 verbs[static_cast<size_t>(Verb::Count)] = {atom("has"),	  atom("add"), atom("remove"), atom("destroy"),
-															 atom("id"), atom("play"), atom("event")};
+		const i16 verbs[static_cast<size_t>(Verb::Count)] = {
+			atom("has"),	 atom("add"),	atom("remove"),	  atom("destroy"), atom("id"),	   atom("play"),
+			atom("event"),	 atom("flash"), atom("overlay"),  atom("squash"),  atom("lean"),   atom("hold"),
+			atom("sound"),	 atom("mine"),	atom("start"),	  atom("stop"),	   atom("exists"), atom("strike"),
+			atom("inflict"), atom("cure"),	atom("modifier"), atom("stat"),	   atom("prefab")};
+		static_assert(std::size(verbs) == static_cast<size_t>(Verb::Count));
 		m_brains->atom_rng								   = atom("rng");
+		if (!m_binding.stages().empty())
+		{
+			m_brains->first_stage = m_binding.stages()[0].index;
+			for (const StageName& stage : m_binding.stages())
+				m_brains->first_stage = std::min(m_brains->first_stage, stage.index);
+		}
+		m_brains->atom_state = atom("state");
 		Vector<i16> game_verbs(&heap());
 		for (const Function& method : m_binding.m_entity_methods)
 			game_verbs.push_back(atom(method.name));
@@ -452,6 +477,10 @@ namespace ember::script
 		install_physics(m_L, *this);
 		install_declarations(m_L, *this);
 		install_stategraphs(m_L, *this);
+		install_shows(m_L, *this);
+		install_stories(m_L, *this);
+		install_modifiers(m_L, *this);
+		install_panels(m_L, *this);
 		install_binding();
 
 		// Everything a script sees is read only from here; each module gets a global table of its own over it.
@@ -652,9 +681,17 @@ namespace ember::script
 		Vector<System> outer_staging(std::move(m_staging));
 		Vector<Graph> outer_graphs(std::move(m_brains->staging));
 		Vector<Extras> outer_extras(std::move(m_brains->extras_staging));
+		Vector<PrefabShow> outer_shows(std::move(m_brains->prefab_shows_staging));
+		Vector<StoryDecl> outer_stories(std::move(m_brains->stories_staging));
+		Vector<ModifierDecl> outer_modifiers(std::move(m_brains->modifiers_staging));
+		m_brains->modifiers_staging.clear();
+		Vector<PanelDecl> outer_panels(std::move(m_brains->panels_staging));
+		m_brains->panels_staging.clear();
 		m_staging.clear();
 		m_brains->staging.clear();
 		m_brains->extras_staging.clear();
+		m_brains->prefab_shows_staging.clear();
+		m_brains->stories_staging.clear();
 		m_modules[index].loading = true;
 		m_loading				 = static_cast<i32>(index);
 		m_context				 = Context::Count;
@@ -671,17 +708,68 @@ namespace ember::script
 		Vector<System> staged(std::move(m_staging));
 		Vector<Graph> graphs(std::move(m_brains->staging));
 		Vector<Extras> extras(std::move(m_brains->extras_staging));
-		m_staging				 = std::move(outer_staging);
-		m_brains->staging		 = std::move(outer_graphs);
-		m_brains->extras_staging = std::move(outer_extras);
+		Vector<PrefabShow> shows(std::move(m_brains->prefab_shows_staging));
+		Vector<StoryDecl> stories(std::move(m_brains->stories_staging));
+		Vector<ModifierDecl> modifiers(std::move(m_brains->modifiers_staging));
+		m_brains->modifiers_staging = std::move(outer_modifiers);
+		Vector<PanelDecl> panels(std::move(m_brains->panels_staging));
+		m_brains->panels_staging	   = std::move(outer_panels);
+		m_staging					   = std::move(outer_staging);
+		m_brains->staging			   = std::move(outer_graphs);
+		m_brains->extras_staging	   = std::move(outer_extras);
+		m_brains->prefab_shows_staging = std::move(outer_shows);
+		m_brains->stories_staging	   = std::move(outer_stories);
 
-		if (status != LUA_OK)
+		// Its graphs, finished now that every g.state under them has run: one with a mistake refuses the module.
+		String why(&heap());
+		bool finished = status == LUA_OK;
+		if (finished)
 		{
-			report_lua(source.path, lua_tostring(thread, -1));
+			Vector<String> warnings(&heap());
+			for (Graph& graph : graphs)
+			{
+				if (!finish_graph(m_L, *this, graph, Span<Graph>(graphs.data(), graphs.size()), why, warnings))
+				{
+					finished = false;
+					break;
+				}
+
+				// A graph that extends one of another module's copies it as it loads: requiring that module
+				// brings this one back when it is saved.
+				if (const Graph* base = graph.extends.empty() ? nullptr : m_brains->graph(graph_id(graph.extends));
+					base != nullptr && base->module != index)
+				{
+					bool required = false;
+					for (const Import& import : source.imports)
+						required = required || import.path == m_modules[base->module].path;
+					if (!required)
+						warnings.push_back("stategraph " + graph.name + " extends " + graph.extends + ", from " +
+										   m_modules[base->module].path +
+										   ": require it, so a save of it reloads this one");
+				}
+			}
+			for (const String& warning : warnings)
+				report(source.path, 0, Severity::Warning, warning);
+		}
+
+		if (!finished)
+		{
+			if (status != LUA_OK)
+				report_lua(source.path, lua_tostring(thread, -1));
+			else
+				report(source.path, 0, Severity::Error, why);
 			for (const System& system : staged)
 				lua_unref(m_L, system.ref);
 			for (Graph& graph : graphs)
 				release_graph(m_L, graph);
+			for (PrefabShow& show : shows)
+				release_show(m_L, show.show);
+			for (StoryDecl& story : stories)
+				release_story(m_L, story);
+			for (ModifierDecl& modifier : modifiers)
+				release_modifier(m_L, modifier);
+			for (PanelDecl& panel : panels)
+				release_panel(m_L, panel);
 			lua_unref(m_L, thread_ref);
 			if (module.loaded)
 			{
@@ -690,6 +778,12 @@ namespace ember::script
 			}
 			return false;
 		}
+
+		// A panel keeps the values its state held, from the version about to go or another module's.
+		for (PanelDecl& panel : panels)
+			for (const PanelDecl& known : m_brains->panels)
+				if (known.id == panel.id)
+					keep_panel_state(m_L, known, panel);
 
 		// The new version takes the old one's place: its thread, its value and its systems.
 		unload_module(index);
@@ -723,6 +817,75 @@ namespace ember::script
 			std::erase_if(m_brains->extras, [&](const Extras& known) { return known.prefab == record.prefab; });
 			m_brains->extras.push_back(std::move(record));
 		}
+		for (PrefabShow& show : shows)
+		{
+			std::erase_if(m_brains->prefab_shows,
+						  [&](PrefabShow& known)
+						  {
+							  if (known.prefab != show.prefab)
+								  return false;
+							  if (known.module != show.module)
+								  report(source.path, 0, Severity::Warning,
+										 "show " + String(m_world.prefabs()[show.prefab].name, &heap()) +
+											 " is declared by " + m_modules[known.module].path + " too");
+							  release_show(m_L, known.show);
+							  return true;
+						  });
+			m_brains->prefab_shows.push_back(std::move(show));
+		}
+		for (StoryDecl& story : stories)
+		{
+			// A story of the same name from another module gives way, as a graph does; its threads start over
+			// on the new text either way.
+			std::erase_if(m_brains->stories,
+						  [&](StoryDecl& known)
+						  {
+							  if (known.id != story.id)
+								  return false;
+							  if (known.module != story.module)
+								  report(source.path, 0, Severity::Warning,
+										 "story " + story.name + " is declared by " + m_modules[known.module].path +
+											 " too");
+							  release_story(m_L, known);
+							  return true;
+						  });
+			drop_story_threads(*this, story.id);
+			m_brains->stories.push_back(std::move(story));
+		}
+		for (ModifierDecl& modifier : modifiers)
+		{
+			// The same: the last loaded wins. What entities carry stays on them, under the new declaration.
+			std::erase_if(m_brains->modifiers,
+						  [&](ModifierDecl& known)
+						  {
+							  if (known.id != modifier.id)
+								  return false;
+							  if (known.module != modifier.module)
+								  report(source.path, 0, Severity::Warning,
+										 "modifier " + modifier.name + " is declared by " +
+											 m_modules[known.module].path + " too");
+							  release_modifier(m_L, known);
+							  return true;
+						  });
+			m_brains->modifiers.push_back(std::move(modifier));
+		}
+		for (PanelDecl& panel : panels)
+		{
+			std::erase_if(m_brains->panels,
+						  [&](PanelDecl& known)
+						  {
+							  if (known.id != panel.id)
+								  return false;
+							  if (known.module != panel.module)
+								  report(source.path, 0, Severity::Warning,
+										 "panel " + panel.name + " is declared by " + m_modules[known.module].path +
+											 " too");
+							  release_panel(m_L, known);
+							  return true;
+						  });
+			m_brains->panels.push_back(std::move(panel));
+		}
+		sort_panels(*this);
 		return true;
 	}
 
@@ -755,6 +918,39 @@ namespace ember::script
 						  return true;
 					  });
 		std::erase_if(m_brains->extras, [&](const Extras& extras) { return extras.module == index; });
+		std::erase_if(m_brains->prefab_shows,
+					  [&](PrefabShow& show)
+					  {
+						  if (show.module != index)
+							  return false;
+						  release_show(m_L, show.show);
+						  return true;
+					  });
+		std::erase_if(m_brains->stories,
+					  [&](StoryDecl& story)
+					  {
+						  if (story.module != index)
+							  return false;
+						  drop_story_threads(*this, story.id);
+						  release_story(m_L, story);
+						  return true;
+					  });
+		std::erase_if(m_brains->modifiers,
+					  [&](ModifierDecl& modifier)
+					  {
+						  if (modifier.module != index)
+							  return false;
+						  release_modifier(m_L, modifier);
+						  return true;
+					  });
+		std::erase_if(m_brains->panels,
+					  [&](PanelDecl& panel)
+					  {
+						  if (panel.module != index)
+							  return false;
+						  release_panel(m_L, panel);
+						  return true;
+					  });
 	}
 
 	void Host::reload(Span<const Source> sources) noexcept
@@ -763,6 +959,8 @@ namespace ember::script
 
 		if (m_L == nullptr)
 			make_state();
+		m_brains->retuned.clear();
+		m_brains->netids_built = false;
 
 		// All of them known first, so a require() of one further down the batch loads it then and there.
 		for (const Source& source : sources)
@@ -780,6 +978,7 @@ namespace ember::script
 		}
 
 		rebuild_order();
+		gather_shown_names(*this);
 	}
 
 	void Host::rebuild_order() noexcept
@@ -870,11 +1069,20 @@ namespace ember::script
 			return;
 
 		EMBER_PROFILE_SCOPE_C("script simulate", PROFILE_COLOR_GAMEPLAY);
+		m_brains->netids_built = false;
+		settle_pending_refs(*this);
 		m_commands = &commands;
 		run_events(stage);
 		run_bucket(stage);
 		m_commands = nullptr;
 		lua_gc(m_L, LUA_GCSTEP, static_cast<int>(m_def.gc_step_kb));
+	}
+
+	void Host::set_present(f64 predicted, f64 interpolated) noexcept
+	{
+		m_brains->predicted	   = predicted;
+		m_brains->interpolated = interpolated;
+		m_brains->presenting   = true;
 	}
 
 	void Host::present(ecs::Commands& commands) noexcept
@@ -883,8 +1091,18 @@ namespace ember::script
 			return;
 
 		EMBER_PROFILE_SCOPE_C("script present", PROFILE_COLOR_GAMEPLAY);
+		m_brains->netids_built = false;
 		m_commands = &commands;
 		m_bucket_us.back() = 0.0;
+		const auto start	   = Clock::now();
+		run_shows(*this);
+		m_stats.present_shows_us = microseconds_since(start);
+		m_brains->running		 = true;
+		run_stories(*this, 0, true);
+		m_brains->running = false;
+		for (Event& raised : m_brains->raised)
+			m_brains->events.push_back(raised);
+		m_brains->raised.clear();
 		run_bucket(static_cast<u32>(m_buckets.size() - 1));
 		m_commands = nullptr;
 		lua_gc(m_L, LUA_GCSTEP, static_cast<int>(m_def.gc_step_kb));
@@ -892,39 +1110,237 @@ namespace ember::script
 
 	void Host::run_events(u8 stage) noexcept
 	{
+		// The graphs, then the stories, each answering the events raised for it; what nobody took in two
+		// ticks is dropped, and what the handlers raised waits for the next point.
 		const auto start = Clock::now();
+		Brains& brains	 = *m_brains;
+		brains.running	 = true;
+		run_modifiers(*this, stage);
 		run_stategraphs(*this, stage);
+		run_stories(*this, stage, false);
+		brains.running = false;
+		for (Event& raised : brains.raised)
+			brains.events.push_back(raised);
+		brains.raised.clear();
+		std::erase_if(brains.events, [&](const Event& event) { return m_now - event.tick >= 2; });
 		if (stage < m_bucket_us.size())
 			m_bucket_us[stage] = microseconds_since(start);
-		else
-			(void)start;
 	}
 
-	void Host::event(ecs::Entity entity, StringView name, ecs::Entity source) noexcept
+	void Host::event(ecs::Entity entity, StringView name, ecs::Entity source, f32 value) noexcept
 	{
 		Event event;
 		event.target = entity;
 		event.source = source;
 		event.name	 = hash_text(name);
 		event.tick	 = m_now;
+		event.value	 = value;
+		event.serial = ++m_brains->event_serial;
 		if (m_brains->running)
 			m_brains->raised.push_back(event);
 		else
 			m_brains->events.push_back(event);
 		++m_stats.events;
+
+		// Clients that show it hear of it: through the entity's cues from a server, which replicate; on a
+		// client, for what it predicts itself, at its next Present.
+		if (!m_brains->answers(event.name) || !m_world.registry.valid(entity))
+			return;
+		if (m_world.role() != ecs::Role::Client)
+		{
+			if (m_brains->cues == nullptr)
+				return;
+			if (auto* cues = static_cast<Cues*>(m_brains->cues->get(*m_brains->cues, m_world.registry, entity)))
+				cues->push({.name  = static_cast<u32>(event.name),
+							.tick  = m_now,
+							.by	   = netid_of(*this, source),
+							.value = value});
+		}
+		else if (m_world.registry.all_of<net::Owned>(entity))
+		{
+			m_brains->own_cues.push_back(event);
+		}
 	}
 
-	StringView Host::state_of(ecs::Entity entity) const noexcept
+	u32 Host::panel_count() const noexcept { return static_cast<u32>(m_brains->panels.size()); }
+
+	StringView Host::panel_name(u32 index) const noexcept
 	{
-		if (m_brains->stategraph == nullptr || !m_world.registry.valid(entity))
+		return index < m_brains->panels.size() ? StringView(m_brains->panels[index].name) : StringView();
+	}
+
+	bool Host::panel_failed(u32 index) const noexcept
+	{
+		return index < m_brains->panels.size() && m_brains->panels[index].disabled;
+	}
+
+	bool Host::run_panel(u32 index) noexcept { return script::run_panel(*this, index); }
+
+	bool Host::in_panel() const noexcept { return m_brains->in_panel; }
+
+	f32 Host::stat(ecs::Entity entity, u64 stat, f32 base) const noexcept { return stat_of(*this, entity, stat, base); }
+
+	void Host::sense(ecs::Entity trigger, Span<const physics::Touch> inside) noexcept
+	{
+		// Each touch this tick, stamped with the epoch; one that was not inside at the last is an entry.
+		Brains& brains	= *m_brains;
+		const u32 epoch = brains.sense_epoch;
+		for (const physics::Touch& touch : inside)
+		{
+			if (touch.entity == trigger || touch.entity == ecs::NO_ENTITY)
+				continue;
+			const u64 key = (static_cast<u64>(entt::to_integral(trigger)) << 32) | entt::to_integral(touch.entity);
+			const auto it = brains.inside.find(key);
+			const bool was_inside = it != brains.inside.end() && (it->second + 1 == epoch || it->second == epoch);
+			brains.inside.insert_or_assign(key, epoch);
+			if (!was_inside)
+				event(trigger, "entered", touch.entity);
+		}
+	}
+
+	void Host::sense_done() noexcept
+	{
+		// What was inside at the last epoch and was not stamped in this one has left; then the epoch moves on.
+		Brains& brains	= *m_brains;
+		const u32 epoch = brains.sense_epoch;
+		for (auto it = brains.inside.begin(); it != brains.inside.end();)
+		{
+			if (it->second == epoch)
+			{
+				++it;
+				continue;
+			}
+			const auto trigger = static_cast<ecs::Entity>(static_cast<u32>(it->first >> 32));
+			const auto entity  = static_cast<ecs::Entity>(static_cast<u32>(it->first));
+			if (m_world.registry.valid(trigger))
+				event(trigger, "left", m_world.registry.valid(entity) ? entity : ecs::NO_ENTITY);
+			it = brains.inside.erase(it);
+		}
+		++brains.sense_epoch;
+	}
+
+	StringView Host::state_of(ecs::Entity entity, u32 slot) const noexcept
+	{
+		if (m_brains->stategraph == nullptr || slot >= Stategraph::SLOTS || !m_world.registry.valid(entity))
 			return {};
 		const auto* sg = static_cast<const Stategraph*>(m_brains->stategraph->find(*m_brains->stategraph, m_world.registry, entity));
 		if (sg == nullptr)
 			return {};
-		const Graph* graph = m_brains->graph(sg->graph);
-		if (graph == nullptr || sg->state == Stategraph::NO_STATE || sg->state >= graph->states.size())
+		const Graph* graph = m_brains->graph(sg->slots[slot].graph);
+		if (graph == nullptr)
 			return {};
-		return graph->states[sg->state].name;
+		const i16 index = graph->index_of(sg->slots[slot].state);
+		return index < 0 ? StringView() : StringView(graph->states[static_cast<size_t>(index)].name);
+	}
+
+	void Host::inspect(ecs::Entity entity, Inspection& out) const noexcept
+	{
+		out		  = {};
+		out.tick  = m_now;
+		out.found = m_world.registry.valid(entity);
+		if (!out.found)
+			return;
+		Brains& brains = *m_brains;
+
+		if (brains.stategraph != nullptr)
+		{
+			if (const auto* sg = static_cast<const Stategraph*>(
+					brains.stategraph->find(*brains.stategraph, m_world.registry, entity)))
+			{
+				for (u32 slot = 0; slot < Stategraph::SLOTS; ++slot)
+				{
+					const Stategraph::Slot& live = sg->slots[slot];
+					const Graph* graph			 = brains.graph(live.graph);
+					if (graph == nullptr)
+						continue;
+					Inspection::Slot& made = out.slots.emplace_back();
+					made.graph			   = String(graph->name);
+					made.since			   = live.since;
+					made.elapsed		   = live.state != NO_STATE && m_now >= live.since ? m_now - live.since : 0;
+					made.disabled		   = graph->disabled;
+					for (const State& state : graph->states)
+						made.states.push_back(String(state.name));
+					const i16 index = graph->index_of(live.state);
+					if (index < 0)
+						continue;
+					const State& state = graph->states[static_cast<size_t>(index)];
+					made.state		   = String(state.name);
+					const auto dynamic =
+						state.marks_fn >= 0
+							? brains.entity_marks.find((static_cast<u64>(entt::to_integral(entity)) << 8) | slot)
+							: brains.entity_marks.end();
+					const Vector<Mark>& marks =
+						dynamic != brains.entity_marks.end() ? dynamic->second.marks : state.marks;
+					for (const Mark& mark : marks)
+					{
+						const auto text = brains.names.find(mark.name);
+						made.marks.push_back(
+							{.name = text != brains.names.end() ? String(text->second) : String("?"), .at = mark.at});
+					}
+				}
+			}
+		}
+
+		Vector<StoryReport> stories(&heap());
+		story_report(const_cast<Host&>(*this), entity, stories);
+		for (const StoryReport& story : stories)
+			out.stories.push_back({.name	= String(story.story),
+								   .waiting = String(story.waiting),
+								   .event	= String(story.event),
+								   .line	= story.line,
+								   .wake	= story.wake});
+
+		if (brains.watching == entity)
+		{
+			const auto name_of = [&](const Transition& step, StateId state) -> String
+			{
+				if (state == NO_STATE)
+					return String("-");
+				if (brains.stategraph == nullptr)
+					return String("?");
+				const auto* sg = static_cast<const Stategraph*>(
+					brains.stategraph->find(*brains.stategraph, m_world.registry, entity));
+				const Graph* graph = sg != nullptr ? brains.graph(sg->slots[step.slot].graph) : nullptr;
+				const i16 index	   = graph != nullptr ? graph->index_of(state) : -1;
+				return index >= 0 ? String(graph->states[static_cast<size_t>(index)].name) : String("?");
+			};
+			for (u32 i = 0; i < brains.history_count; ++i)
+			{
+				const Transition& step =
+					brains
+						.history[(brains.history_next + Brains::HISTORY - brains.history_count + i) % Brains::HISTORY];
+				out.history.push_back({.slot = step.slot,
+									   .from = name_of(step, step.from),
+									   .to	 = name_of(step, step.to),
+									   .tick = step.tick});
+			}
+		}
+
+		inspect_modifiers(const_cast<Host&>(*this), entity, out);
+	}
+
+	void Host::watch(ecs::Entity entity) noexcept
+	{
+		if (m_brains->watching == entity)
+			return;
+		m_brains->watching		= entity;
+		m_brains->history_next	= 0;
+		m_brains->history_count = 0;
+	}
+
+	bool Host::force_state(ecs::Entity entity, u32 slot, StringView state) noexcept
+	{
+		return script::force_state(*this, entity, slot, state);
+	}
+
+	void Host::stories_of(ecs::Entity entity, Vector<StoryReport>& out) const noexcept
+	{
+		story_report(const_cast<Host&>(*this), entity, out);
+	}
+
+	Span<const ecs::PrefabId> Host::retuned() const noexcept
+	{
+		return {m_brains->retuned.data(), m_brains->retuned.size()};
 	}
 
 	void Host::report(StringView path, u32 line, Severity severity, StringView message) noexcept
@@ -974,6 +1390,8 @@ namespace ember::script
 			stats.disabled += system.disabled ? 1 : 0;
 		stats.problems	  = static_cast<u32>(m_problems.size());
 		stats.stategraphs = static_cast<u32>(m_brains->graphs.size());
+		stats.stories	  = static_cast<u32>(m_brains->stories.size());
+		stats.threads	  = static_cast<u32>(m_brains->threads.size());
 		stats.lua_bytes	  = m_lua_bytes;
 		stats.hash		= m_hash;
 

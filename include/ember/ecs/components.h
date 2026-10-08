@@ -36,6 +36,8 @@ namespace ember::ecs
 		I32,
 		F32,
 		Vec2,
+		Entity, // another entity, by its network id (u32): 0 for none. The script host resolves it
+		Name,	// a name as a 64 bit text hash: a clip, a prefab, a sound; 0 for none
 		Count
 	};
 
@@ -51,8 +53,10 @@ namespace ember::ecs
 			case FieldType::U32:
 			case FieldType::I32:
 			case FieldType::F32:
+			case FieldType::Entity:
 				return 4;
 			case FieldType::Vec2:
+			case FieldType::Name:
 				return 8;
 			default:
 				return 0;
@@ -74,6 +78,7 @@ namespace ember::ecs
 		FieldType type = FieldType::F32;
 		f64 value	   = 0.0; // Bool: 0 or 1; the number for the rest
 		f32 y		   = 0.0f; // a Vec2's second component; `value` is its first
+		u64 bits	   = 0;	   // a Name's hash, which a double cannot hold
 	};
 
 	/**
@@ -273,9 +278,13 @@ namespace ember::ecs
 
 	/** A dynamic field's value from a number (and a vector's second component); held to the field's range. */
 	void write_field(const FieldInfo& field, void* component, f64 value, f32 y = 0.0f) noexcept;
+
+	/** An Entity or Name field's bits, which a double cannot hold whole: the id, or the hash. */
+	[[nodiscard]] u64 read_field_bits(const FieldInfo& field, const void* component) noexcept;
+	void write_field_bits(const FieldInfo& field, void* component, u64 bits) noexcept;
 }
 
 namespace ember
 {
-	EMBER_ENUM_NAMES(ecs::FieldType, "Bool", "U8", "U16", "U32", "I32", "F32", "Vec2");
+	EMBER_ENUM_NAMES(ecs::FieldType, "Bool", "U8", "U16", "U32", "I32", "F32", "Vec2", "Entity", "Name");
 }

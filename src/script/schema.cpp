@@ -148,6 +148,17 @@ namespace ember::script
 					if (group.name == start && !apply(group.entries))
 						return false;
 
+		// A prefab a stategraph drives carries cues, so the clients that show its states hear what they raise.
+		const ecs::ComponentInfo* graphs = types.find<Stategraph>();
+		const ecs::ComponentInfo* cues	 = types.find<Cues>();
+		if (graphs != nullptr && cues != nullptr && find(graphs->id) != nullptr && find(cues->id) == nullptr)
+		{
+			ecs::PrefabComponent made;
+			made.id	   = cues->id;
+			made.value = Vector<u8>(cues->defaults.begin(), cues->defaults.end(), &memory::heap(MemoryTag::ECS));
+			out.push_back(std::move(made));
+		}
+
 		std::sort(out.begin(), out.end(),
 				  [](const ecs::PrefabComponent& a, const ecs::PrefabComponent& b) { return a.id < b.id; });
 		return true;
@@ -203,5 +214,8 @@ namespace ember::script
 		return schema;
 	}
 
-	void register_components(ecs::Registry& registry) noexcept { registry.components<Stategraph, anim::Playing>(); }
+	void register_components(ecs::Registry& registry) noexcept
+	{
+		registry.components<Stategraph, anim::Playing, Cues, Shown, Story, Strike, Modifiers, Trigger>();
+	}
 }
