@@ -3,26 +3,43 @@
 #include <ember/assets/bank_asset.h>
 #include <ember/core/logger.h>
 #include <ember/core/profile.h>
+#include <ember/core/time.h>
 #include <ember/gpu/device.h>
+#include <ember/imgui/imgui_backend.h>
 #include <ember/memory/memory.h>
-#include <ember/platform/platform.h>
 
 #include <chrono>
 #include <thread>
 
-namespace
-{
-	/// Steady clock nanoseconds for the frame's stage stamps. Only differences mean anything.
-	[[nodiscard]] ember::u64 now_ns() noexcept
-	{
-		return static_cast<ember::u64>(
-			std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
-				.count());
-	}
-}
-
 namespace ember
 {
+	namespace
+	{
+		/**
+		 * The UI over the frame. The Runtime registers this after the app's own features, so its pass
+		 * is the last and lands on top of everything else. It closes the UI frame as it declares its
+		 * pass, on the owner thread.
+		 */
+		class OverlayFeature final : public render::RenderFeature
+		{
+		public:
+			struct Def
+			{
+			};
+
+			OverlayFeature(render::Renderer&, const Def&) noexcept {}
+
+			void add_passes(render::RenderFrame& frame) noexcept override
+			{
+				imgui::end_frame(frame.device);
+
+				frame.graph.pass("imgui")
+					.color({.texture = frame.resources.output, .load = gpu::LoadOp::Load})
+					.record([](gpu::CommandList& cmd) { imgui::render(cmd); });
+			}
+		};
+	}
+
 	Runtime::~Runtime() noexcept { shutdown(); }
 
 	Result<void, RuntimeError> Runtime::initialize(const AppConfig& config, const Args& args) noexcept
@@ -72,6 +89,16 @@ namespace ember
 		// Initialize the renderer after the GPU is available.
 		m_renderer = memory::make_unique<render::Renderer>(MemoryTag::Graphics);
 		m_renderer->init(*m_gpu, {});
+
+		// The UI's context, atlas, cursors and pipeline, which draws into the swapchain's format.
+		// Its pass joins the renderer once the app has registered its own features.
+		if (config.imgui)
+		{
+			if (!imgui::init(*m_gpu, *m_platform, {.color_format = m_gpu->swapchain_format(m_swapchain)}))
+				return rollback(RuntimeError::ImGuiInitFailed);
+
+			m_imgui = true;
+		}
 
 		// A machine that cannot play sound still runs the game: the engine says why, and does nothing.
 		m_audio = memory::make_unique<audio::Engine>(MemoryTag::Audio);
@@ -131,6 +158,11 @@ namespace ember
 			if (!m_swapchain.is_null())
 				m_gpu->destroy(m_swapchain);
 
+			if (m_imgui)
+				imgui::shutdown(*m_gpu);
+
+			m_imgui		= false;
+			m_ui_extent = {};
 			m_swapchain = {};
 
 			// Resource destruction is deferred. Drain the retirement queue before
@@ -209,6 +241,10 @@ namespace ember
 			return;
 		}
 
+		// The app registered all of its features in init(), The ImGui pass should be above everything.
+		if (m_imgui)
+			m_renderer->add_feature<OverlayFeature>();
+
 		// A quit asked for during a frame ends the loop here, once that frame has finished.
 		while (!quit_requested())
 		{
@@ -274,7 +310,8 @@ namespace ember
 
 		// A breakpoint or long hitch should not become an unbounded simulation step.
 		const auto tick = std::chrono::steady_clock::now();
-		const f32 dt = std::clamp(std::chrono::duration<f32>(tick - m_previous_frame).count(), 0.0f, m_max_delta_seconds);
+		const f32 dt =
+			std::clamp(std::chrono::duration<f32>(tick - m_previous_frame).count(), 0.0f, m_max_delta_seconds);
 
 		m_previous_frame = tick;
 
@@ -288,6 +325,16 @@ namespace ember
 			frame.frame_slot		= info.slot;
 			frame.backbuffer		= backbuffer;
 			frame.backbuffer_extent = m_gpu->swapchain_extent(m_swapchain);
+		}
+
+		// The UI frame is open from here until the overlay closes it as the frame draws, so a panel can be drawn from
+		// either stage.
+		if (m_imgui)
+		{
+			if (!backbuffer.is_null())
+				m_ui_extent = frame.backbuffer_extent;
+
+			imgui::new_frame(m_input.state(), m_window, m_ui_extent, dt);
 		}
 
 		m_scratch.begin(heap_tag(MemoryLifetime::Frame, index));
@@ -313,6 +360,11 @@ namespace ember
 			app.render(frame);
 			frame.render_end_ns = now_ns();
 		}
+
+		// A UI frame that the overlay never closed, either because of a minimized window or a render that
+		// never reached the renderer. Always dropped and the next frame opens a fresh one.
+		if (m_imgui)
+			imgui::discard();
 
 		// The GPU frame closes on every path that opened it. Every copy out of the frame's memory
 		// has been recorded by now, so that memory dies here.

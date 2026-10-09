@@ -17,6 +17,7 @@ ember_add_module(App
 	PRIVATE_DEPS
 		Ember::ImGui
 		Ember::Anim
+		Ember::Render
 )
 
 if(WIN32)

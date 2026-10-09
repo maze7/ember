@@ -25,6 +25,7 @@ namespace ember
 		DeviceInitFailed,
 		WindowInitFailed,
 		SwapchainInitFailed,
+		ImGuiInitFailed,
 	};
 
 	/**
@@ -120,6 +121,9 @@ namespace ember
 		Args m_args					= {};
 		WindowHandle m_window		= {};
 		SwapchainHandle m_swapchain = {};
+
+		bool m_imgui		 = false; // whether UI is enabled for this engine run
+		Extent2D m_ui_extent = {};	  // the size the UI was last drawn at
 
 		std::chrono::steady_clock::time_point m_previous_frame = {};
 

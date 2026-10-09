@@ -2,6 +2,7 @@ target_sources(ember_core PRIVATE
 	common.cpp
 	filesystem.cpp
 	json.cpp
+	time.cpp
 )
 
 if(WIN32)

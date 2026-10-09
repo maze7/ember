@@ -29,6 +29,9 @@ namespace ember
 		gpu::DeviceDef gpu			  = {};
 		gpu::PresentMode present_mode = gpu::PresentMode::VSync;
 		f32 max_delta_seconds		  = 0.1f;
+
+		/** Enables / Disables ImGui rendering within the engine. */
+		bool imgui = true;
 	};
 
 	/**

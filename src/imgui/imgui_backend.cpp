@@ -1,12 +1,12 @@
 #include <ember/imgui/imgui_backend.h>
 
+#include <ember/core/filesystem.h>
 #include <ember/core/logger.h>
 #include <ember/gpu/device.h>
 #include <ember/imgui/embedded_shader.h>
 #include <ember/input/input.h>
-#include <ember/platform/platform.h>
-#include <ember/core/filesystem.h>
 #include <ember/memory/memory.h>
+#include <ember/platform/platform.h>
 
 #include <algorithm>
 #include <cfloat>
@@ -42,6 +42,7 @@ namespace ember::imgui
 			WindowHandle window{};
 			std::string clipboard;
 			bool text_input_active = false;
+			bool frame_open		   = false; // true between new_frame() and end_frame() or discard()
 		};
 
 		State s_state;
@@ -400,6 +401,8 @@ namespace ember::imgui
 		if (s_state.device == nullptr)
 			return;
 
+		discard();
+
 		if (s_state.text_input_active)
 			s_state.platform->stop_text_input(s_state.window);
 
@@ -512,11 +515,14 @@ namespace ember::imgui
 		apply_cursor();
 
 		ImGui::NewFrame();
+		s_state.frame_open = true;
 	}
 
 	void end_frame(gpu::Device& device) noexcept
 	{
 		EMBER_ASSERT(s_state.device != nullptr);
+		EMBER_ASSERT(s_state.frame_open && "end_frame() without new_frame()");
+		s_state.frame_open = false;
 
 		ImGui::Render();
 
@@ -628,8 +634,11 @@ namespace ember::imgui
 
 	void discard() noexcept
 	{
-		if (s_state.device != nullptr)
+		if (s_state.device != nullptr || !s_state.frame_open)
 			ImGui::EndFrame();
+
+		ImGui::EndFrame();
+		s_state.frame_open = false;
 	}
 
 	bool wants_mouse() noexcept { return s_state.device != nullptr && ImGui::GetIO().WantCaptureMouse; }

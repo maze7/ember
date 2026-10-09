@@ -39,16 +39,15 @@ namespace ember::imgui
 	void shutdown(gpu::Device& device) noexcept;
 
 	/**
-	 * Feeds input and opens a UI frame. Once per update, after pump_events and
-	 * before any ImGui:: calls. Owns cursor shape and text input activation
-	 * while the UI wants them.
+	 * Feeds input and opens a UI frame: the runtime's, once a frame, after pump_events and before the
+	 * app's update(). Owns cursor shape and text input activation while the UI wants them.
 	 */
 	void new_frame(const InputState& input, WindowHandle window, Extent2D display, f32 dt) noexcept;
 
 	/**
-	 * Closes the UI frame and hands the device every texture the core created, changed or
-	 * dropped. Owner thread, once per frame, after the last ImGui:: call and before the graph
-	 * records: texture work is owner only, so it cannot ride the job that draws the UI.
+	 * Closes the UI frame and hands the device every texture the core created, changed or dropped.
+	 * Owner thread, from the overlay pass's declaration, after the last ImGui:: call and before the
+	 * graph records: texture work is owner only, so it cannot ride the job that draws the UI.
 	 */
 	void end_frame(gpu::Device& device) noexcept;
 
@@ -56,7 +55,7 @@ namespace ember::imgui
 	/// target matches BackendDef::color_format. Leaves the scissor modified.
 	void render(gpu::CommandList& cmd) noexcept;
 
-	/// Ends a UI frame without drawing it (minimized window, skipped frame).
+	/** Ends the UI frame without drawing it, when one is open. */
 	void discard() noexcept;
 
 	/// True while the UI wants the device; game input should skip it.
