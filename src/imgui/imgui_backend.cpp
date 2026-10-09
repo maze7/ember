@@ -634,8 +634,8 @@ namespace ember::imgui
 
 	void discard() noexcept
 	{
-		if (s_state.device != nullptr || !s_state.frame_open)
-			ImGui::EndFrame();
+		if (s_state.device == nullptr || !s_state.frame_open)
+			return;
 
 		ImGui::EndFrame();
 		s_state.frame_open = false;
