@@ -34,5 +34,5 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 
 	LocalFree(wide);
 
-	return ember_main({.args = {argv.data(), argv.size()}});
+	return ember_main(ember::Args(argc, argv.data()));
 }
