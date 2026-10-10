@@ -61,7 +61,6 @@ namespace ember
 		[[nodiscard]] u64 input_timestamp() const noexcept { return m_input_timestamp; }
 
 	private:
-		friend class Input;
 		friend class InputState;
 
 		using ButtonBits = std::bitset<BUTTON_COUNT>;

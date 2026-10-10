@@ -8,8 +8,10 @@
 
 namespace ember
 {
-	class Platform;
-
+	/**
+	 * The devices as they stood at one moment: what a frame reads, and what the platform folds its
+	 * events into between pumps.
+	 */
 	class InputState final
 	{
 	public:
@@ -42,6 +44,117 @@ namespace ember
 			}
 
 			return nullptr;
+		}
+
+		// The platform's events, folded in as they arrive: the snapshot it is building takes these between pumps.
+
+		void on_key(Key key, bool down, bool repeat, u64 timestamp) noexcept
+		{
+			m_keyboard.on_key(key, down, repeat, timestamp);
+		}
+
+		void on_text(std::string_view text, WindowHandle window) noexcept { m_keyboard.on_text(text, window); }
+
+		void on_composition(std::string_view text, i32 selection_start, i32 selection_length,
+							WindowHandle window) noexcept
+		{
+			m_keyboard.on_composition(text, selection_start, selection_length, window);
+		}
+
+		void on_mouse_button(MouseButton button, bool down, WindowHandle window, u64 timestamp) noexcept
+		{
+			m_mouse.on_button(button, down, window, timestamp);
+		}
+
+		void on_mouse_move(glm::vec2 position, glm::vec2 delta, WindowHandle window, u64 timestamp) noexcept
+		{
+			m_mouse.on_move(position, delta, window, timestamp);
+		}
+
+		void on_mouse_wheel(glm::vec2 wheel, WindowHandle window, u64 timestamp) noexcept
+		{
+			m_mouse.on_wheel(wheel, window, timestamp);
+		}
+
+		[[nodiscard]] std::optional<u32> connect_gamepad(GamepadId id, const GamepadInfo& info, u64 timestamp) noexcept
+		{
+			// Search for an existing instance of this controller first
+			// Linear search is fine here as we are limited to 4 controllers.
+			for (Gamepad& gamepad : m_gamepads)
+			{
+				if (gamepad.connected() && gamepad.id() == id)
+				{
+					gamepad.remap(info);
+					return gamepad.index();
+				}
+			}
+
+			// Otherwise, connect it in the first empty slot.
+			// Linear search is fine here as we are limited to 4 controllers.
+			for (Gamepad& gamepad : m_gamepads)
+			{
+				if (!gamepad.connected())
+				{
+					gamepad.connect(id, info, timestamp);
+					return gamepad.index();
+				}
+			}
+
+			return std::nullopt;
+		}
+
+		void remap_gamepad(GamepadId id, const GamepadInfo& info) noexcept
+		{
+			for (Gamepad& gamepad : m_gamepads)
+			{
+				if (gamepad.connected() && gamepad.id() == id)
+				{
+					gamepad.remap(info);
+					return;
+				}
+			}
+		}
+
+		void disconnect_gamepad(GamepadId id, u64 timestamp) noexcept
+		{
+			for (Gamepad& gamepad : m_gamepads)
+			{
+				if (gamepad.connected() && gamepad.id() == id)
+				{
+					gamepad.disconnect(timestamp);
+					return;
+				}
+			}
+		}
+
+		void on_gamepad_button(GamepadId id, GamepadButton button, bool down, u64 timestamp) noexcept
+		{
+			for (Gamepad& gamepad : m_gamepads)
+			{
+				if (gamepad.connected() && gamepad.id() == id)
+				{
+					gamepad.on_button(button, down, timestamp);
+					return;
+				}
+			}
+		}
+
+		void on_gamepad_axis(GamepadId id, GamepadAxis axis, f32 value, u64 timestamp) noexcept
+		{
+			for (Gamepad& gamepad : m_gamepads)
+			{
+				if (gamepad.connected() && gamepad.id() == id)
+				{
+					gamepad.on_axis(axis, value, timestamp);
+					return;
+				}
+			}
+		}
+
+		void on_focus_lost(WindowHandle window, u64 timestamp) noexcept
+		{
+			m_keyboard.on_focus_lost(window, timestamp);
+			m_mouse.on_focus_lost(window, timestamp);
 		}
 
 	private:
@@ -78,7 +191,12 @@ namespace ember
 		std::array<Gamepad, MAX_GAMEPADS> m_gamepads{};
 	};
 
-	/// Owns current and previous frame device state; a pure fold over the platform event stream.
+	/**
+	 * The devices as a frame sees them: a snapshot beside the one before it, which is what bindings
+	 * read. A key has a press of its own, an analog value has none, so its edges come from the two.
+	 * The platform publishes one each pump from the snapshot its events have been building; a frame
+	 * carries a copy.
+	 */
 	class Input
 	{
 	public:
@@ -99,11 +217,27 @@ namespace ember
 
 		[[nodiscard]] const Gamepad* gamepad(GamepadId id) const noexcept { return m_state.gamepad(id); }
 
+		/**
+		 * The snapshot the platform has been building becomes this frame's, and the one it replaces the
+		 * frame before's. now_ns is the platform's clock, the one its events are stamped with. The pending
+		 * snapshot keeps its levels and drops its transients, ready for the next events.
+		 */
+		void publish(InputState& pending, u64 now_ns) noexcept
+		{
+			m_last_state = m_state;
+			m_state		 = pending;
+
+			// State is the snapshot queried during this update.
+			m_state.set_frame_time(now_ns);
+
+			// The pending snapshot preserves levels but clears frame transients.
+			pending.next_frame(now_ns);
+		}
+
 		void clear() noexcept
 		{
 			m_last_state.clear();
 			m_state.clear();
-			m_next_state.clear();
 		}
 
 		[[nodiscard]] bool gamepad_in_use() const noexcept
@@ -120,134 +254,7 @@ namespace ember
 		}
 
 	private:
-		friend class Platform;
-
-		void publish(u64 now_ns) noexcept
-		{
-			m_last_state = m_state;
-			m_state		 = m_next_state;
-
-			// State is the snapshot queried during this update.
-			m_state.set_frame_time(now_ns);
-
-			// next_state preserves levels but clears frame transients.
-			m_next_state.next_frame(now_ns);
-		}
-
-		void on_key(Key key, bool down, bool repeat, u64 timestamp) noexcept
-		{
-			m_next_state.m_keyboard.on_key(key, down, repeat, timestamp);
-		}
-
-		void on_text(std::string_view text, WindowHandle window) noexcept
-		{
-			m_next_state.m_keyboard.on_text(text, window);
-		}
-
-		void on_composition(std::string_view text, i32 selection_start, i32 selection_length,
-							WindowHandle window) noexcept
-		{
-			m_next_state.m_keyboard.on_composition(text, selection_start, selection_length, window);
-		}
-
-		void on_mouse_button(MouseButton button, bool down, WindowHandle window, u64 timestamp) noexcept
-		{
-			m_next_state.m_mouse.on_button(button, down, window, timestamp);
-		}
-
-		void on_mouse_move(glm::vec2 position, glm::vec2 delta, WindowHandle window, u64 timestamp) noexcept
-		{
-			m_next_state.m_mouse.on_move(position, delta, window, timestamp);
-		}
-
-		void on_mouse_wheel(glm::vec2 wheel, WindowHandle window, u64 timestamp) noexcept
-		{
-			m_next_state.m_mouse.on_wheel(wheel, window, timestamp);
-		}
-
-		[[nodiscard]] std::optional<u32> connect_gamepad(GamepadId id, const GamepadInfo& info, u64 timestamp) noexcept
-		{
-			// Search for an existing instance of this controller first
-			// Linear search is fine here as we are limited to 4 controllers.
-			for (Gamepad& gamepad : m_next_state.m_gamepads)
-			{
-				if (gamepad.connected() && gamepad.id() == id)
-				{
-					gamepad.remap(info);
-					return gamepad.index();
-				}
-			}
-
-			// Otherwise, connect it in the first empty slot.
-			// Linear search is fine here as we are limited to 4 controllers.
-			for (Gamepad& gamepad : m_next_state.m_gamepads)
-			{
-				if (!gamepad.connected())
-				{
-					gamepad.connect(id, info, timestamp);
-					return gamepad.index();
-				}
-			}
-
-			return std::nullopt;
-		}
-
-		void remap_gamepad(GamepadId id, const GamepadInfo& info) noexcept
-		{
-			for (Gamepad& gamepad : m_next_state.m_gamepads)
-			{
-				if (gamepad.connected() && gamepad.id() == id)
-				{
-					gamepad.remap(info);
-					return;
-				}
-			}
-		}
-
-		void disconnect_gamepad(GamepadId id, u64 timestamp) noexcept
-		{
-			for (Gamepad& gamepad : m_next_state.m_gamepads)
-			{
-				if (gamepad.connected() && gamepad.id() == id)
-				{
-					gamepad.disconnect(timestamp);
-					return;
-				}
-			}
-		}
-
-		void on_gamepad_button(GamepadId id, GamepadButton button, bool down, u64 timestamp) noexcept
-		{
-			for (Gamepad& gamepad : m_next_state.m_gamepads)
-			{
-				if (gamepad.connected() && gamepad.id() == id)
-				{
-					gamepad.on_button(button, down, timestamp);
-					return;
-				}
-			}
-		}
-
-		void on_gamepad_axis(GamepadId id, GamepadAxis axis, f32 value, u64 timestamp) noexcept
-		{
-			for (Gamepad& gamepad : m_next_state.m_gamepads)
-			{
-				if (gamepad.connected() && gamepad.id() == id)
-				{
-					gamepad.on_axis(axis, value, timestamp);
-					return;
-				}
-			}
-		}
-
-		void on_focus_lost(WindowHandle window, u64 timestamp) noexcept
-		{
-			m_next_state.m_keyboard.on_focus_lost(window, timestamp);
-			m_next_state.m_mouse.on_focus_lost(window, timestamp);
-		}
-
 		InputState m_state;
 		InputState m_last_state;
-		InputState m_next_state;
 	};
 }

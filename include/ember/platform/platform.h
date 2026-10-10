@@ -30,8 +30,8 @@ namespace ember
 		explicit operator bool() const noexcept { return m_impl != nullptr; }
 
 		/**
-		 * Drains SDL once, folds physical input into Input::NextState,
-		 * and publishes Input::State before returning.
+		 * Drains SDL once, folds physical input into the snapshot it has been building since the last
+		 * pump, and publishes that as the frame's Input before returning.
 		 *
 		 * Must be called exactly once per update from the Platform owner thread.
 		 */

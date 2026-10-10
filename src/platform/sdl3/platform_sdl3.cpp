@@ -391,6 +391,7 @@ namespace ember
 		bool initialized		 = false;
 		bool claimed			 = false;
 		bool gamepads_discovered = false;
+		InputState pending; // what the devices have done since the last pump, on SDL's clock
 	};
 
 	Platform::Platform() noexcept
@@ -446,7 +447,9 @@ namespace ember
 		if (!m_impl->is_owner_thread())
 			return result;
 
-		auto open_gamepad = [this, &input](GamepadId id, u64 timestamp) noexcept
+		InputState& pending = m_impl->pending;
+
+		auto open_gamepad = [this, &pending](GamepadId id, u64 timestamp) noexcept
 		{
 			if (!id.is_valid())
 				return;
@@ -455,7 +458,7 @@ namespace ember
 			{
 				existing->info = gamepad_info_from_sdl(existing->handle);
 
-				(void)input.connect_gamepad(id, existing->info, timestamp);
+				(void)pending.connect_gamepad(id, existing->info, timestamp);
 
 				return;
 			}
@@ -484,7 +487,7 @@ namespace ember
 
 			GamepadInfo info = gamepad_info_from_sdl(native);
 
-			if (!input.connect_gamepad(id, info, timestamp).has_value())
+			if (!pending.connect_gamepad(id, info, timestamp).has_value())
 			{
 				SDL_CloseGamepad(native);
 
@@ -500,9 +503,9 @@ namespace ember
 			free_slot->info	  = info;
 		};
 
-		auto close_gamepad = [this, &input](GamepadId id, u64 timestamp) noexcept
+		auto close_gamepad = [this, &pending](GamepadId id, u64 timestamp) noexcept
 		{
-			input.disconnect_gamepad(id, timestamp);
+			pending.disconnect_gamepad(id, timestamp);
 
 			SdlGamepad* gamepad = m_impl->find_gamepad(id);
 
@@ -515,7 +518,7 @@ namespace ember
 			*gamepad = {};
 		};
 
-		auto remap_gamepad = [this, &input](GamepadId id) noexcept
+		auto remap_gamepad = [this, &pending](GamepadId id) noexcept
 		{
 			SdlGamepad* gamepad = m_impl->find_gamepad(id);
 
@@ -524,7 +527,7 @@ namespace ember
 
 			gamepad->info = gamepad_info_from_sdl(gamepad->handle);
 
-			input.remap_gamepad(id, gamepad->info);
+			pending.remap_gamepad(id, gamepad->info);
 		};
 
 		auto discover_gamepads = [&open_gamepad](u64 timestamp) noexcept -> bool
@@ -547,20 +550,9 @@ namespace ember
 			return true;
 		};
 
-		const u64 initial_timestamp = SDL_GetTicksNS();
-
-		// Reconcile native handles into a newly supplied/cleared Input.
-		for (const SdlGamepad& gamepad : m_impl->gamepads)
-		{
-			if (gamepad.handle != nullptr)
-			{
-				(void)input.connect_gamepad(gamepad.id, gamepad.info, initial_timestamp);
-			}
-		}
-
 		if (!m_impl->gamepads_discovered)
 		{
-			m_impl->gamepads_discovered = discover_gamepads(initial_timestamp);
+			m_impl->gamepads_discovered = discover_gamepads(SDL_GetTicksNS());
 		}
 
 		bool refresh_gamepads = false;
@@ -581,7 +573,7 @@ namespace ember
 
 					if (key != Key::Unknown)
 					{
-						input.on_key(key, event.key.down, event.key.repeat, event.key.timestamp);
+						pending.on_key(key, event.key.down, event.key.repeat, event.key.timestamp);
 					}
 
 					break;
@@ -593,7 +585,7 @@ namespace ember
 
 					if (!window.is_null() && event.text.text != nullptr)
 					{
-						input.on_text(event.text.text, window);
+						pending.on_text(event.text.text, window);
 					}
 
 					break;
@@ -605,9 +597,9 @@ namespace ember
 
 					if (!window.is_null())
 					{
-						input.on_composition(event.edit.text != nullptr ? std::string_view{event.edit.text}
-																		: std::string_view{},
-											 event.edit.start, event.edit.length, window);
+						pending.on_composition(event.edit.text != nullptr ? std::string_view{event.edit.text}
+																		  : std::string_view{},
+											   event.edit.start, event.edit.length, window);
 					}
 
 					break;
@@ -632,7 +624,7 @@ namespace ember
 						if (density <= 0.0f)
 							density = 1.0f;
 
-						input.on_mouse_move(
+						pending.on_mouse_move(
 							{
 								event.motion.x * density,
 								event.motion.y * density,
@@ -664,7 +656,7 @@ namespace ember
 
 					if (!window.is_null())
 					{
-						input.on_mouse_button(*button, event.button.down, window, event.button.timestamp);
+						pending.on_mouse_button(*button, event.button.down, window, event.button.timestamp);
 					}
 
 					break;
@@ -684,7 +676,7 @@ namespace ember
 
 					const f32 direction = event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0f : 1.0f;
 
-					input.on_mouse_wheel(
+					pending.on_mouse_wheel(
 						{
 							event.wheel.x * direction,
 							event.wheel.y * direction,
@@ -716,9 +708,9 @@ namespace ember
 						break;
 					}
 
-					input.on_gamepad_button(GamepadId{static_cast<u32>(event.gbutton.which)},
-											static_cast<GamepadButton>(event.gbutton.button), event.gbutton.down,
-											event.gbutton.timestamp);
+					pending.on_gamepad_button(GamepadId{static_cast<u32>(event.gbutton.which)},
+											  static_cast<GamepadButton>(event.gbutton.button), event.gbutton.down,
+											  event.gbutton.timestamp);
 
 					break;
 				}
@@ -733,8 +725,8 @@ namespace ember
 					const f32 value = event.gaxis.value >= 0 ? static_cast<f32>(event.gaxis.value) / 32767.0f
 															 : static_cast<f32>(event.gaxis.value) / 32768.0f;
 
-					input.on_gamepad_axis(GamepadId{static_cast<u32>(event.gaxis.which)},
-										  static_cast<GamepadAxis>(event.gaxis.axis), value, event.gaxis.timestamp);
+					pending.on_gamepad_axis(GamepadId{static_cast<u32>(event.gaxis.which)},
+											static_cast<GamepadAxis>(event.gaxis.axis), value, event.gaxis.timestamp);
 
 					break;
 				}
@@ -745,7 +737,7 @@ namespace ember
 
 					if (!window.is_null())
 					{
-						input.on_focus_lost(window, event.window.timestamp);
+						pending.on_focus_lost(window, event.window.timestamp);
 					}
 
 					break;
@@ -769,7 +761,7 @@ namespace ember
 		}
 
 		// Poll first, publish second.
-		input.publish(SDL_GetTicksNS());
+		input.publish(pending, SDL_GetTicksNS());
 
 		return result;
 	}

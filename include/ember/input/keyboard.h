@@ -340,7 +340,6 @@ namespace ember
 		[[nodiscard]] bool alt() const noexcept { return down(Key::LeftAlt) || down(Key::RightAlt); }
 
 	private:
-		friend class Input;
 		friend class InputState;
 
 		using KeyBits = std::bitset<KEY_COUNT>;

@@ -143,7 +143,6 @@ namespace ember
 
 	private:
 		friend class InputState;
-		friend class Input;
 
 		using ButtonBits = std::bitset<BUTTON_COUNT>;
 		using AxisBits	 = std::bitset<AXIS_COUNT>;
