@@ -31,12 +31,13 @@ namespace ember::script
 		constexpr StringView GRAPH_KEYS[] = {"initial", "extends", "stage", "states", "on", "every", "update", "show"};
 
 		/** A whole number at `index` from `low`; raises naming the key otherwise. */
-		[[nodiscard]] u32 read_count(lua_State* L, int index, const char* graph, const char* state, const char* key, f64 low)
+		[[nodiscard]] u32 read_count(lua_State* L, int index, const char* graph, const char* state, const char* key,
+									 f64 low)
 		{
 			const f64 value = declared_number(L, index, key);
 			if (std::floor(value) != value || value < low || value > 4294967295.0)
-				luaL_error(L, "stategraph %s, state %s: %s takes a whole number of ticks from %g, not %g", graph, state, key,
-						   low, value);
+				luaL_error(L, "stategraph %s, state %s: %s takes a whole number of ticks from %g, not %g", graph, state,
+						   key, low, value);
 			return static_cast<u32>(value);
 		}
 
@@ -165,11 +166,12 @@ namespace ember::script
 					while (lua_next(L, value) != 0)
 					{
 						if (!lua_isnumber(L, -2) || !lua_isstring(L, -1))
-							luaL_error(L, "stategraph %s, state %s: timeline is { [tick] = \"mark\", ... }", graph, name);
+							luaL_error(L, "stategraph %s, state %s: timeline is { [tick] = \"mark\", ... }", graph,
+									   name);
 						const f64 at = lua_tonumber(L, -2);
 						if (std::floor(at) != at || at < 0.0)
-							luaL_error(L, "stategraph %s, state %s: a timeline tick is a whole number from 0, not %g", graph,
-									   name, at);
+							luaL_error(L, "stategraph %s, state %s: a timeline tick is a whole number from 0, not %g",
+									   graph, name, at);
 						out.marks.push_back(
 							{.at = static_cast<u32>(at), .name = intern_name(host, lua_tostring(L, -1))});
 						lua_pop(L, 1);
@@ -220,12 +222,15 @@ namespace ember::script
 				else if (key == "react")
 				{
 					if (!lua_istable(L, value))
-						luaL_error(L, "stategraph %s, state %s: react is { event = function(e, source) end, ... }", graph, name);
+						luaL_error(L, "stategraph %s, state %s: react is { event = function(e, source) end, ... }",
+								   graph, name);
 					lua_pushnil(L);
 					while (lua_next(L, value) != 0)
 					{
 						if (!lua_isstring(L, -2) || !lua_isfunction(L, -1))
-							luaL_error(L, "stategraph %s, state %s: react is { event = function(e, source) end, ... }; a state name goes in events",
+							luaL_error(L,
+									   "stategraph %s, state %s: react is { event = function(e, source) end, ... }; a "
+									   "state name goes in events",
 									   graph, name);
 						out.rules.push_back({.event		  = intern_name(host, lua_tostring(L, -2)),
 											 .react		  = lua_ref(L, -1),
@@ -1281,11 +1286,12 @@ namespace ember::script
 			}
 		}
 
-		/** A prefab event's groups onto an entity, through the commands: the removed groups' components back to the prefab's or gone, the added groups' in. */
+		/** A prefab event's groups onto an entity, through the commands: the removed groups' components back to the
+		 * prefab's or gone, the added groups' in. */
 		void apply_prefab_event(Host& host, const Event& event)
 		{
-			ecs::World& world	 = host.world();
-			Host::Brains& brains = HostAccess::brains(host);
+			ecs::World& world		= host.world();
+			Host::Brains& brains	= HostAccess::brains(host);
 			ecs::Commands* commands = HostAccess::commands(host);
 			if (commands == nullptr || !world.registry.valid(event.target))
 				return;
@@ -1581,7 +1587,9 @@ namespace ember::script
 			Host::Brains& brains = HostAccess::brains(host);
 			const char* name	 = luaL_checkstring(L, 2);
 			if (!brains.running || brains.stepping != self)
-				luaL_error(L, "Stategraph:go is for the graph's own handlers; from anywhere else, raise an event: e:event(\"%s\")",
+				luaL_error(L,
+						   "Stategraph:go is for the graph's own handlers; from anywhere else, raise an event: "
+						   "e:event(\"%s\")",
 						   name);
 
 			Stategraph::Slot& sg = all.slots[brains.stepping_slot];
@@ -1669,7 +1677,8 @@ namespace ember::script
 		if (exposed == nullptr || !may_write(context, *exposed))
 			refuse_write(L, context, *exposed, "play");
 
-		auto* playing = static_cast<anim::Playing*>(brains.playing->get(*brains.playing, host.world().registry, entity));
+		auto* playing =
+			static_cast<anim::Playing*>(brains.playing->get(*brains.playing, host.world().registry, entity));
 		if (playing == nullptr)
 			luaL_error(L, "e:play: the entity has no Playing component; give its prefab Playing = {}");
 

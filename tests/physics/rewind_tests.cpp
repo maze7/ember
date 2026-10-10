@@ -153,7 +153,7 @@ TEST(Rewind, HitsFindTheTargetWhereTheStrikerSawIt)
 			sync(space, {{.at = {static_cast<f32>(tick - 1) * 3.0f, 0.0f}}}, &sword);
 			find_hits(space, hits);
 			for (const Hit& hit : hits)
-				if (hit.began)
+				if (hit.ticks == 1)
 					return tick;
 		}
 		return 0u;
@@ -179,7 +179,7 @@ TEST(Rewind, HitsBeganOncePerTouch)
 		{
 			EXPECT_EQ(hit.hitbox, STRIKER);
 			EXPECT_EQ(hit.hurtbox, TARGET);
-			began += hit.began;
+			began += hit.ticks == 1;
 			++touching;
 		}
 	}

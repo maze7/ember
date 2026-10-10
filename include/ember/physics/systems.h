@@ -10,7 +10,8 @@ namespace ember::physics
 	{
 		ecs::Entity hitbox	= ecs::NO_ENTITY; // the entity whose hitbox it is
 		ecs::Entity hurtbox = ecs::NO_ENTITY; // the entity it hit
-		bool began			= false;		  // they were apart the tick before
+		u32 ticks			= 0;			  // ticks the two had touched before this one, 0 the tick they met
+		bool began			= false;		  // the Hit began this tick
 	};
 
 	/**
@@ -71,6 +72,15 @@ namespace ember::physics
 	void find_hits(const Space& space, Hits& hits);
 
 	/**
+	 * One tick of a body: still while frozen, else moved by velocity + push, stopped and slid by what blocks its
+	 * collider (none: it passes through everything), the blocked axis of both zeroed, then the push lerped toward
+	 * rest and snapped to it under REST_SPEED. THe same answer from the same inputs on every machine, so a replay
+	 * repeats it. A game's integration system calls it for each body it simulates.
+	 */
+	Moved step(const Space& space, ecs::Entity self, Body& body, glm::vec2& position, const Collider* collider,
+			   u32 tick, f32 dt) noexcept;
+
+	/**
 	 * The components and the two systems, in a stage of the game's after the one that moves things.
 	 * Position says where the game keeps an entity's position:
 	 *
@@ -78,7 +88,7 @@ namespace ember::physics
 	 */
 	template <auto Position, class Stage> void register_systems(ecs::Registry& registry, Stage stage) noexcept
 	{
-		registry.components<Collider, Hurtbox, Hitbox>();
+		registry.components<Collider, Hurtbox, Hitbox, Body>();
 		registry.template simulate<&sync<Position>>(stage);
 		registry.template simulate<&find_hits>(stage);
 	}

@@ -1,6 +1,8 @@
 #include <ember/core/profile.h>
 #include <ember/physics/systems.h>
 
+#include <glm/geometric.hpp>
+
 #include <algorithm>
 
 namespace ember::physics
@@ -38,8 +40,36 @@ namespace ember::physics
 		{
 			while (before != hits.m_before.end() && key(*before) < key(hit))
 				++before;
-			hit.began = before == hits.m_before.end() || key(*before) != key(hit);
+
+			const bool touched = before != hits.m_before.end() && key(*before) == key(hit);
+			hit.ticks		   = touched ? before->ticks + 1 : 0;
+			hit.began		   = !touched;
 		}
+	}
+
+	Moved step(const Space& space, ecs::Entity self, Body& body, glm::vec2& position, const Collider* collider,
+			   u32 tick, f32 dt) noexcept
+	{
+		if (tick < body.frozen_until)
+			return {.position = position};
+
+		const glm::vec2 delta = (body.velocity + body.push) * dt;
+		const Moved moved =
+			collider != nullptr ? space.move(self, *collider, position, delta) : Moved{.position = position + delta};
+
+		position = moved.position;
+
+		// What a wall stops is gone: a dash into one ends there, and a shove along one slides.
+		if (moved.normal.x != 0.0f)
+			body.velocity.x = body.push.x = 0.0f;
+		if (moved.normal.y != 0.0f)
+			body.velocity.y = body.push.y = 0.0f;
+
+		// After the move, so a kick carries its whole first tick; to rest exactly, so a body at rest stops changing.
+		body.push *= 1.0f - body.push_drag;
+		if (glm::dot(body.push, body.push) < REST_SPEED * REST_SPEED)
+			body.push = {};
+		return moved;
 	}
 
 	void add_resources(ecs::World& world, const SpaceDef& def) noexcept

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ember/ecs/component.h>
+#include <ember/net/serialize.h>
 #include <ember/physics/shape.h>
 
 #include <type_traits>
@@ -42,27 +43,24 @@ namespace ember::physics
 	 */
 	struct Collider
 	{
-		Shape shape = box({16.0f, 16.0f});
-		Layers layer = {};
+		Shape shape		  = box({16.0f, 16.0f});
+		Layers layer	  = {};
 		Layers blocked_by = {};
 	};
 	EMBER_COMPONENT(Collider, Sim);
 
-	/** Where an entity can be hit: found by hitboxes that hit its layer, and by Space::hurtboxes(). */
+	/** Where an Entity can be hit. Found by Hitboxes that hit the same layer. */
 	struct Hurtbox
 	{
-		Shape shape = box({16.0f, 16.0f});
+		Shape shape	 = box({16.0f, 16.0f});
 		Layers layer = {};
+		bool enabled = true;
 	};
 	EMBER_COMPONENT(Hurtbox, Sim);
 
 	/**
-	 * Where an entity hits: every tick its shape touches a hurtbox on one of `hits`, other than its
-	 * own, the two are a Hit. Hitting nothing switches it off.
-	 *
-	 * `rewind` is lag compensation: how many ticks before this one its striker's screen showed the world,
-	 * fractions included. Its hits are found where the hurtboxes stood then, so a blow lands on what the
-	 * striker saw. Only a space that keeps a history rewinds (SpaceDef::history): a server's. At 0, the present.
+	 * Where an Entity hits. Every tick its shape touches a hurtbox on that matches the same layer,
+	 * excluding its own, the two are a Hit. Rewind configures lag compensation.
 	 */
 	struct Hitbox
 	{
@@ -71,4 +69,30 @@ namespace ember::physics
 		f32 rewind	= 0.0f; // ticks
 	};
 	EMBER_COMPONENT(Hitbox, Sim);
+
+	/** A push slower than this, in units a second, is at rest: step() snaps it to nothing. */
+	inline constexpr f32 REST_SPEED = 1.0f;
+
+	/**
+	 * What moves an Entity. Drivers write `velocity` and `push`.
+	 */
+	struct Body
+	{
+		glm::vec2 velocity = {};	// units per second
+		glm::vec2 push	   = {};	// units per second
+		f32 push_drag	   = 0.17f; // amount of push lost each tick
+		u32 frozen_until   = 0;
+
+		template <class Stream> bool serialize(Stream& stream)
+		{
+			serialize_float(stream, velocity.x);
+			serialize_float(stream, velocity.y);
+			serialize_float(stream, push.x);
+			serialize_float(stream, push.y);
+			serialize_float(stream, push_drag);
+			serialize_bits(stream, frozen_until, 32);
+			return true;
+		}
+	};
+	EMBER_COMPONENT(Body, OwnerOnly | Predicted);
 }

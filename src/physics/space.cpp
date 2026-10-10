@@ -55,7 +55,8 @@ namespace ember::physics
 		  m_page_shift(static_cast<u32>(std::countr_zero(def.page_size)))
 	{
 		EMBER_ASSERT(def.tile_size > 0.0f && def.cell_size > 0.0f);
-		EMBER_ASSERT(std::has_single_bit(def.page_size) && def.page_size <= 256 && "a page is a power of two tiles a side");
+		EMBER_ASSERT(std::has_single_bit(def.page_size) && def.page_size <= 256 &&
+					 "a page is a power of two tiles a side");
 		EMBER_ASSERT(def.teleport > 0.0f);
 		m_history.resize(def.history);
 	}
@@ -180,7 +181,7 @@ namespace ember::physics
 		u32 end = 0;
 		for (u32 bucket = 0; bucket < buckets; ++bucket)
 		{
-			end			  += starts[bucket];
+			end += starts[bucket];
 			starts[bucket] = end;
 		}
 		starts[buckets] = total;
@@ -196,7 +197,7 @@ namespace ember::physics
 			for (i32 y = cells.y1; y >= cells.y0; --y)
 				for (i32 x = cells.x1; x >= cells.x0; --x)
 				{
-					const u32 key								   = cell_key(x, y);
+					const u32 key							 = cell_key(x, y);
 					entries[--starts[bucket_of(key) & mask]] = {.cell = key, .proxy = i};
 				}
 		}
@@ -267,6 +268,8 @@ namespace ember::physics
 
 	void Space::add(ecs::Entity entity, glm::vec2 position, const Hurtbox& hurtbox) noexcept
 	{
+		if (!hurtbox.enabled)
+			return;
 		m_hurtboxes.add({.entity = entity, .layers = hurtbox.layer, .shape = hurtbox.shape.at(position)});
 	}
 
@@ -309,12 +312,12 @@ namespace ember::physics
 	f32 Space::slide(const Aabb& box, u32 axis, f32 delta, Layers by, ecs::Entity self, Moved& moved,
 					 bool& stopped) const noexcept
 	{
-		const u32 across  = 1 - axis;
-		const bool ahead  = delta > 0.0f;
-		const f32 lead	  = ahead ? box.max[axis] : box.min[axis];
-		const f32 target  = lead + delta;
-		const f32 size	  = m_def.tile_size;
-		f32 limit		  = target;
+		const u32 across = 1 - axis;
+		const bool ahead = delta > 0.0f;
+		const f32 lead	 = ahead ? box.max[axis] : box.min[axis];
+		const f32 target = lead + delta;
+		const f32 size	 = m_def.tile_size;
+		f32 limit		 = target;
 		Layers what;
 		ecs::Entity who = ecs::NO_ENTITY;
 
@@ -363,17 +366,19 @@ namespace ember::physics
 		}
 
 		// Other colliders, as the upright boxes around them: the nearest one abreast of the box and ahead of its edge.
-		Aabb area		  = box;
+		Aabb area = box;
 		area.min[across] += SKIN;
 		area.max[across] -= SKIN;
-		area.min[axis]	  = ahead ? lead - SKIN : limit;
-		area.max[axis]	  = ahead ? limit : lead + SKIN;
+		area.min[axis] = ahead ? lead - SKIN : limit;
+		area.max[axis] = ahead ? limit : lead + SKIN;
 
-		each(m_colliders, area, by.bits, [&](u32 index)
+		each(m_colliders, area, by.bits,
+			 [&](u32 index)
 			 {
 				 const Proxy& proxy = m_colliders.proxies[index];
 				 const Aabb& other	= m_colliders.bounds[index];
-				 if (proxy.entity == self || other.max[across] <= area.min[across] || other.min[across] >= area.max[across])
+				 if (proxy.entity == self || other.max[across] <= area.min[across] ||
+					 other.min[across] >= area.max[across])
 					 return;
 
 				 if (ahead && other.min[axis] >= lead - SKIN && other.min[axis] < limit)
@@ -394,7 +399,7 @@ namespace ember::physics
 		if (stopped)
 		{
 			moved.normal[static_cast<glm::length_t>(axis)] = ahead ? -1.0f : 1.0f;
-			moved.layers.bits							  |= what.bits;
+			moved.layers.bits |= what.bits;
 			if (who != ecs::NO_ENTITY)
 				moved.entity = who;
 		}
@@ -428,7 +433,8 @@ namespace ember::physics
 			// Stopped, the position that puts its leading edge on what stopped it. Free, the move as asked,
 			// to the bit.
 			if (stopped)
-				moved.position[axis] = edge - shape.center[axis] - (delta[axis] > 0.0f ? shape.half[axis] : -shape.half[axis]);
+				moved.position[axis] =
+					edge - shape.center[axis] - (delta[axis] > 0.0f ? shape.half[axis] : -shape.half[axis]);
 			else
 				moved.position[axis] += delta[axis];
 		}
@@ -440,8 +446,10 @@ namespace ember::physics
 	{
 		const Aabb area = bounds(shape);
 
-		const i32 x0 = floor_to_int((area.min.x + SKIN) * m_inverse_tile), y0 = floor_to_int((area.min.y + SKIN) * m_inverse_tile);
-		const i32 x1 = floor_to_int((area.max.x - SKIN) * m_inverse_tile), y1 = floor_to_int((area.max.y - SKIN) * m_inverse_tile);
+		const i32 x0 = floor_to_int((area.min.x + SKIN) * m_inverse_tile),
+				  y0 = floor_to_int((area.min.y + SKIN) * m_inverse_tile);
+		const i32 x1 = floor_to_int((area.max.x - SKIN) * m_inverse_tile),
+				  y1 = floor_to_int((area.max.y - SKIN) * m_inverse_tile);
 		for (i32 y = y0; y <= y1; ++y)
 		{
 			for (i32 x = x0; x <= x1; ++x)
@@ -456,10 +464,11 @@ namespace ember::physics
 		}
 
 		bool found = false;
-		each(m_colliders, area, by.bits, [&](u32 index)
+		each(m_colliders, area, by.bits,
+			 [&](u32 index)
 			 {
 				 const Proxy& proxy = m_colliders.proxies[index];
-				 found = found || (proxy.entity != ignore && overlaps(shape, proxy.shape));
+				 found				= found || (proxy.entity != ignore && overlaps(shape, proxy.shape));
 			 });
 		return found;
 	}
@@ -467,30 +476,32 @@ namespace ember::physics
 	Found Space::touching(const Index& index, const Shape& shape, Layers layers) const noexcept
 	{
 		Found found;
-		each(index, bounds(shape), layers.bits, [&](u32 at)
+		each(index, bounds(shape), layers.bits,
+			 [&](u32 at)
 			 {
 				 if (overlaps(shape, index.proxies[at].shape))
 					 add_found(found, index.proxies[at]);
 			 });
 
 		// In entity order, whatever order the grid gave them in.
-		std::sort(found.items, found.items + found.count,
-				  [](const Touch& a, const Touch& b) { return entt::to_integral(a.entity) < entt::to_integral(b.entity); });
+		std::sort(found.items, found.items + found.count, [](const Touch& a, const Touch& b)
+				  { return entt::to_integral(a.entity) < entt::to_integral(b.entity); });
 		return found;
 	}
 
 	void Space::hurtboxes(const Shape& shape, Layers layers, Vector<Touch>& out) const noexcept
 	{
 		const size_t first = out.size();
-		each(m_hurtboxes, bounds(shape), layers.bits, [&](u32 at)
+		each(m_hurtboxes, bounds(shape), layers.bits,
+			 [&](u32 at)
 			 {
 				 const Proxy& proxy = m_hurtboxes.proxies[at];
 				 if (overlaps(shape, proxy.shape))
 					 out.push_back({.entity = proxy.entity, .layers = proxy.layers});
 			 });
 
-		std::sort(out.begin() + static_cast<std::ptrdiff_t>(first), out.end(),
-				  [](const Touch& a, const Touch& b) { return entt::to_integral(a.entity) < entt::to_integral(b.entity); });
+		std::sort(out.begin() + static_cast<std::ptrdiff_t>(first), out.end(), [](const Touch& a, const Touch& b)
+				  { return entt::to_integral(a.entity) < entt::to_integral(b.entity); });
 	}
 
 	void Space::hurtboxes(const Shape& shape, Layers layers, f32 ticks, Vector<Touch>& out) const noexcept
@@ -555,8 +566,14 @@ namespace ember::physics
 				  { return entt::to_integral(a.entity) < entt::to_integral(b.entity); });
 	}
 
-	Found Space::colliders(const Shape& shape, Layers layers) const noexcept { return touching(m_colliders, shape, layers); }
-	Found Space::hurtboxes(const Shape& shape, Layers layers) const noexcept { return touching(m_hurtboxes, shape, layers); }
+	Found Space::colliders(const Shape& shape, Layers layers) const noexcept
+	{
+		return touching(m_colliders, shape, layers);
+	}
+	Found Space::hurtboxes(const Shape& shape, Layers layers) const noexcept
+	{
+		return touching(m_hurtboxes, shape, layers);
+	}
 
 	std::optional<RayHit> Space::raycast(glm::vec2 from, glm::vec2 to, Layers layers, ecs::Entity ignore) const noexcept
 	{
@@ -572,8 +589,9 @@ namespace ember::physics
 			const glm::ivec2 step{line.x > 0.0f ? 1 : -1, line.y > 0.0f ? 1 : -1};
 
 			const f32 never = std::numeric_limits<f32>::max();
-			glm::vec2 next{line.x != 0.0f ? (static_cast<f32>(at.x + (step.x > 0 ? 1 : 0)) * size - from.x) / line.x : never,
-						   line.y != 0.0f ? (static_cast<f32>(at.y + (step.y > 0 ? 1 : 0)) * size - from.y) / line.y : never};
+			glm::vec2 next{
+				line.x != 0.0f ? (static_cast<f32>(at.x + (step.x > 0 ? 1 : 0)) * size - from.x) / line.x : never,
+				line.y != 0.0f ? (static_cast<f32>(at.y + (step.y > 0 ? 1 : 0)) * size - from.y) / line.y : never};
 			const glm::vec2 stride{line.x != 0.0f ? size / std::abs(line.x) : never,
 								   line.y != 0.0f ? size / std::abs(line.y) : never};
 
@@ -584,30 +602,36 @@ namespace ember::physics
 				if (const Layers ground = tile(at); ground.any(layers))
 				{
 					nearest = along;
-					hit		= {.distance = along * length, .point = from + line * along, .normal = normal, .entity = ecs::NO_ENTITY, .layers = ground};
+					hit		= {.distance = along * length,
+							   .point	 = from + line * along,
+							   .normal	 = normal,
+							   .entity	 = ecs::NO_ENTITY,
+							   .layers	 = ground};
 					break;
 				}
 
 				if (next.x < next.y)
 				{
-					along	= next.x;
+					along = next.x;
 					next.x += stride.x;
-					at.x   += step.x;
-					normal	= {static_cast<f32>(-step.x), 0.0f};
+					at.x += step.x;
+					normal = {static_cast<f32>(-step.x), 0.0f};
 				}
 				else
 				{
-					along	= next.y;
+					along = next.y;
 					next.y += stride.y;
-					at.y   += step.y;
-					normal	= {0.0f, static_cast<f32>(-step.y)};
+					at.y += step.y;
+					normal = {0.0f, static_cast<f32>(-step.y)};
 				}
 			}
 		}
 
 		// Colliders, as the upright boxes around them: where the line enters each.
-		const Aabb area{{std::min(from.x, to.x), std::min(from.y, to.y)}, {std::max(from.x, to.x), std::max(from.y, to.y)}};
-		each(m_colliders, area, layers.bits, [&](u32 index)
+		const Aabb area{{std::min(from.x, to.x), std::min(from.y, to.y)},
+						{std::max(from.x, to.x), std::max(from.y, to.y)}};
+		each(m_colliders, area, layers.bits,
+			 [&](u32 index)
 			 {
 				 const Proxy& proxy = m_colliders.proxies[index];
 				 if (proxy.entity == ignore)
@@ -641,7 +665,11 @@ namespace ember::physics
 				 if (enter <= leave && enter < nearest)
 				 {
 					 nearest = enter;
-					 hit	 = {.distance = enter * length, .point = from + line * enter, .normal = normal, .entity = proxy.entity, .layers = proxy.layers};
+					 hit	 = {.distance = enter * length,
+								.point	  = from + line * enter,
+								.normal	  = normal,
+								.entity	  = proxy.entity,
+								.layers	  = proxy.layers};
 				 }
 			 });
 
