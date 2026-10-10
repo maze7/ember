@@ -36,6 +36,10 @@ namespace ember::render
 	 */
 	[[nodiscard]] ColorLut create_color_lut(gpu::Device& device, u32 size, glm::vec3 (*grade)(glm::vec3)) noexcept;
 
+	/// The same, for a grade that reads its settings from somewhere: `context` comes back with every cell.
+	[[nodiscard]] ColorLut create_color_lut(gpu::Device& device, u32 size, glm::vec3 (*grade)(glm::vec3, const void*),
+											const void* context) noexcept;
+
 	/**
 	 * The scene as it is shown: bloom, a grade, then the game's screen materials, on the HDR scene
 	 * colour before the upscale enlarges it. Everything runs at the scene's resolution, so a glow and a

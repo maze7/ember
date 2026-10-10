@@ -74,6 +74,19 @@ namespace ember::render
 
 	ColorLut create_color_lut(gpu::Device& device, u32 size, glm::vec3 (*grade)(glm::vec3)) noexcept
 	{
+		EMBER_ASSERT(grade != nullptr);
+		if (grade == nullptr)
+			return {};
+
+		using Plain = glm::vec3 (*)(glm::vec3);
+		return create_color_lut(
+			device, size, [](glm::vec3 color, const void* plain) { return (*static_cast<const Plain*>(plain))(color); },
+			&grade);
+	}
+
+	ColorLut create_color_lut(gpu::Device& device, u32 size, glm::vec3 (*grade)(glm::vec3, const void*),
+							  const void* context) noexcept
+	{
 		// 64 cells a side is already a 4096 texel strip, and finer than any grade needs.
 		EMBER_ASSERT(size >= 2 && size <= 64 && grade != nullptr);
 		if (size < 2 || size > 64 || grade == nullptr)
@@ -92,7 +105,7 @@ namespace ember::render
 					const glm::vec3 display{static_cast<f32>(r) * step, static_cast<f32>(g) * step,
 											static_cast<f32>(b) * step};
 
-					texels[(g * size + b) * size + r] = glm::packUnorm4x8(glm::vec4(grade(display), 1.0f));
+					texels[(g * size + b) * size + r] = glm::packUnorm4x8(glm::vec4(grade(display, context), 1.0f));
 				}
 			}
 		}

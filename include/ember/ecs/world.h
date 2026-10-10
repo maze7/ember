@@ -62,9 +62,9 @@ namespace ember::ecs
 	 */
 	enum class RunMode : u8
 	{
-		Serial, // one at a time in registration order, on the caller: a dedicated server, a match per core
-		Jobs,	// at once where the stage's graph allows, on the job system, split loops across the workers:
-			  // from main or a job, or from a thread of its own, which sleeps while a job runs the phase
+		Serial,	  // one at a time in registration order, on the caller: a dedicated server, a match per core
+		Jobs,	  // at once where the stage's graph allows, on the job system, split loops across the workers:
+				  // from main or a job, or from a thread of its own, which sleeps while a job runs the phase
 		Shuffled, // for tests: one at a time in random orders the graph allows, split loops' ranges too
 		Count
 	};
@@ -349,6 +349,12 @@ namespace ember::ecs
 		}
 
 		template <class T> [[nodiscard]] T& resource() noexcept
+		{
+			EMBER_ASSERT(registry.ctx().contains<T>() && "add the resource before a system takes it");
+			return registry.ctx().get<T>();
+		}
+
+		template <class T> [[nodiscard]] const T& resource() const noexcept
 		{
 			EMBER_ASSERT(registry.ctx().contains<T>() && "add the resource before a system takes it");
 			return registry.ctx().get<T>();
