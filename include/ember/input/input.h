@@ -82,15 +82,10 @@ namespace ember
 	class Input
 	{
 	public:
-		/// 4 controllers should be sufficient, right?
+		/// 4 Gamepads should be sufficient, right?
 		static constexpr u8 MAX_GAMEPADS = 4;
 
 		Input() = default;
-
-		Input(const Input&)			   = delete;
-		Input& operator=(const Input&) = delete;
-		Input(Input&&)				   = delete;
-		Input& operator=(Input&&)	   = delete;
 
 		[[nodiscard]] const InputState& state() const noexcept { return m_state; }
 
@@ -254,36 +249,5 @@ namespace ember
 		InputState m_state;
 		InputState m_last_state;
 		InputState m_next_state;
-	};
-
-	/**
-	 * A snapshot beside the one before it, which is what bindings read: an analog value has no
-	 * pressed or released of its own, so its edges come from comparing the two. Input is one, and
-	 * so are two frames' FrameParams::input, which is how a stage that only has its frames gets one.
-	 * Refers to the snapshots, never copies them.
-	 */
-	class InputView final
-	{
-	public:
-		InputView(const InputState& state, const InputState& last_state) noexcept
-			: m_state{&state}, m_last_state{&last_state}
-		{
-		}
-
-		InputView(const Input& input) noexcept : InputView{input.state(), input.last_state()} {}
-
-		[[nodiscard]] const InputState& state() const noexcept { return *m_state; }
-
-		[[nodiscard]] const InputState& last_state() const noexcept { return *m_last_state; }
-
-		[[nodiscard]] const Keyboard& keyboard() const noexcept { return m_state->keyboard(); }
-
-		[[nodiscard]] const Mouse& mouse() const noexcept { return m_state->mouse(); }
-
-		[[nodiscard]] std::span<const Gamepad> gamepads() const noexcept { return m_state->gamepads(); }
-
-	private:
-		const InputState* m_state;
-		const InputState* m_last_state;
 	};
 }

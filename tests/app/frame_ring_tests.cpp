@@ -15,7 +15,7 @@ namespace
 	{
 	protected:
 		Arena scratch;
-		InputState input;
+		Input input;
 
 		FrameRing ring{scratch};
 
@@ -144,7 +144,7 @@ TEST_F(FrameRingTest, ClearForgetsEveryFrame)
 TEST(FrameRingDeathTest, FramesMustBeginInOrder)
 {
 	Arena scratch;
-	InputState input;
+	Input input;
 	FrameRing ring{scratch};
 
 	EXPECT_DEATH((void)ring.begin(2, 0.0f, input), "assert");
@@ -164,7 +164,8 @@ TEST_F(FrameRingTest, AFramesScratchIsMemoryUnderItsTag)
 	FrameParams& frame = ring.begin(1, 0.016f, input);
 
 	auto* words = static_cast<u32*>(frame.scratch.allocate_fast(16 * sizeof(u32), alignof(u32)));
-	EXPECT_EQ(heap.tag_of(words), heap_tag(MemoryLifetime::Frame, 1)) << "what a stage builds lives under the frame's tag";
+	EXPECT_EQ(heap.tag_of(words), heap_tag(MemoryLifetime::Frame, 1))
+		<< "what a stage builds lives under the frame's tag";
 
 	// The tag is freed by the frame loop, never by the ring.
 	EXPECT_EQ(heap.free(scratch.end()), 1u);

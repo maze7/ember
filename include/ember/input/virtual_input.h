@@ -62,7 +62,7 @@ namespace ember
 
 		/// Folds the frame's input into this virtual input.
 		/// Called once per frame by VirtualInputs::update.
-		virtual void update(InputView input, VirtualTime time, BindingMask filters) noexcept = 0;
+		virtual void update(const Input& input, VirtualTime time, BindingMask filters) noexcept = 0;
 
 		VirtualInputs* m_owner = nullptr;
 		String m_name;
@@ -107,7 +107,7 @@ namespace ember
 
 		/// Updates all active virtual inputs against the current input state and
 		/// dispatches gamepad connect/disconnect notifications to devices.
-		void update(InputView input) noexcept
+		void update(const Input& input) noexcept
 		{
 			m_time = {.now_ns = input.state().timestamp(), .previous_ns = m_time.now_ns};
 
@@ -134,7 +134,7 @@ namespace ember
 		void register_device(VirtualDevice* device) { m_devices.push_back(device); }
 		void unregister_device(VirtualDevice* device) noexcept { std::erase(m_devices, device); }
 
-		void notify_gamepad_changes(InputView input) noexcept;
+		void notify_gamepad_changes(const Input& input) noexcept;
 
 		Vector<VirtualInput*> m_inputs;
 		Vector<VirtualDevice*> m_devices;
@@ -149,8 +149,8 @@ namespace ember
 	class VirtualAction final : public VirtualInput
 	{
 	public:
-		VirtualAction(
-			VirtualInputs& owner, StringView name, ActionBindingSet set, u32 controller_index = 0, u64 buffer_ns = 0)
+		VirtualAction(VirtualInputs& owner, StringView name, ActionBindingSet set, u32 controller_index = 0,
+					  u64 buffer_ns = 0)
 			: VirtualInput{owner, name, controller_index}, buffer_ns{buffer_ns}, m_set{std::move(set)}
 		{
 		}
@@ -233,7 +233,7 @@ namespace ember
 		}
 
 	private:
-		void update(InputView input, VirtualTime time, BindingMask filters) noexcept override
+		void update(const Input& input, VirtualTime time, BindingMask filters) noexcept override
 		{
 			const BindingState state = m_set.state(input, controller_index(), filters);
 
@@ -344,7 +344,7 @@ namespace ember
 		}
 
 	private:
-		void update(InputView input, VirtualTime time, BindingMask filters) noexcept override
+		void update(const Input& input, VirtualTime time, BindingMask filters) noexcept override
 		{
 			m_value		   = m_set.value(input, controller_index(), filters);
 			m_int_value	   = sign_of(m_value);
@@ -366,9 +366,8 @@ namespace ember
 				m_last_down_sign = m_pressed_sign;
 				m_last_press_ns	 = time.now_ns;
 			}
-			else if (
-				m_last_down_sign == m_int_value && m_last_down_sign != 0 &&
-				input_detail::repeated(false, true, m_last_press_ns, time.previous_ns, time.now_ns, repeat))
+			else if (m_last_down_sign == m_int_value && m_last_down_sign != 0 &&
+					 input_detail::repeated(false, true, m_last_press_ns, time.previous_ns, time.now_ns, repeat))
 			{
 				// Still holding the direction that was last pressed: pulse it.
 				m_pressed_sign = m_last_down_sign;
@@ -446,7 +445,7 @@ namespace ember
 		}
 
 	private:
-		void update(InputView input, VirtualTime, BindingMask filters) noexcept override
+		void update(const Input& input, VirtualTime, BindingMask filters) noexcept override
 		{
 			m_value		= m_set.value(input, controller_index(), filters);
 			m_int_value = {sign_of(m_value.x), sign_of(m_value.y)};
@@ -461,10 +460,10 @@ namespace ember
 				if (!binding_included(entry.masks, filters))
 					continue;
 
-				m_pressed_left	|= entry.left.state(input, controller_index()).pressed;
+				m_pressed_left |= entry.left.state(input, controller_index()).pressed;
 				m_pressed_right |= entry.right.state(input, controller_index()).pressed;
-				m_pressed_up	|= entry.up.state(input, controller_index()).pressed;
-				m_pressed_down	|= entry.down.state(input, controller_index()).pressed;
+				m_pressed_up |= entry.up.state(input, controller_index()).pressed;
+				m_pressed_down |= entry.down.state(input, controller_index()).pressed;
 			}
 		}
 
@@ -577,7 +576,11 @@ namespace ember
 	private:
 		friend class VirtualInputs;
 
-		void update(InputView input, VirtualTime, BindingMask) noexcept override
+		/**
+		 * Updates every active virtual input against the frame's devices, and dispatches gamepad connect
+		 * and disconnect notifications to devices. Once a frame, before anything reads them.
+		 */
+		void update(const Input& input, VirtualTime, BindingMask) noexcept override
 		{
 			if (index_mode == IndexMode::AutomaticLatest)
 			{
@@ -634,7 +637,7 @@ namespace ember
 
 	inline VirtualInput::~VirtualInput() { m_owner->unregister_input(this); }
 
-	inline void VirtualInputs::notify_gamepad_changes(InputView input) noexcept
+	inline void VirtualInputs::notify_gamepad_changes(const Input& input) noexcept
 	{
 		for (u32 slot = 0; slot < InputState::MAX_GAMEPADS; ++slot)
 		{

@@ -60,7 +60,7 @@ namespace
 		TaggedHeap& heap = memory::tagged_heap();
 		Arena scratch;
 		FrameRing ring{scratch};
-		InputState input;
+		Input input;
 		u32 before = 0;
 	};
 }

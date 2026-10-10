@@ -317,7 +317,7 @@ namespace ember
 
 		// The frame begins: its slot takes the number, a copy of the input the pump just published,
 		// and what it will be drawn on when there is something to draw on.
-		FrameParams& frame = m_frames.begin(index, dt, m_input.state());
+		FrameParams& frame = m_frames.begin(index, dt, m_input);
 		m_frame_index	   = index;
 
 		if (!backbuffer.is_null())

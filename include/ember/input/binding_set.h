@@ -129,7 +129,7 @@ namespace ember
 		}
 
 		/// Samples the combined state of all entries passing the filters.
-		[[nodiscard]] BindingState state(InputView input, u32 device, BindingMask filters = 0) const noexcept
+		[[nodiscard]] BindingState state(const Input& input, u32 device, BindingMask filters = 0) const noexcept
 		{
 			BindingState result{};
 
@@ -140,11 +140,11 @@ namespace ember
 
 				const BindingState state = entry.binding.state(input, device);
 
-				result.pressed		|= state.pressed;
-				result.released		|= state.released;
-				result.down			|= state.down;
-				result.value		 = std::max(result.value, state.value);
-				result.timestamp_ns	 = std::max(result.timestamp_ns, state.timestamp_ns);
+				result.pressed |= state.pressed;
+				result.released |= state.released;
+				result.down |= state.down;
+				result.value		= std::max(result.value, state.value);
+				result.timestamp_ns = std::max(result.timestamp_ns, state.timestamp_ns);
 			}
 
 			return result;
@@ -193,25 +193,22 @@ namespace ember
 		}
 
 		/// Adds a GamepadButton pair.
-		AxisBindingSet&
-		add(GamepadButton negative, GamepadButton positive, BindingAxisOverlap overlap = {}, BindingMask masks = 0)
+		AxisBindingSet& add(GamepadButton negative, GamepadButton positive, BindingAxisOverlap overlap = {},
+							BindingMask masks = 0)
 		{
-			return add(
-				Binding{GamepadButtonBinding{negative}}, Binding{GamepadButtonBinding{positive}}, overlap, masks);
+			return add(Binding{GamepadButtonBinding{negative}}, Binding{GamepadButtonBinding{positive}}, overlap,
+					   masks);
 		}
 
 		/// Adds both directions of a GamepadAxis.
 		AxisBindingSet& add(GamepadAxis axis, f32 deadzone = 0.0f, BindingMask masks = 0)
 		{
-			return add(
-				Binding{GamepadAxisBinding{axis, -1, deadzone}},
-				Binding{GamepadAxisBinding{axis, +1, deadzone}},
-				{},
-				masks);
+			return add(Binding{GamepadAxisBinding{axis, -1, deadzone}}, Binding{GamepadAxisBinding{axis, +1, deadzone}},
+					   {}, masks);
 		}
 
 		/// Current value of the axis in [-1, 1].
-		[[nodiscard]] f32 value(InputView input, u32 device, BindingMask filters = 0) const noexcept
+		[[nodiscard]] f32 value(const Input& input, u32 device, BindingMask filters = 0) const noexcept
 		{
 			f32 value = 0.0f;
 
@@ -220,8 +217,8 @@ namespace ember
 				if (!binding_included(entry.masks, filters))
 					continue;
 
-				const f32 next = resolve_axis_overlap(
-					entry.overlap, entry.negative.state(input, device), entry.positive.state(input, device));
+				const f32 next = resolve_axis_overlap(entry.overlap, entry.negative.state(input, device),
+													  entry.positive.state(input, device));
 
 				if (std::abs(next) > std::abs(value))
 					value = next;
@@ -232,7 +229,7 @@ namespace ember
 
 		/// Sign of a press that happened this frame, or 0 if none. Only bindings
 		/// freshly pressed this frame contribute.
-		[[nodiscard]] i32 pressed_sign(InputView input, u32 device, BindingMask filters = 0) const noexcept
+		[[nodiscard]] i32 pressed_sign(const Input& input, u32 device, BindingMask filters = 0) const noexcept
 		{
 			f32 value = 0.0f;
 
@@ -302,8 +299,8 @@ namespace ember
 		}
 
 		/// Adds a keyboard Key quad.
-		StickBindingSet&
-		add(Key left, Key right, Key up, Key down, BindingAxisOverlap overlap = {}, BindingMask masks = 0)
+		StickBindingSet& add(Key left, Key right, Key up, Key down, BindingAxisOverlap overlap = {},
+							 BindingMask masks = 0)
 		{
 			// clang-format off
 			return add({
@@ -318,13 +315,8 @@ namespace ember
 		}
 
 		/// Adds a GamepadButton quad.
-		StickBindingSet&
-		add(GamepadButton left,
-			GamepadButton right,
-			GamepadButton up,
-			GamepadButton down,
-			BindingAxisOverlap overlap = {},
-			BindingMask masks		   = 0)
+		StickBindingSet& add(GamepadButton left, GamepadButton right, GamepadButton up, GamepadButton down,
+							 BindingAxisOverlap overlap = {}, BindingMask masks = 0)
 		{
 			// clang-format off
 			return add({
@@ -339,14 +331,8 @@ namespace ember
 		}
 
 		/// Adds both directions of two GamepadAxes with per axis deadzones.
-		StickBindingSet&
-		add(GamepadAxis x,
-			f32 x_deadzone,
-			GamepadAxis y,
-			f32 y_deadzone,
-			f32 circular_deadzone,
-			BindingAxisOverlap overlap = {},
-			BindingMask masks		   = 0)
+		StickBindingSet& add(GamepadAxis x, f32 x_deadzone, GamepadAxis y, f32 y_deadzone, f32 circular_deadzone,
+							 BindingAxisOverlap overlap = {}, BindingMask masks = 0)
 		{
 			return add({
 				.left			   = Binding{GamepadAxisBinding{x, -1, x_deadzone}},
@@ -360,8 +346,8 @@ namespace ember
 		}
 
 		/// Adds a GamepadAxis pair with a circular deadzone only.
-		StickBindingSet&
-		add(GamepadAxis x, GamepadAxis y, f32 circular_deadzone, BindingAxisOverlap overlap = {}, BindingMask masks = 0)
+		StickBindingSet& add(GamepadAxis x, GamepadAxis y, f32 circular_deadzone, BindingAxisOverlap overlap = {},
+							 BindingMask masks = 0)
 		{
 			return add(x, 0.0f, y, 0.0f, circular_deadzone, overlap, masks);
 		}
@@ -390,8 +376,8 @@ namespace ember
 
 		StickBindingSet& add_dpad(BindingAxisOverlap overlap = {}, BindingMask masks = 0)
 		{
-			return add(
-				GamepadButton::Left, GamepadButton::Right, GamepadButton::Up, GamepadButton::Down, overlap, masks);
+			return add(GamepadButton::Left, GamepadButton::Right, GamepadButton::Up, GamepadButton::Down, overlap,
+					   masks);
 		}
 
 		StickBindingSet& add_left_stick(f32 deadzone, BindingMask masks = 0)
@@ -405,7 +391,7 @@ namespace ember
 		}
 
 		/// Current value of the stick; each component in [-1, 1], +Y = down.
-		[[nodiscard]] glm::vec2 value(InputView input, u32 device, BindingMask filters = 0) const noexcept
+		[[nodiscard]] glm::vec2 value(const Input& input, u32 device, BindingMask filters = 0) const noexcept
 		{
 			glm::vec2 value{0.0f, 0.0f};
 
@@ -415,8 +401,8 @@ namespace ember
 					continue;
 
 				const glm::vec2 next{
-					resolve_axis_overlap(
-						entry.overlap, entry.left.state(input, device), entry.right.state(input, device)),
+					resolve_axis_overlap(entry.overlap, entry.left.state(input, device),
+										 entry.right.state(input, device)),
 					resolve_axis_overlap(entry.overlap, entry.up.state(input, device), entry.down.state(input, device)),
 				};
 

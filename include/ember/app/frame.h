@@ -28,7 +28,7 @@ namespace ember
 		f32 dt			= 0.0f; // delta time since last frame
 
 		/** The input devices as they stood when the frame began. Copied. */
-		InputState input = {};
+		Input input{};
 
 		/**
 		 * What the frame is drawn on, taken before update() runs: null, its extent zero, when the
@@ -73,10 +73,7 @@ namespace ember
 		static constexpr u32 CAPACITY = 16;
 
 		/** Every slot names the same arena: the allocator is the lifetime's, the tag is the frame's. */
-		explicit FrameRing(Arena& scratch) noexcept
-			: m_frames([&](u32) { return FrameParams{.scratch = scratch}; })
-		{
-		}
+		explicit FrameRing(Arena& scratch) noexcept : m_frames([&](u32) { return FrameParams{.scratch = scratch}; }) {}
 
 		FrameRing(const FrameRing&)			   = delete;
 		FrameRing& operator=(const FrameRing&) = delete;
@@ -85,7 +82,7 @@ namespace ember
 		 * Claims the slot for frame index, one past the last begun (1 on a fresh ring), resets its
 		 * per frame fields and copies input into it. The frame it evicts is index minus CAPACITY.
 		 */
-		FrameParams& begin(u64 index, f32 dt, const InputState& input) noexcept
+		FrameParams& begin(u64 index, f32 dt, const Input& input) noexcept
 		{
 			EMBER_ASSERT(index == current_index() + 1 && "frames begin in order, from 1");
 
